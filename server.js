@@ -23,7 +23,6 @@ const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
 const { Pool } = require('pg');
-
 const {
   PORT = 3000,
   DATABASE_URL,
@@ -33,26 +32,20 @@ const {
   ML_AUTH_DOMAIN = 'https://auth.mercadolivre.com.br',
   ALLOWED_ORIGIN = '*'
 } = process.env;
-
 if (!DATABASE_URL) { console.error('Faltou DATABASE_URL no .env'); process.exit(1); }
 if (!ML_CLIENT_ID || !ML_CLIENT_SECRET || !ML_REDIRECT_URI) {
   console.error('Faltou ML_CLIENT_ID / ML_CLIENT_SECRET / ML_REDIRECT_URI no .env');
   process.exit(1);
 }
-
 const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
-
 const app = express();
 app.use(express.json());
-
 const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
   origin: allowedOrigins.includes('*') ? true : allowedOrigins,
   methods: ['GET', 'POST']
 }));
-
 const LOJAS_VALIDAS = ['TorvStore', 'Dor Block', 'Orbix Brasil', 'TorvShop'];
-
 const loginsPendentes = new Map();
 function limparLoginsAntigos() {
   const limite = Date.now() - 10 * 60 * 1000;
@@ -68,7 +61,6 @@ function gerarPkce() {
   const codeChallenge = base64url(crypto.createHash('sha256').update(codeVerifier).digest());
   return { codeVerifier, codeChallenge };
 }
-
 async function salvarTokens(loja, { access_token, refresh_token, expires_in, user_id }) {
   const expiresAt = new Date(Date.now() + (expires_in - 60) * 1000);
   await pool.query(
@@ -83,20 +75,16 @@ async function salvarTokens(loja, { access_token, refresh_token, expires_in, use
     [loja, String(user_id || ''), access_token, refresh_token, expiresAt]
   );
 }
-
 async function pegarConta(loja) {
   const r = await pool.query('select * from ml_accounts where loja = $1', [loja]);
   return r.rows[0] || null;
 }
-
 async function tokenValido(loja) {
   const conta = await pegarConta(loja);
   if (!conta) throw new Error(`A loja "${loja}" ainda nao foi autorizada. Rode /oauth/login?loja=${encodeURIComponent(loja)} primeiro.`);
-
   if (new Date(conta.expires_at).getTime() > Date.now()) {
     return conta.access_token;
   }
-
   const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
@@ -112,14 +100,11 @@ async function tokenValido(loja) {
   await salvarTokens(loja, dados);
   return dados.access_token;
 }
-
 app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOString() }));
 app.post('/ml/webhook', (_req, res) => res.sendStatus(200));
-
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
 });
-
 app.get('/oauth/login', (req, res) => {
   const loja = req.query.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
@@ -129,7 +114,6 @@ app.get('/oauth/login', (req, res) => {
   const state = base64url(crypto.randomBytes(24));
   const { codeVerifier, codeChallenge } = gerarPkce();
   loginsPendentes.set(state, { loja, codeVerifier, criadoEm: Date.now() });
-
   const url = new URL(ML_AUTH_DOMAIN + '/authorization');
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', ML_CLIENT_ID);
@@ -137,19 +121,15 @@ app.get('/oauth/login', (req, res) => {
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', codeChallenge);
   url.searchParams.set('code_challenge_method', 'S256');
-
   res.redirect(url.toString());
 });
-
 app.get('/oauth/callback', async (req, res) => {
   try {
     const { code, state, error } = req.query;
     if (error) return res.status(400).send('Mercado Livre recusou a autorizacao: ' + error);
-
     const pendente = loginsPendentes.get(state);
     if (!pendente) return res.status(400).send('Sessao de login expirada ou invalida. Comece de novo pelo /oauth/login.');
     loginsPendentes.delete(state);
-
     const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
@@ -164,7 +144,6 @@ app.get('/oauth/callback', async (req, res) => {
     });
     const dados = await resp.json();
     if (!resp.ok) return res.status(400).send('Falha ao trocar o code pelo token: ' + JSON.stringify(dados));
-
     await salvarTokens(pendente.loja, dados);
     res.type('text/html').send(`<h2>Loja "${pendente.loja}" autorizada com sucesso.</h2><p>Pode fechar essa aba e voltar pro Doca.</p>`);
   } catch (e) {
@@ -192,7 +171,6 @@ async function buscarItensDoVendedor(loja, accessToken, mlUserId) {
     offset += limit;
     if (!j.results || j.results.length < limit || offset >= (j.paging?.total || 0)) break;
   }
-
   const detalhes = [];
   for (let i = 0; i < ids.length; i += 20) {
     const lote = ids.slice(i, i + 20).join(',');
@@ -205,24 +183,20 @@ async function buscarItensDoVendedor(loja, accessToken, mlUserId) {
   }
   return detalhes;
 }
-
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
     return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
   }
-
   let logId = null;
   try {
     const logInsert = await pool.query(
       'insert into ml_sync_log (loja) values ($1) returning id', [loja]
     );
     logId = logInsert.rows[0].id;
-
     const accessToken = await tokenValido(loja);
     const conta = await pegarConta(loja);
     const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
-
     for (const it of itens) {
       await pool.query(
         `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, atualizado_em)
@@ -233,7 +207,7 @@ const loja = req.query.loja || req.body?.loja;
            preco = excluded.preco, status = excluded.status, atualizado_em = now()`,
         [
           loja, it.id,
-          (it.seller_custom_field || it.seller_sku || ''),
+          extrairSku(it),
           it.title || '',
           it.available_quantity ?? 0,
           it.price ?? null,
@@ -241,12 +215,10 @@ const loja = req.query.loja || req.body?.loja;
         ]
       );
     }
-
     await pool.query(
       'update ml_sync_log set concluido_em = now(), itens_sincronizados = $2 where id = $1',
       [logId, itens.length]
     );
-
     res.json({ ok: true, loja, itensSincronizados: itens.length, atualizadoEm: new Date().toISOString() });
   } catch (e) {
     console.error('Erro no /sync:', e);
@@ -260,7 +232,6 @@ const loja = req.query.loja || req.body?.loja;
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
-
 app.get('/data', async (req, res) => {
   const loja = req.query.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
@@ -284,7 +255,5 @@ app.get('/data', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
-
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
-
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
