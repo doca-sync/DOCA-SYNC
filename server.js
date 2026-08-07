@@ -114,6 +114,7 @@ async function tokenValido(loja) {
 }
 
 app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOString() }));
+app.post('/ml/webhook', (_req, res) => res.sendStatus(200));
 
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
