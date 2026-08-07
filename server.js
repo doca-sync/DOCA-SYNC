@@ -199,4 +199,84 @@ async function buscarItensDoVendedor(loja, accessToken, mlUserId) {
 }
 
 app.post('/sync', async (req, res) => {
-  const loja =
+const loja = req.query.loja || req.body?.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+
+  let logId = null;
+  try {
+    const logInsert = await pool.query(
+      'insert into ml_sync_log (loja) values ($1) returning id', [loja]
+    );
+    logId = logInsert.rows[0].id;
+
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
+
+    for (const it of itens) {
+      await pool.query(
+        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, atualizado_em)
+         values ($1,$2,$3,$4,$5,$6,$7, now())
+         on conflict (loja, ml_item_id) do update set
+           sku = excluded.sku, titulo = excluded.titulo,
+           quantidade_disponivel = excluded.quantidade_disponivel,
+           preco = excluded.preco, status = excluded.status, atualizado_em = now()`,
+        [
+          loja, it.id,
+          (it.seller_custom_field || it.seller_sku || ''),
+          it.title || '',
+          it.available_quantity ?? 0,
+          it.price ?? null,
+          it.status || ''
+        ]
+      );
+    }
+
+    await pool.query(
+      'update ml_sync_log set concluido_em = now(), itens_sincronizados = $2 where id = $1',
+      [logId, itens.length]
+    );
+
+    res.json({ ok: true, loja, itensSincronizados: itens.length, atualizadoEm: new Date().toISOString() });
+  } catch (e) {
+    console.error('Erro no /sync:', e);
+    if (logId != null) {
+      try {
+        await pool.query('update ml_sync_log set concluido_em = now(), erro = $2 where id = $1', [logId, e.message]);
+      } catch (e2) {
+        console.error('Falha ao gravar log de erro:', e2);
+      }
+    }
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+
+app.get('/data', async (req, res) => {
+  const loja = req.query.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+  try {
+    const conta = await pegarConta(loja);
+    const produtos = await pool.query(
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      [loja]
+    );
+    res.json({
+      ok: true,
+      loja,
+      autorizado: !!conta,
+      ultimaAtualizacao: conta ? conta.atualizado_em : null,
+      produtos: produtos.rows
+    });
+  } catch (e) {
+    console.error('Erro no /data:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+
+process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
+
+app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
