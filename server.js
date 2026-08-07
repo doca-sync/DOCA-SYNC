@@ -1,3 +1,89 @@
+
+Claude terminou a resposta
+
+Pesquisou na web, ferramentas carregadas
+Pesquisou na web, ferramentas carregadas
+Fazendo o levantamento do que cada informação exige:
+
+Já vem de graça (o item já é buscado hoje, só falta salvar os campos): se o anúncio está pausado (status do item) e se está vinculado ao catálogo (catalog_listing). Zero chamada nova na API — só persistir esses dois campos no /sync que já existe.
+
+Perguntas sem resposta: endpoint separado (/questions/search filtrado por vendedor e status), mas retorna tudo de uma vez, não precisa consultar item por item. 1 chamada extra por sync.
+
+Sem promoção: API de campanhas do vendedor (seller-promotions) lista quem está em cada tipo de campanha; por exclusão dá pra saber quem não tem nenhuma. Mais chamadas (uma por tipo de campanha ativa), mas simples.
+
+Vendas 7/15/30d com média ponderada: é o mais trabalhoso dos pedidos. A API de Orders só devolve pedidos brutos, não um resumo pronto de "vendas dos últimos N dias". Pra fazer certo precisamos de uma tabela nova no banco guardando o histórico de pedidos a cada sync (senão toda atualização teria que reprocessar tudo do zero), e aí sim calcular a média ponderada dando mais peso pros dias recentes.
+
+Publicidade (Ads): é a etapa mais separada. Usa uma API diferente (Product Ads/Mercado Ads), com autorização própria — bem provável que precise reautorizar cada loja pra liberar esse escopo, e só funciona se a conta já tiver Publicidade ativada no Mercado Livre. Hoje isso é manual (aba Ads); dá pra automatizar depois, mas é um pedaço de infra à parte.
+
+Coisas extras que acho que valem a pena trazer já que vamos mexer nisso: estoque zerado/ruptura (já vem no dado atual), visitas do anúncio (pra cruzar com conversão), health/qualidade do anúncio (nota que o próprio ML dá), se o item está ganhando a Buy Box no catálogo, e o tipo de logística (Full/Flex/coleta) sem precisar checar manual.
+
+Sugestão de ordem: (1) pausado + catálogo — rápido, sem chamada nova; (2) perguntas + sem promoção — 2 chamadas a mais por sync; (3) vendas ponderada — precisa de tabela nova, mais trabalho mas mais valor; (4) Ads — deixa por último.
+
+Quer que eu comece pelos itens rápidos (1 e 2) agora, ou prefere que eu monte tudo de uma vez?
+
+Sources:
+
+Perguntas e Respostas - Developers - Mercado Livre
+Campanhas do vendedor - Developers - Mercado Livre
+Product Ads - Developers
+Catalog listing - Developers - Mercado Livre
+Orders - Developers - Mercado Livre
+NÃO DA PRA FAZER TUDO DE UMA VEZ
+
+
+Executou 2 comandos, leu um arquivo
+Executou 2 comandos, leu um arquivo
+Certo, vamos por partes — começando pelos 2 campos que não custam nada (pausado + catálogo).
+
+Antes de mexer no código, roda essa migração no SQL Editor do Supabase (não depende de mais nada):
+
+
+Executou um comando, leu um arquivo
+Executou um comando, leu um arquivo
+Enquanto isso: preciso do server.js atual pra editar sem bagunçar nada — cola aqui o conteúdo completo do arquivo lá do GitHub (igual você fez da última vez).
+
+
+C:\Users\vikin\AppData\Roaming\Claude\local-agent-mode-sessions\857c3d46-f05e-4c62-bcf7-ca74a1419b90\1437bfde-571c-40a8-b8bd-0091f57874a3\local_7161f08f-bde3-4f19-a3c3-f47923e4330e\outputs\migracao_status_catalogo.sql
+Código 
+
+
+Mensagem recolhida
+
+Processo de pensamento
+Processo de pensamento
+Perfeito, isso ajuda — vi que o status (pausado/ativo) já está sendo salvo e devolvido pelo backend, só falta o Doca mostrar. Só falta mesmo adicionar catalog_listing. Roda essa migração no Supabase (substitui a que mandei antes):
+
+
+Executou 2 comandos, tarefas atualizadas
+Executou 2 comandos, tarefas atualizadas
+Sintaxe ok. Agora salvo esse server.js atualizado pra você e a SQL de migração, e já sigo pro lado do Doca (frontend).
+
+
+Leu 2 arquivos, executou um comando
+Leu 2 arquivos, executou um comando
+Passos no backend: 1) roda a SQL no Supabase. 2) substitui todo o conteúdo do server.js no GitHub por esse novo, deixa o Render fazer o deploy automático. Avisa quando terminar que eu sigo pro Doca (DOCA74) com os campos "Pausado" e "Vinculado ao catálogo".
+
+
+C:\Users\vikin\AppData\Roaming\Claude\local-agent-mode-sessions\857c3d46-f05e-4c62-bcf7-ca74a1419b90\1437bfde-571c-40a8-b8bd-0091f57874a3\local_7161f08f-bde3-4f19-a3c3-f47923e4330e\outputs\server.js
+ 
+
+C:\Users\vikin\AppData\Roaming\Claude\local-agent-mode-sessions\857c3d46-f05e-4c62-bcf7-ca74a1419b90\1437bfde-571c-40a8-b8bd-0091f57874a3\local_7161f08f-bde3-4f19-a3c3-f47923e4330e\outputs\migracao_status_catalogo.sql
+Código 
+COMO RODAR O SQL DO DUPABASE
+
+
+Processo de pensamento
+Processo de pensamento
+Concluído
+No painel do Supabase: menu lateral esquerdo → SQL Editor → botão New query → cola o conteúdo do arquivo migracao_status_catalogo.sql → botão Run (ou Ctrl+Enter). Deve aparecer "Success. No rows returned".
+
+
+
+
+
+
+Claude é uma IA e pode cometer erros. Verifique as respostas. Envie seu feedback
+Server · JS
 /*
  * Doca <-> Mercado Livre — backend minimo
  * -----------------------------------------
@@ -199,19 +285,21 @@ const loja = req.query.loja || req.body?.loja;
     const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
     for (const it of itens) {
       await pool.query(
-        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, atualizado_em)
-         values ($1,$2,$3,$4,$5,$6,$7, now())
+        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, atualizado_em)
+         values ($1,$2,$3,$4,$5,$6,$7,$8, now())
          on conflict (loja, ml_item_id) do update set
            sku = excluded.sku, titulo = excluded.titulo,
            quantidade_disponivel = excluded.quantidade_disponivel,
-           preco = excluded.preco, status = excluded.status, atualizado_em = now()`,
+           preco = excluded.preco, status = excluded.status,
+           catalog_listing = excluded.catalog_listing, atualizado_em = now()`,
         [
           loja, it.id,
           extrairSku(it),
           it.title || '',
           it.available_quantity ?? 0,
           it.price ?? null,
-          it.status || ''
+          it.status || '',
+          it.catalog_listing === true
         ]
       );
     }
@@ -240,7 +328,7 @@ app.get('/data', async (req, res) => {
   try {
     const conta = await pegarConta(loja);
     const produtos = await pool.query(
-      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, atualizado_em from ml_produtos where loja = $1 order by titulo',
       [loja]
     );
     res.json({
@@ -257,3 +345,4 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
+ 
