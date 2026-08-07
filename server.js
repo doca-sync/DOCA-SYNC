@@ -171,7 +171,14 @@ app.get('/oauth/callback', async (req, res) => {
     res.status(500).send('Erro no callback: ' + e.message);
   }
 });
-
+function extrairSku(it) {
+  if (it.seller_custom_field) return it.seller_custom_field;
+  if (it.seller_sku) return it.seller_sku;
+  const attrs = it.attributes || [];
+  const a = attrs.find(x => x.id === 'SELLER_SKU');
+  if (a) return a.value_name || (a.values && a.values[0] && a.values[0].name) || '';
+  return '';
+}
 async function buscarItensDoVendedor(loja, accessToken, mlUserId) {
   const ids = [];
   let offset = 0;
