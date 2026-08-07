@@ -1,19 +1,202 @@
-{
-  "name": "doca-ml-sync-backend",
-  "version": "1.0.0",
-  "description": "Backend minimo para o Doca se conectar com a API do Mercado Livre sob demanda (botao Atualizar) - OAuth2 + sincronizacao de estoque.",
-  "main": "server.js",
-  "type": "commonjs",
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.19.2",
-    "pg": "^8.12.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5"
+/*
+ * Doca <-> Mercado Livre — backend minimo
+ * -----------------------------------------
+ * Nao faz sincronizacao em tempo real nem recebe webhook. So existe pra fazer 2 coisas:
+ *
+ *  1) Autorizar cada loja uma vez (OAuth2 do Mercado Livre) e guardar o token com seguranca
+ *     — isso NAO pode acontecer no navegador porque exige o client_secret, que e um segredo.
+ *  2) Quando alguem aperta "Atualizar" no Doca, buscar o estoque atual na API do ML e salvar
+ *     no banco (Postgres/Supabase), pra o Doca ler depois.
+ *
+ * Endpoints:
+ *   GET  /health                    -> healthcheck simples
+ *   GET  /oauth/login?loja=X        -> redireciona pro login do Mercado Livre (fazer 1x por loja)
+ *   GET  /oauth/callback            -> volta do login do ML, troca o code por access/refresh token
+ *   POST /sync?loja=X               -> busca os dados atuais na API do ML e salva no banco
+ *   GET  /data?loja=X               -> devolve os ultimos dados salvos daquela loja (pro Doca ler)
+ *
+ * Variaveis de ambiente necessarias (ver .env.example):
+ *   DATABASE_URL, ML_CLIENT_ID, ML_CLIENT_SECRET, ML_REDIRECT_URI, ALLOWED_ORIGIN
+ */
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const crypto = require('crypto');
+const { Pool } = require('pg');
+
+const {
+  PORT = 3000,
+  DATABASE_URL,
+  ML_CLIENT_ID,
+  ML_CLIENT_SECRET,
+  ML_REDIRECT_URI,
+  ML_AUTH_DOMAIN = 'https://auth.mercadolivre.com.br',
+  ALLOWED_ORIGIN = '*'
+} = process.env;
+
+if (!DATABASE_URL) { console.error('Faltou DATABASE_URL no .env'); process.exit(1); }
+if (!ML_CLIENT_ID || !ML_CLIENT_SECRET || !ML_REDIRECT_URI) {
+  console.error('Faltou ML_CLIENT_ID / ML_CLIENT_SECRET / ML_REDIRECT_URI no .env');
+  process.exit(1);
+}
+
+const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+
+const app = express();
+app.use(express.json());
+
+const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: allowedOrigins.includes('*') ? true : allowedOrigins,
+  methods: ['GET', 'POST']
+}));
+
+const LOJAS_VALIDAS = ['TorvStore', 'Dor Block', 'Orbix Brasil', 'TorvShop'];
+
+const loginsPendentes = new Map();
+function limparLoginsAntigos() {
+  const limite = Date.now() - 10 * 60 * 1000;
+  for (const [state, info] of loginsPendentes) {
+    if (info.criadoEm < limite) loginsPendentes.delete(state);
   }
 }
+function base64url(buf) {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function gerarPkce() {
+  const codeVerifier = base64url(crypto.randomBytes(48));
+  const codeChallenge = base64url(crypto.createHash('sha256').update(codeVerifier).digest());
+  return { codeVerifier, codeChallenge };
+}
+
+async function salvarTokens(loja, { access_token, refresh_token, expires_in, user_id }) {
+  const expiresAt = new Date(Date.now() + (expires_in - 60) * 1000);
+  await pool.query(
+    `insert into ml_accounts (loja, ml_user_id, access_token, refresh_token, expires_at, atualizado_em)
+     values ($1,$2,$3,$4,$5, now())
+     on conflict (loja) do update set
+       ml_user_id = excluded.ml_user_id,
+       access_token = excluded.access_token,
+       refresh_token = excluded.refresh_token,
+       expires_at = excluded.expires_at,
+       atualizado_em = now()`,
+    [loja, String(user_id || ''), access_token, refresh_token, expiresAt]
+  );
+}
+
+async function pegarConta(loja) {
+  const r = await pool.query('select * from ml_accounts where loja = $1', [loja]);
+  return r.rows[0] || null;
+}
+
+async function tokenValido(loja) {
+  const conta = await pegarConta(loja);
+  if (!conta) throw new Error(`A loja "${loja}" ainda nao foi autorizada. Rode /oauth/login?loja=${encodeURIComponent(loja)} primeiro.`);
+
+  if (new Date(conta.expires_at).getTime() > Date.now()) {
+    return conta.access_token;
+  }
+
+  const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: ML_CLIENT_ID,
+      client_secret: ML_CLIENT_SECRET,
+      refresh_token: conta.refresh_token
+    })
+  });
+  const dados = await resp.json();
+  if (!resp.ok) throw new Error('Falha ao renovar token do ML: ' + JSON.stringify(dados));
+  await salvarTokens(loja, dados);
+  return dados.access_token;
+}
+
+app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOString() }));
+
+app.get('/', (_req, res) => {
+  res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
+});
+
+app.get('/oauth/login', (req, res) => {
+  const loja = req.query.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).send(`Parametro "loja" invalido ou ausente. Use um de: ${LOJAS_VALIDAS.join(', ')}`);
+  }
+  limparLoginsAntigos();
+  const state = base64url(crypto.randomBytes(24));
+  const { codeVerifier, codeChallenge } = gerarPkce();
+  loginsPendentes.set(state, { loja, codeVerifier, criadoEm: Date.now() });
+
+  const url = new URL(ML_AUTH_DOMAIN + '/authorization');
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', ML_CLIENT_ID);
+  url.searchParams.set('redirect_uri', ML_REDIRECT_URI);
+  url.searchParams.set('state', state);
+  url.searchParams.set('code_challenge', codeChallenge);
+  url.searchParams.set('code_challenge_method', 'S256');
+
+  res.redirect(url.toString());
+});
+
+app.get('/oauth/callback', async (req, res) => {
+  try {
+    const { code, state, error } = req.query;
+    if (error) return res.status(400).send('Mercado Livre recusou a autorizacao: ' + error);
+
+    const pendente = loginsPendentes.get(state);
+    if (!pendente) return res.status(400).send('Sessao de login expirada ou invalida. Comece de novo pelo /oauth/login.');
+    loginsPendentes.delete(state);
+
+    const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: ML_CLIENT_ID,
+        client_secret: ML_CLIENT_SECRET,
+        code,
+        redirect_uri: ML_REDIRECT_URI,
+        code_verifier: pendente.codeVerifier
+      })
+    });
+    const dados = await resp.json();
+    if (!resp.ok) return res.status(400).send('Falha ao trocar o code pelo token: ' + JSON.stringify(dados));
+
+    await salvarTokens(pendente.loja, dados);
+    res.type('text/html').send(`<h2>Loja "${pendente.loja}" autorizada com sucesso.</h2><p>Pode fechar essa aba e voltar pro Doca.</p>`);
+  } catch (e) {
+    res.status(500).send('Erro no callback: ' + e.message);
+  }
+});
+
+async function buscarItensDoVendedor(loja, accessToken, mlUserId) {
+  const ids = [];
+  let offset = 0;
+  const limit = 50;
+  while (true) {
+    const url = `https://api.mercadolibre.com/users/${mlUserId}/items/search?offset=${offset}&limit=${limit}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const j = await r.json();
+    if (!r.ok) throw new Error('Falha ao listar itens: ' + JSON.stringify(j));
+    ids.push(...(j.results || []));
+    offset += limit;
+    if (!j.results || j.results.length < limit || offset >= (j.paging?.total || 0)) break;
+  }
+
+  const detalhes = [];
+  for (let i = 0; i < ids.length; i += 20) {
+    const lote = ids.slice(i, i + 20).join(',');
+    const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error('Falha ao buscar detalhes dos itens: ' + JSON.stringify(j));
+    j.forEach(entry => { if (entry.code === 200) detalhes.push(entry.body); });
+  }
+  return detalhes;
+}
+
+app.post('/sync', async (req, res) => {
+  const loja =
