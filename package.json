@@ -1,0 +1,20 @@
+# Copie este arquivo pra ".env" (local) OU configure essas mesmas variaveis
+# no painel do Render/Vercel/etc quando for hospedar. Nunca suba o .env de verdade pro GitHub.
+
+# Connection string do Postgres (Supabase: Project Settings -> Database -> Connection string -> URI)
+DATABASE_URL=postgres://usuario:senha@host:5432/postgres
+
+# Credenciais da aplicacao criada em developers.mercadolivre.com.br
+ML_CLIENT_ID=
+ML_CLIENT_SECRET=
+
+# URL publica deste backend + /oauth/callback (precisa ser IGUAL ao que voce cadastrar
+# como "Redirect URI" na aplicacao do Mercado Livre). Exemplo depois de hospedar no Render:
+# https://doca-ml-sync.onrender.com/oauth/callback
+ML_REDIRECT_URI=
+
+# Dominio(s) de onde o Doca vai chamar esse backend (separe por virgula se for mais de um).
+# Pode deixar * enquanto estiver testando, mas troque pelo dominio real do Doca depois.
+ALLOWED_ORIGIN=*
+
+PORT=3000
