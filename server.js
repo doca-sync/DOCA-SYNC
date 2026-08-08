@@ -102,6 +102,47 @@ async function tokenValido(loja) {
 }
 app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOString() }));
 app.post('/ml/webhook', (_req, res) => res.sendStatus(200));
+/* rota de diagnostico temporaria - devolve a lista CRUA de pedidos que a API do ML retorna
+   pro item/periodo pedido, pra comparar pedido por pedido com o que a propria tela de
+   "Vendas" do vendedor no ML mostra (em vez de so comparar contagens agregadas). Ex.:
+   /debug/pedidos?loja=TorvShop&itemId=MLB7174620602&dias=7 */
+app.get('/debug/pedidos', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const itemId = req.query.itemId || null;
+    const dias = parseInt(req.query.dias || '7', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const de = new Date(Date.now() - dias * 864e5).toISOString();
+    const ate = new Date().toISOString();
+    const log = { avisos: [] };
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, de, ate, log, 'order.date_closed');
+    const filtrados = itemId
+      ? pedidos.filter(p => (p.order_items || []).some(oi => oi.item && oi.item.id === itemId))
+      : pedidos;
+    const resumo = filtrados.map(p => ({
+      id: p.id,
+      status: p.status,
+      date_created: p.date_created,
+      date_closed: p.date_closed,
+      pack_id: p.pack_id || null,
+      tags: p.tags || [],
+      itens: (p.order_items || []).map(oi => ({ item_id: oi.item && oi.item.id, qtd: oi.quantity, titulo: oi.item && oi.item.title }))
+    })).sort((a, b) => (a.date_closed || '').localeCompare(b.date_closed || ''));
+    res.json({
+      ok: true, loja, itemId, janela: { de, ate, dias },
+      total_pedidos_no_periodo_todos_itens: pedidos.length,
+      total_pedidos_filtrados: resumo.length,
+      avisos: log.avisos,
+      pedidos: resumo
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
 });
@@ -202,7 +243,7 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
     return null;
   }
 }
- 
+
 /* busca as perguntas sem resposta de todos os anuncios do vendedor de uma vez so (paginado),
    e devolve quantas tem por item_id. Se o vendedor nao tiver nenhuma pergunta o ML pode
    responder 404 - tratamos isso como "zero perguntas" em vez de erro. */
@@ -226,7 +267,7 @@ async function buscarPerguntasSemResposta(accessToken, sellerId) {
   }
   return porItem;
 }
- 
+
 /* dia calendario (AAAA-MM-DD) na hora de Brasilia, pra bater com o jeito que o painel de
    metricas do ML conta "dias" (dia civil, nao janela corrida de 24h*N a partir de "agora"). */
 function diaBR(dataIso) {
@@ -235,7 +276,7 @@ function diaBR(dataIso) {
 function diffDiasCivis(diaA, diaB) {
   return Math.round((Date.parse(diaA + 'T00:00:00Z') - Date.parse(diaB + 'T00:00:00Z')) / 864e5);
 }
- 
+
 /* busca todos os pedidos de um intervalo, paginando. A API do /orders/search tem um teto de
    offset+limit = 1000 (documentado) - se o intervalo tiver mais pedidos que isso, os mais
    antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
@@ -271,7 +312,7 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
   }
   return pedidos;
 }
- 
+
 /* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
    (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
    paginada so pra loja inteira, nao e 1 chamada por item.
@@ -336,7 +377,7 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   console.log(`[vendas][top5] ${top5}`);
   return porItem;
 }
- 
+
 /* quantidade em transferencia entre depositos do Full, pro item que ja tem inventory_id
    (so anuncios com logistic_type "fulfillment" tem isso). Nao existe fonte confirmada pra
    "a caminho" (mercadoria enviada mas ainda nao recebida pelo Full) - fica de fora por ora. */
@@ -353,7 +394,7 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
     return null;
   }
 }
- 
+
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
@@ -462,4 +503,3 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
- 
