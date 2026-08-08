@@ -203,6 +203,82 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
   }
 }
  
+/* busca as perguntas sem resposta de todos os anuncios do vendedor de uma vez so (paginado),
+   e devolve quantas tem por item_id. Se o vendedor nao tiver nenhuma pergunta o ML pode
+   responder 404 - tratamos isso como "zero perguntas" em vez de erro. */
+async function buscarPerguntasSemResposta(accessToken, sellerId) {
+  const porItem = new Map();
+  let offset = 0;
+  const limit = 50;
+  while (true) {
+    const url = `https://api.mercadolibre.com/questions/search?seller_id=${sellerId}&status=UNANSWERED&api_version=4&limit=${limit}&offset=${offset}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (r.status === 404) break;
+    const j = await r.json();
+    if (!r.ok) throw new Error('Falha ao buscar perguntas: ' + JSON.stringify(j));
+    const questions = j.questions || [];
+    for (const q of questions) {
+      if (!q.item_id) continue;
+      porItem.set(q.item_id, (porItem.get(q.item_id) || 0) + 1);
+    }
+    offset += limit;
+    if (questions.length < limit || offset >= (j.total || 0)) break;
+  }
+  return porItem;
+}
+ 
+/* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
+   (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
+   paginada so pra loja inteira, nao e 1 chamada por item. Considera só pedidos pagos. */
+async function buscarVendasPorItem(accessToken, sellerId) {
+  const porItem = new Map();
+  const agora = Date.now();
+  const de = new Date(agora - 30 * 864e5).toISOString();
+  const ate = new Date(agora).toISOString();
+  let offset = 0;
+  const limit = 50;
+  while (true) {
+    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.status=paid&order.date_created.from=${encodeURIComponent(de)}&order.date_created.to=${encodeURIComponent(ate)}&offset=${offset}&limit=${limit}`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const j = await r.json();
+    if (!r.ok) throw new Error('Falha ao buscar pedidos: ' + JSON.stringify(j));
+    const pedidos = j.results || [];
+    for (const pedido of pedidos) {
+      const diasAtras = (agora - new Date(pedido.date_created).getTime()) / 864e5;
+      for (const oi of (pedido.order_items || [])) {
+        const itemId = oi.item && oi.item.id;
+        if (!itemId) continue;
+        const qtd = oi.quantity || 0;
+        if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
+        const acc = porItem.get(itemId);
+        if (diasAtras <= 30) acc.v30 += qtd;
+        if (diasAtras <= 15) acc.v15 += qtd;
+        if (diasAtras <= 7) acc.v7 += qtd;
+      }
+    }
+    offset += limit;
+    if (pedidos.length < limit || offset >= (j.paging && j.paging.total || 0)) break;
+  }
+  return porItem;
+}
+ 
+/* quantidade em transferencia entre depositos do Full, pro item que ja tem inventory_id
+   (so anuncios com logistic_type "fulfillment" tem isso). Nao existe fonte confirmada pra
+   "a caminho" (mercadoria enviada mas ainda nao recebida pelo Full) - fica de fora por ora. */
+async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
+  try {
+    const r = await fetch(`https://api.mercadolibre.com/inventories/${inventoryId}/stock/fulfillment?seller_id=${sellerId}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const detalhe = (j.not_available_detail || []).find(d => d.status === 'transfer');
+    return detalhe ? (detalhe.quantity || 0) : 0;
+  } catch (e) {
+    return null;
+  }
+}
+ 
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
@@ -217,21 +293,41 @@ const loja = req.query.loja || req.body?.loja;
     const accessToken = await tokenValido(loja);
     const conta = await pegarConta(loja);
     const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
+    let mapaPerguntas = new Map();
+    try {
+      mapaPerguntas = await buscarPerguntasSemResposta(accessToken, conta.ml_user_id);
+    } catch (e) {
+      console.error('Falha ao buscar perguntas (seguindo sem essa info):', e.message);
+    }
+    let mapaVendas = new Map();
+    try {
+      mapaVendas = await buscarVendasPorItem(accessToken, conta.ml_user_id);
+    } catch (e) {
+      console.error('Falha ao buscar vendas (seguindo sem essa info):', e.message);
+    }
     for (const it of itens) {
       let concorrencia = null;
       if (it.catalog_listing === true) {
         concorrencia = await buscarConcorrenciaCatalogo(accessToken, it.id);
       }
+      let transferenciaFull = null;
+      if (it.inventory_id) {
+        transferenciaFull = await buscarTransferenciaFull(accessToken, conta.ml_user_id, it.inventory_id);
+      }
+      const vendas = mapaVendas.get(it.id) || { v7: 0, v15: 0, v30: 0 };
       await pool.query(
-        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, atualizado_em)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, atualizado_em)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
          on conflict (loja, ml_item_id) do update set
            sku = excluded.sku, titulo = excluded.titulo,
            quantidade_disponivel = excluded.quantidade_disponivel,
            preco = excluded.preco, status = excluded.status,
            catalog_listing = excluded.catalog_listing,
            concorrencia_status = excluded.concorrencia_status,
-           concorrencia_preco = excluded.concorrencia_preco, atualizado_em = now()`,
+           concorrencia_preco = excluded.concorrencia_preco,
+           perguntas_sem_resposta = excluded.perguntas_sem_resposta,
+           vendas_7d = excluded.vendas_7d, vendas_15d = excluded.vendas_15d, vendas_30d = excluded.vendas_30d,
+           transferencia_full = excluded.transferencia_full, atualizado_em = now()`,
         [
           loja, it.id,
           extrairSku(it),
@@ -241,7 +337,10 @@ const loja = req.query.loja || req.body?.loja;
           it.status || '',
           it.catalog_listing === true,
           concorrencia ? concorrencia.status : null,
-          concorrencia ? concorrencia.precoConcorrente : null
+          concorrencia ? concorrencia.precoConcorrente : null,
+          mapaPerguntas.get(it.id) || 0,
+          vendas.v7, vendas.v15, vendas.v30,
+          transferenciaFull
         ]
       );
     }
@@ -270,7 +369,7 @@ app.get('/data', async (req, res) => {
   try {
     const conta = await pegarConta(loja);
     const produtos = await pool.query(
-      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
       [loja]
     );
     res.json({
@@ -287,3 +386,4 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
+ 
