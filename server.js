@@ -229,7 +229,13 @@ async function buscarPerguntasSemResposta(accessToken, sellerId) {
  
 /* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
    (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
-   paginada so pra loja inteira, nao e 1 chamada por item. Considera só pedidos pagos. */
+   paginada so pra loja inteira, nao e 1 chamada por item.
+   Antes filtrava por order.status=paid direto na API, mas isso ficou contando ~7-8% a menos
+   de unidades do que o painel de métricas do Mercado Livre mostra (provavelmente deixa de
+   fora pedidos dentro de pacotes/carrinho ou outros sub-status de pagamento confirmado que
+   não batem exatamente com "paid"). Agora busca tudo no período e só descarta o que está
+   claramente cancelado/inválido, contando o resto — mais parecido com o que um painel de
+   vendas normalmente soma. */
 async function buscarVendasPorItem(accessToken, sellerId) {
   const porItem = new Map();
   const agora = Date.now();
@@ -237,13 +243,15 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   const ate = new Date(agora).toISOString();
   let offset = 0;
   const limit = 50;
+  const statusExcluidos = new Set(['cancelled', 'invalid']);
   while (true) {
-    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.status=paid&order.date_created.from=${encodeURIComponent(de)}&order.date_created.to=${encodeURIComponent(ate)}&offset=${offset}&limit=${limit}`;
+    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.date_created.from=${encodeURIComponent(de)}&order.date_created.to=${encodeURIComponent(ate)}&offset=${offset}&limit=${limit}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const j = await r.json();
     if (!r.ok) throw new Error('Falha ao buscar pedidos: ' + JSON.stringify(j));
     const pedidos = j.results || [];
     for (const pedido of pedidos) {
+      if (statusExcluidos.has(pedido.status)) continue;
       const diasAtras = (agora - new Date(pedido.date_created).getTime()) / 864e5;
       for (const oi of (pedido.order_items || [])) {
         const itemId = oi.item && oi.item.id;
@@ -386,4 +394,3 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
- 
