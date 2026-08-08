@@ -105,19 +105,32 @@ app.post('/ml/webhook', (_req, res) => res.sendStatus(200));
 /* rota de diagnostico temporaria - devolve a lista CRUA de pedidos que a API do ML retorna
    pro item/periodo pedido, pra comparar pedido por pedido com o que a propria tela de
    "Vendas" do vendedor no ML mostra (em vez de so comparar contagens agregadas). Ex.:
-   /debug/pedidos?loja=TorvShop&itemId=MLB7174620602&dias=7 */
+   /debug/pedidos?loja=TorvShop&itemId=MLB7174620602&dias=7
+   Tambem aceita de/ate (ISO) direto: /debug/pedidos?loja=TorvShop&de=...&ate=...
+   IMPORTANTE: quando "dias" e' usado (sem de/ate explicito), a janela agora e' EXATAMENTE
+   a mesma que o /sync usa de verdade (dias civis fechados, terminando na meia-noite de hoje
+   fuso America/Sao_Paulo) - antes essa rota usava uma janela corrida "agora - N*24h" diferente
+   da que buscarVendasPorItem() calcula, o que fazia a auditoria comparar coisas diferentes
+   sem perceber. Agora as duas usam a mesma funcao inicioDoDiaBR(). */
 app.get('/debug/pedidos', async (req, res) => {
   try {
     const loja = req.query.loja;
     const itemId = req.query.itemId || null;
-    const dias = parseInt(req.query.dias || '7', 10);
+    let de, ate;
+    if (req.query.de && req.query.ate) {
+      de = new Date(req.query.de).toISOString();
+      ate = new Date(req.query.ate).toISOString();
+    } else {
+      const dias = parseInt(req.query.dias || '7', 10);
+      const fim = inicioDoDiaBR(Date.now());
+      de = new Date(fim - dias * 864e5).toISOString();
+      ate = new Date(fim).toISOString();
+    }
     if (!LOJAS_VALIDAS.includes(loja)) {
       return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     }
     const accessToken = await tokenValido(loja);
     const conta = await pegarConta(loja);
-    const de = new Date(Date.now() - dias * 864e5).toISOString();
-    const ate = new Date().toISOString();
     const log = { avisos: [] };
     const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, de, ate, log, 'order.date_closed');
     const filtrados = itemId
@@ -126,18 +139,82 @@ app.get('/debug/pedidos', async (req, res) => {
     const resumo = filtrados.map(p => ({
       id: p.id,
       status: p.status,
+      status_detail: p.status_detail || null,
       date_created: p.date_created,
       date_closed: p.date_closed,
+      date_last_updated: p.date_last_updated || null,
       pack_id: p.pack_id || null,
       tags: p.tags || [],
       itens: (p.order_items || []).map(oi => ({ item_id: oi.item && oi.item.id, qtd: oi.quantity, titulo: oi.item && oi.item.title }))
     })).sort((a, b) => (a.date_closed || '').localeCompare(b.date_closed || ''));
     res.json({
-      ok: true, loja, itemId, janela: { de, ate, dias },
+      ok: true, loja, itemId, janela: { de, ate },
       total_pedidos_no_periodo_todos_itens: pedidos.length,
       total_pedidos_filtrados: resumo.length,
+      ids: resumo.map(p => p.id),
       avisos: log.avisos,
       pedidos: resumo
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
+   auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.
+   Devolve o objeto completo (status, status_detail, tags, pack_id, date_last_updated, etc). Ex.:
+   /debug/pedido?loja=TorvShop&id=2000012345678901 */
+app.get('/debug/pedido', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const id = req.query.id;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    if (!id) return res.status(400).json({ ok: false, erro: 'Parametro "id" obrigatorio (order_id).' });
+    const accessToken = await tokenValido(loja);
+    const r = await fetch(`https://api.mercadolibre.com/orders/${id}`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const j = await r.json();
+    res.status(r.status).json({ ok: r.ok, http_status: r.status, pedido: j });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* rota de auditoria - roda o MESMO calculo que o /sync usa de verdade (reusa
+   processarVendas(), a mesma funcao) restrito a 1 item, e devolve TODOS os pedidos
+   encontrados pra esse item na janela de 30d, cada um marcado com contado:true/false
+   e o motivo da exclusao quando nao contado (em vez de simplesmente descartar). Isso
+   garante que o numero mostrado aqui e' EXATAMENTE o que entra no vendas_7d/15d/30d
+   gravado no banco - zero risco de a auditoria olhar pra uma janela diferente da real. Ex.:
+   /debug/vendas?loja=TorvShop&itemId=MLB7174620602 */
+app.get('/debug/vendas', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const itemId = req.query.itemId;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Parametro "itemId" obrigatorio.' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const fim = inicioDoDiaBR(Date.now());
+    const de = new Date(fim - 31 * 864e5).toISOString();
+    const ate = new Date(fim).toISOString();
+    const log = { avisos: [] };
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, de, ate, log, 'order.date_closed');
+    const { porItem, detalhe, janela } = processarVendas(pedidos, { itemIdFiltro: itemId });
+    const totais = porItem.get(itemId) || { v7: 0, v15: 0, v30: 0 };
+    const contados = detalhe.filter(d => d.contado);
+    const excluidos = detalhe.filter(d => !d.contado);
+    res.json({
+      ok: true, loja, itemId, janela,
+      vendas_calculadas: totais,
+      pedidos_contados_30d: contados.length,
+      unidades_contadas_30d: contados.reduce((s, d) => s + d.qtd, 0),
+      pedidos_excluidos: excluidos.length,
+      avisos: log.avisos,
+      pedidos: detalhe.sort((a, b) => (a.date_closed || '').localeCompare(b.date_closed || ''))
     });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
@@ -339,43 +416,119 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
       cruza 2 dias civis, so' faz sentido como janela corrida). O passo 3) tinha trocado pra
       dia civil achando que batia com o rotulo "9 jul a 8 ago" do 30d, mas isso tambem e'
       compativel com janela corrida (30*24h a partir de agora cai por volta do mesmo dia).
-      Comparacao direta confirmou: pedidos brutos da API na janela corrida de 7 dias = 110,
-      bem perto do "117 vendas" que a propria tela Vendas do ML mostra pro mesmo SKU/periodo
-      (~6% de diferenca, na faixa que a Metrify tambem tem). O MESMO pedidos, so' que rebucketado
-      por dia civil, cai pra 97 - e' o corte de dia civil que causava a maior parte do gap de 18%.
-      Voltando pra janela corrida (mantendo date_closed, paginacao segura, exclusao de
-      cancelled/invalid - tudo que ja foi validado nos passos anteriores). */
-async function buscarVendasPorItem(accessToken, sellerId) {
-  const porItem = new Map();
-  const agora = Date.now();
-  const de = new Date(agora - 31 * 864e5).toISOString();
-  const ate = new Date(agora).toISOString();
+      Trocou pra janela corrida (mantendo date_closed, paginacao segura, exclusao de
+      cancelled/invalid) - melhorou bastante (~6% de diferenca do que a tela Vendas mostrava
+      pro mesmo SKU/periodo), mas ainda sobrava um resto.
+   7) O resto que sobrou (passo 6) era o dia de HOJE entrando pela metade na janela corrida:
+      "hoje" ainda esta em andamento (nao terminou de acumular vendas), entao a fatia de hoje
+      que entra na janela tende a ficar abaixo da media do dia (o dia nao acabou), puxando o
+      total pra baixo em relacao ao que o proprio ML mostra quando o dia fecha. Teste direto:
+      pedindo pro usuario comparar manualmente "1 ago a 7 ago" (dias fechados, sem incluir
+      hoje=8 ago) na tela Vendas do ML deu 114 pedidos/127 unidades - bem mais perto do que a
+      janela corrida (108/120 no mesmo instante) e do numero de referencia da Metricas
+      (116/128). Confirmado tambem batendo os MESMOS pedidos brutos: filtrando por dia civil
+      fechado (meia-noite de hoje pra tras, America/Sao_Paulo) deu 110/123 vs 108/120 da janela
+      corrida - melhora real, nao coincidencia.
+      Troca final: janela de N dias civis FECHADOS terminando na meia-noite de hoje (exclui o
+      dia corrente inteiro, que ainda esta acumulando vendas). America/Sao_Paulo nao tem mais
+      horario de verao desde 2019 (fuso fixo -03:00), entao dá pra usar o offset fixo direto.
+   8) Revisao externa (outra IA) apontou 2 problemas reais no v12: (a) o /debug/pedidos usava
+      "agora - N*24h" quando chamado so' com "dias", DIFERENTE da janela de dias-fechados que
+      o /sync de fato usa - ou seja, a auditoria podia estar olhando pra um conjunto de pedidos
+      diferente do que realmente vira vendas_7d/15d/30d, sem a gente perceber. (b) o calculo
+      usava "msAtras <= N*864e5" (matematicamente equivalente a um intervalo fechado-aberto,
+      mas implicito) em vez de comparar contra os limites explicitos de cada janela - mais
+      dificil de auditar/confiar de bater o olho no codigo.
+      Corrigido: extraida a logica de contagem pra processarVendas(), reusada tanto pelo
+      /sync quanto pela nova rota /debug/vendas (mesma funcao = impossivel divergir de novo),
+      usando limites explicitos [inicioN, fim) por window. O /debug/pedidos tambem passou a
+      usar inicioDoDiaBR() como base quando chamado so' com "dias" (sem de/ate explicito),
+      pra sempre bater com a janela real do /sync por padrao. */
+function inicioDoDiaBR(instanteMs) {
+  const dia = diaBR(new Date(instanteMs).toISOString()); // "AAAA-MM-DD" no fuso de Brasilia
+  return Date.parse(dia + 'T00:00:00-03:00'); // meia-noite local, como epoch ms UTC
+}
+/* logica de contagem de vendas, unica fonte de verdade usada tanto pelo /sync (buscarVendasPorItem,
+   agregado pra loja inteira) quanto pela rota de auditoria /debug/vendas (1 item, com detalhe
+   pedido a pedido). Recebe a lista crua de pedidos (ja buscada) e devolve:
+   - porItem: Map item_id -> {v7,v15,v30} (unidades), so' dos pedidos elegiveis
+   - detalhe: lista pedido-a-pedido (so' preenchida quando itemIdFiltro e' passado) com
+     contado:true/false e motivo da exclusao quando nao contado - nada e' descartado
+     silenciosamente, tudo fica visivel pra auditoria.
+   Janelas sao dias civis FECHADOS (fuso America/Sao_Paulo), terminando na meia-noite de hoje -
+   ver historico acima (passos 6, 7 e 8) pro raciocinio completo. */
+function processarVendas(pedidos, { itemIdFiltro } = {}) {
+  const fim = inicioDoDiaBR(Date.now());
+  const inicio7 = fim - 7 * 864e5;
+  const inicio15 = fim - 15 * 864e5;
+  const inicio30 = fim - 30 * 864e5;
   const statusExcluidos = new Set(['cancelled', 'invalid']);
-  const log = { avisos: [] };
-  const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
-  let unidades30 = 0;
-  let pedidosContados = 0;
+  const porItem = new Map();
+  const detalhe = [];
   const porStatus = {};
   for (const pedido of pedidos) {
     porStatus[pedido.status] = (porStatus[pedido.status] || 0) + 1;
-    if (statusExcluidos.has(pedido.status)) continue;
-    if (!pedido.date_closed) continue; // nunca fechou/pagou - nao e venda
-    const horasAtras = (agora - new Date(pedido.date_closed).getTime()) / 36e5;
-    if (horasAtras < 0 || horasAtras > 30 * 24) continue; // fora da janela (relogio do pedido no futuro, etc.)
-    pedidosContados++;
+    let contado = true;
+    let motivo = null;
+    let closedMs = null;
+    if (statusExcluidos.has(pedido.status)) {
+      contado = false; motivo = `status=${pedido.status}`;
+    } else if (!pedido.date_closed) {
+      contado = false; motivo = 'sem date_closed (nunca fechou/pagou)';
+    } else {
+      closedMs = new Date(pedido.date_closed).getTime();
+      if (closedMs < inicio30 || closedMs >= fim) {
+        contado = false; motivo = 'date_closed fora da janela de 30d';
+      }
+    }
     for (const oi of (pedido.order_items || [])) {
       const itemId = oi.item && oi.item.id;
       if (!itemId) continue;
+      if (itemIdFiltro && itemId !== itemIdFiltro) continue;
       const qtd = oi.quantity || 0;
-      if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
-      const acc = porItem.get(itemId);
-      if (horasAtras <= 30 * 24) acc.v30 += qtd;
-      if (horasAtras <= 15 * 24) acc.v15 += qtd;
-      if (horasAtras <= 7 * 24) acc.v7 += qtd;
-      unidades30 += qtd;
+      if (contado) {
+        if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
+        const acc = porItem.get(itemId);
+        if (closedMs >= inicio30 && closedMs < fim) acc.v30 += qtd;
+        if (closedMs >= inicio15 && closedMs < fim) acc.v15 += qtd;
+        if (closedMs >= inicio7 && closedMs < fim) acc.v7 += qtd;
+      }
+      if (itemIdFiltro) {
+        detalhe.push({
+          id: pedido.id,
+          status: pedido.status,
+          status_detail: pedido.status_detail || null,
+          date_created: pedido.date_created,
+          date_closed: pedido.date_closed,
+          date_last_updated: pedido.date_last_updated || null,
+          pack_id: pedido.pack_id || null,
+          tags: pedido.tags || [],
+          item_id: itemId,
+          qtd,
+          contado,
+          motivo
+        });
+      }
     }
   }
-  console.log(`[vendas] pedidos buscados=${pedidos.length} contados=${pedidosContados} unidades(30d)=${unidades30} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
+  return {
+    porItem, detalhe, porStatus,
+    janela: {
+      fim: new Date(fim).toISOString(),
+      inicio7: new Date(inicio7).toISOString(),
+      inicio15: new Date(inicio15).toISOString(),
+      inicio30: new Date(inicio30).toISOString()
+    }
+  };
+}
+async function buscarVendasPorItem(accessToken, sellerId) {
+  const fim = inicioDoDiaBR(Date.now());
+  const de = new Date(fim - 31 * 864e5).toISOString();
+  const ate = new Date(fim).toISOString();
+  const log = { avisos: [] };
+  const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
+  const { porItem, porStatus } = processarVendas(pedidos);
+  console.log(`[vendas] pedidos buscados=${pedidos.length} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
   // diagnostico: mostra os 5 itens com mais unidades em 30d e o item_id exato usado - serve pra
   // confirmar se o item_id que a API de pedidos devolve bate com o item_id que a /sync grava no
   // banco (se nao bater, o SKU fica "mudo": o /sync grava vendas=0 pra ele mesmo tendo pedidos).
