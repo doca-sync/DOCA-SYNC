@@ -202,7 +202,7 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
     return null;
   }
 }
-
+ 
 /* busca as perguntas sem resposta de todos os anuncios do vendedor de uma vez so (paginado),
    e devolve quantas tem por item_id. Se o vendedor nao tiver nenhuma pergunta o ML pode
    responder 404 - tratamos isso como "zero perguntas" em vez de erro. */
@@ -226,7 +226,7 @@ async function buscarPerguntasSemResposta(accessToken, sellerId) {
   }
   return porItem;
 }
-
+ 
 /* dia calendario (AAAA-MM-DD) na hora de Brasilia, pra bater com o jeito que o painel de
    metricas do ML conta "dias" (dia civil, nao janela corrida de 24h*N a partir de "agora"). */
 function diaBR(dataIso) {
@@ -235,7 +235,7 @@ function diaBR(dataIso) {
 function diffDiasCivis(diaA, diaB) {
   return Math.round((Date.parse(diaA + 'T00:00:00Z') - Date.parse(diaB + 'T00:00:00Z')) / 864e5);
 }
-
+ 
 /* busca todos os pedidos de um intervalo, paginando. A API do /orders/search tem um teto de
    offset+limit = 1000 (documentado) - se o intervalo tiver mais pedidos que isso, os mais
    antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
@@ -258,6 +258,7 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
     offset += limit;
     if (pagina.length < limit || offset >= total) break;
     if (offset >= 950) {
+      // perto do teto de 1000 da API - divide o intervalo restante em duas metades e busca cada uma
       log.avisos.push(`intervalo ${deIso}..${ateIso} tem ${total} pedidos, perto do teto de 1000 - dividindo`);
       const meio = new Date((new Date(deIso).getTime() + new Date(ateIso).getTime()) / 2).toISOString();
       const [a, b] = await Promise.all([
@@ -270,7 +271,31 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
   }
   return pedidos;
 }
-
+ 
+/* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
+   (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
+   paginada so pra loja inteira, nao e 1 chamada por item.
+   Historico dessa funcao (pra nao repetir os mesmos erros):
+   1) Filtrava por order.status=paid direto na API - contava ~7-8% a menos de unidades do
+      que o painel de metricas do ML mostra.
+   2) Tirou o filtro de status (so exclui cancelled/invalid) - melhorou mas ainda ficou uns
+      9-13% abaixo do painel do ML.
+   3) Trocou janela corrida de 24h*N por dia civil (fuso America/Sao_Paulo) e blindou contra o
+      teto de 1000 pedidos da API - melhorou o 30d (foi pra ~5% de diferenca) mas o 7d/15d
+      pioraram (18%/22%) - padrao classico de bucketar pela data errada: janela curta é muito
+      mais sensivel a um pedido cair no dia errado do que uma janela de 30 dias.
+   4) Trocou pra bucketar por order.date_closed em vez de order.date_created - testado e
+      CONFIRMADO que nao mudou nada (numeros identicos antes/depois), ou seja, nessa loja
+      date_created e date_closed sao praticamente o mesmo dia (pagamento instantaneo, sem
+      atraso de boleto). Descartada como causa.
+   5) Comparação ao vivo com o painel real do vendedor (sc-metrics-publications-fe) confirmou
+      que o Doca fica abaixo ate da contagem de PEDIDOS (nao so unidades) do ML pro mesmo
+      anuncio - ou seja, nao e' diferenca de unidades vs pedidos, sao pedidos inteiros faltando.
+      Hipotese atual: o item_id que a API de pedidos devolve pode nao bater 100% com o item_id
+      que o /sync usa pra gravar (ex: anuncio recriado, variacao, etc). Adicionado log
+      [vendas][top5] e [sync-item] pra comparar os item_id lado a lado e confirmar/descartar.
+   Continua logando um resumo (pedidos/unidades/status) no console pra comparar com o painel do
+   ML caso ainda sobre diferenca. */
 async function buscarVendasPorItem(accessToken, sellerId) {
   const porItem = new Map();
   const hoje = diaBR(new Date().toISOString());
@@ -285,10 +310,10 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   for (const pedido of pedidos) {
     porStatus[pedido.status] = (porStatus[pedido.status] || 0) + 1;
     if (statusExcluidos.has(pedido.status)) continue;
-    if (!pedido.date_closed) continue;
+    if (!pedido.date_closed) continue; // nunca fechou/pagou - nao e venda
     const diaPedido = diaBR(pedido.date_closed);
     const diasAtras = diffDiasCivis(hoje, diaPedido);
-    if (diasAtras < 0 || diasAtras > 30) continue;
+    if (diasAtras < 0 || diasAtras > 30) continue; // fora da janela (relogio do pedido no futuro, etc.)
     pedidosContados++;
     for (const oi of (pedido.order_items || [])) {
       const itemId = oi.item && oi.item.id;
@@ -303,9 +328,18 @@ async function buscarVendasPorItem(accessToken, sellerId) {
     }
   }
   console.log(`[vendas] pedidos buscados=${pedidos.length} contados=${pedidosContados} unidades(30d)=${unidades30} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
+  // diagnostico: mostra os 5 itens com mais unidades em 30d e o item_id exato usado - serve pra
+  // confirmar se o item_id que a API de pedidos devolve bate com o item_id que a /sync grava no
+  // banco (se nao bater, o SKU fica "mudo": o /sync grava vendas=0 pra ele mesmo tendo pedidos).
+  const top5 = [...porItem.entries()].sort((a, b) => b[1].v30 - a[1].v30).slice(0, 5)
+    .map(([id, v]) => `${id}:v7=${v.v7}/v15=${v.v15}/v30=${v.v30}`).join(' | ');
+  console.log(`[vendas][top5] ${top5}`);
   return porItem;
 }
-
+ 
+/* quantidade em transferencia entre depositos do Full, pro item que ja tem inventory_id
+   (so anuncios com logistic_type "fulfillment" tem isso). Nao existe fonte confirmada pra
+   "a caminho" (mercadoria enviada mas ainda nao recebida pelo Full) - fica de fora por ora. */
 async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
   try {
     const r = await fetch(`https://api.mercadolibre.com/inventories/${inventoryId}/stock/fulfillment?seller_id=${sellerId}`, {
@@ -319,7 +353,7 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
     return null;
   }
 }
-
+ 
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
@@ -356,6 +390,7 @@ const loja = req.query.loja || req.body?.loja;
         transferenciaFull = await buscarTransferenciaFull(accessToken, conta.ml_user_id, it.inventory_id);
       }
       const vendas = mapaVendas.get(it.id) || { v7: 0, v15: 0, v30: 0 };
+      console.log(`[sync-item] id=${it.id} sku=${extrairSku(it)} titulo="${(it.title||'').slice(0,30)}" vendas=${JSON.stringify(vendas)}`);
       await pool.query(
         `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, atualizado_em)
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
@@ -427,3 +462,4 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
+ 
