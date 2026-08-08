@@ -227,46 +227,100 @@ async function buscarPerguntasSemResposta(accessToken, sellerId) {
   return porItem;
 }
  
-/* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
-   (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
-   paginada so pra loja inteira, nao e 1 chamada por item.
-   Antes filtrava por order.status=paid direto na API, mas isso ficou contando ~7-8% a menos
-   de unidades do que o painel de métricas do Mercado Livre mostra (provavelmente deixa de
-   fora pedidos dentro de pacotes/carrinho ou outros sub-status de pagamento confirmado que
-   não batem exatamente com "paid"). Agora busca tudo no período e só descarta o que está
-   claramente cancelado/inválido, contando o resto — mais parecido com o que um painel de
-   vendas normalmente soma. */
-async function buscarVendasPorItem(accessToken, sellerId) {
-  const porItem = new Map();
-  const agora = Date.now();
-  const de = new Date(agora - 30 * 864e5).toISOString();
-  const ate = new Date(agora).toISOString();
-  let offset = 0;
+/* dia calendario (AAAA-MM-DD) na hora de Brasilia, pra bater com o jeito que o painel de
+   metricas do ML conta "dias" (dia civil, nao janela corrida de 24h*N a partir de "agora"). */
+function diaBR(dataIso) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(dataIso));
+}
+function diffDiasCivis(diaA, diaB) {
+  return Math.round((Date.parse(diaA + 'T00:00:00Z') - Date.parse(diaB + 'T00:00:00Z')) / 864e5);
+}
+ 
+/* busca todos os pedidos de um intervalo, paginando. A API do /orders/search tem um teto de
+   offset+limit = 1000 (documentado) - se o intervalo tiver mais pedidos que isso, os mais
+   antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
+   se o total bater perto do teto o intervalo e' dividido em dois e cada metade e' buscada
+   separado (recursivo) - e a soma das duas metades nunca esbarra no teto de novo. */
+async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, log) {
   const limit = 50;
-  const statusExcluidos = new Set(['cancelled', 'invalid']);
+  let offset = 0;
+  let total = null;
+  const pedidos = [];
   while (true) {
-    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.date_created.from=${encodeURIComponent(de)}&order.date_created.to=${encodeURIComponent(ate)}&offset=${offset}&limit=${limit}`;
+    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.date_created.from=${encodeURIComponent(deIso)}&order.date_created.to=${encodeURIComponent(ateIso)}&offset=${offset}&limit=${limit}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const j = await r.json();
     if (!r.ok) throw new Error('Falha ao buscar pedidos: ' + JSON.stringify(j));
-    const pedidos = j.results || [];
-    for (const pedido of pedidos) {
-      if (statusExcluidos.has(pedido.status)) continue;
-      const diasAtras = (agora - new Date(pedido.date_created).getTime()) / 864e5;
-      for (const oi of (pedido.order_items || [])) {
-        const itemId = oi.item && oi.item.id;
-        if (!itemId) continue;
-        const qtd = oi.quantity || 0;
-        if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
-        const acc = porItem.get(itemId);
-        if (diasAtras <= 30) acc.v30 += qtd;
-        if (diasAtras <= 15) acc.v15 += qtd;
-        if (diasAtras <= 7) acc.v7 += qtd;
-      }
-    }
+    total = (j.paging && j.paging.total) || 0;
+    const pagina = j.results || [];
+    pedidos.push(...pagina);
     offset += limit;
-    if (pedidos.length < limit || offset >= (j.paging && j.paging.total || 0)) break;
+    if (pagina.length < limit || offset >= total) break;
+    if (offset >= 950) {
+      // perto do teto de 1000 da API - divide o intervalo restante em duas metades e busca cada uma
+      log.avisos.push(`intervalo ${deIso}..${ateIso} tem ${total} pedidos, perto do teto de 1000 - dividindo`);
+      const meio = new Date((new Date(deIso).getTime() + new Date(ateIso).getTime()) / 2).toISOString();
+      const [a, b] = await Promise.all([
+        buscarPedidosNoIntervalo(accessToken, sellerId, deIso, meio, log),
+        buscarPedidosNoIntervalo(accessToken, sellerId, meio, ateIso, log)
+      ]);
+      const vistos = new Set(pedidos.map(p => p.id));
+      return pedidos.concat(a.filter(p => !vistos.has(p.id)), b.filter(p => !vistos.has(p.id) && !a.some(x => x.id === p.id)));
+    }
   }
+  return pedidos;
+}
+ 
+/* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
+   (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
+   paginada so pra loja inteira, nao e 1 chamada por item.
+   Historico dessa funcao (pra nao repetir os mesmos erros):
+   1) Filtrava por order.status=paid direto na API - contava ~7-8% a menos de unidades do
+      que o painel de metricas do ML mostra.
+   2) Tirou o filtro de status (so exclui cancelled/invalid) - melhorou mas ainda ficou uns
+      9-13% abaixo do painel do ML.
+   Duas causas ainda nao descartadas e que essa versao tenta corrigir/instrumentar:
+   a) Janela corrida de 24h*N a partir do instante exato de "agora", em vez de dias civis
+      (fuso America/Sao_Paulo) como o painel do ML provavelmente usa - um pedido as 23h de um
+      dia podia cair numa janela diferente da que o painel considera. Trocado pra contagem por
+      dia civil (diaBR/diffDiasCivis).
+   b) A API de /orders/search tem teto de offset+limit=1000 - se a loja vender bastante (varios
+      SKUs, nao so o que esta sendo comparado), o periodo de 30 dias podia estourar esse teto e
+      perder pedidos mais antigos sem erro nenhum. Trocado pra busca recursiva que divide o
+      intervalo quando chega perto do teto (buscarPedidosNoIntervalo).
+   Tambem loga um resumo (pedidos/unidades/status) no console pra comparar com o painel do ML
+   caso ainda sobre alguma diferenca depois dessas duas correcoes. */
+async function buscarVendasPorItem(accessToken, sellerId) {
+  const porItem = new Map();
+  const hoje = diaBR(new Date().toISOString());
+  const de = new Date(Date.now() - 31 * 864e5).toISOString();
+  const ate = new Date().toISOString();
+  const statusExcluidos = new Set(['cancelled', 'invalid']);
+  const log = { avisos: [] };
+  const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log);
+  let unidades30 = 0;
+  let pedidosContados = 0;
+  const porStatus = {};
+  for (const pedido of pedidos) {
+    porStatus[pedido.status] = (porStatus[pedido.status] || 0) + 1;
+    if (statusExcluidos.has(pedido.status)) continue;
+    const diaPedido = diaBR(pedido.date_created);
+    const diasAtras = diffDiasCivis(hoje, diaPedido);
+    if (diasAtras < 0 || diasAtras > 30) continue; // fora da janela (relogio do pedido no futuro, etc.)
+    pedidosContados++;
+    for (const oi of (pedido.order_items || [])) {
+      const itemId = oi.item && oi.item.id;
+      if (!itemId) continue;
+      const qtd = oi.quantity || 0;
+      if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
+      const acc = porItem.get(itemId);
+      if (diasAtras <= 29) acc.v30 += qtd;
+      if (diasAtras <= 14) acc.v15 += qtd;
+      if (diasAtras <= 6) acc.v7 += qtd;
+      unidades30 += qtd;
+    }
+  }
+  console.log(`[vendas] pedidos buscados=${pedidos.length} contados=${pedidosContados} unidades(30d)=${unidades30} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
   return porItem;
 }
  
@@ -394,3 +448,4 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
+ 
