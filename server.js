@@ -332,16 +332,24 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
    5) Comparação ao vivo com o painel real do vendedor (sc-metrics-publications-fe) confirmou
       que o Doca fica abaixo ate da contagem de PEDIDOS (nao so unidades) do ML pro mesmo
       anuncio - ou seja, nao e' diferenca de unidades vs pedidos, sao pedidos inteiros faltando.
-      Hipotese atual: o item_id que a API de pedidos devolve pode nao bater 100% com o item_id
-      que o /sync usa pra gravar (ex: anuncio recriado, variacao, etc). Adicionado log
-      [vendas][top5] e [sync-item] pra comparar os item_id lado a lado e confirmar/descartar.
-   Continua logando um resumo (pedidos/unidades/status) no console pra comparar com o painel do
-   ML caso ainda sobre diferenca. */
+   6) Investigado direto na tela "Vendas" do vendedor (que filtra por order.date_closed - mesmo
+      campo que a gente ja usava, confirmado pela URL startPeriod=WITH_DATE_CLOSED_7D_OLD): o
+      "Ultimos 7 dias" da ML NAO e' um corte por dia civil (00h-23h59) - e' uma JANELA CORRIDA
+      de 7*24h a partir de agora (prova: "Ultimas 24 horas" mostra "7 ago a 8 ago", ou seja
+      cruza 2 dias civis, so' faz sentido como janela corrida). O passo 3) tinha trocado pra
+      dia civil achando que batia com o rotulo "9 jul a 8 ago" do 30d, mas isso tambem e'
+      compativel com janela corrida (30*24h a partir de agora cai por volta do mesmo dia).
+      Comparacao direta confirmou: pedidos brutos da API na janela corrida de 7 dias = 110,
+      bem perto do "117 vendas" que a propria tela Vendas do ML mostra pro mesmo SKU/periodo
+      (~6% de diferenca, na faixa que a Metrify tambem tem). O MESMO pedidos, so' que rebucketado
+      por dia civil, cai pra 97 - e' o corte de dia civil que causava a maior parte do gap de 18%.
+      Voltando pra janela corrida (mantendo date_closed, paginacao segura, exclusao de
+      cancelled/invalid - tudo que ja foi validado nos passos anteriores). */
 async function buscarVendasPorItem(accessToken, sellerId) {
   const porItem = new Map();
-  const hoje = diaBR(new Date().toISOString());
-  const de = new Date(Date.now() - 31 * 864e5).toISOString();
-  const ate = new Date().toISOString();
+  const agora = Date.now();
+  const de = new Date(agora - 31 * 864e5).toISOString();
+  const ate = new Date(agora).toISOString();
   const statusExcluidos = new Set(['cancelled', 'invalid']);
   const log = { avisos: [] };
   const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
@@ -352,9 +360,8 @@ async function buscarVendasPorItem(accessToken, sellerId) {
     porStatus[pedido.status] = (porStatus[pedido.status] || 0) + 1;
     if (statusExcluidos.has(pedido.status)) continue;
     if (!pedido.date_closed) continue; // nunca fechou/pagou - nao e venda
-    const diaPedido = diaBR(pedido.date_closed);
-    const diasAtras = diffDiasCivis(hoje, diaPedido);
-    if (diasAtras < 0 || diasAtras > 30) continue; // fora da janela (relogio do pedido no futuro, etc.)
+    const horasAtras = (agora - new Date(pedido.date_closed).getTime()) / 36e5;
+    if (horasAtras < 0 || horasAtras > 30 * 24) continue; // fora da janela (relogio do pedido no futuro, etc.)
     pedidosContados++;
     for (const oi of (pedido.order_items || [])) {
       const itemId = oi.item && oi.item.id;
@@ -362,9 +369,9 @@ async function buscarVendasPorItem(accessToken, sellerId) {
       const qtd = oi.quantity || 0;
       if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
       const acc = porItem.get(itemId);
-      if (diasAtras <= 29) acc.v30 += qtd;
-      if (diasAtras <= 14) acc.v15 += qtd;
-      if (diasAtras <= 6) acc.v7 += qtd;
+      if (horasAtras <= 30 * 24) acc.v30 += qtd;
+      if (horasAtras <= 15 * 24) acc.v15 += qtd;
+      if (horasAtras <= 7 * 24) acc.v7 += qtd;
       unidades30 += qtd;
     }
   }
