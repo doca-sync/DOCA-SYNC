@@ -241,13 +241,14 @@ function diffDiasCivis(diaA, diaB) {
    antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
    se o total bater perto do teto o intervalo e' dividido em dois e cada metade e' buscada
    separado (recursivo) - e a soma das duas metades nunca esbarra no teto de novo. */
-async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, log) {
+async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, log, campoData) {
+  campoData = campoData || 'order.date_created';
   const limit = 50;
   let offset = 0;
   let total = null;
   const pedidos = [];
   while (true) {
-    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&order.date_created.from=${encodeURIComponent(deIso)}&order.date_created.to=${encodeURIComponent(ateIso)}&offset=${offset}&limit=${limit}`;
+    const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&${campoData}.from=${encodeURIComponent(deIso)}&${campoData}.to=${encodeURIComponent(ateIso)}&offset=${offset}&limit=${limit}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const j = await r.json();
     if (!r.ok) throw new Error('Falha ao buscar pedidos: ' + JSON.stringify(j));
@@ -261,8 +262,8 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
       log.avisos.push(`intervalo ${deIso}..${ateIso} tem ${total} pedidos, perto do teto de 1000 - dividindo`);
       const meio = new Date((new Date(deIso).getTime() + new Date(ateIso).getTime()) / 2).toISOString();
       const [a, b] = await Promise.all([
-        buscarPedidosNoIntervalo(accessToken, sellerId, deIso, meio, log),
-        buscarPedidosNoIntervalo(accessToken, sellerId, meio, ateIso, log)
+        buscarPedidosNoIntervalo(accessToken, sellerId, deIso, meio, log, campoData),
+        buscarPedidosNoIntervalo(accessToken, sellerId, meio, ateIso, log, campoData)
       ]);
       const vistos = new Set(pedidos.map(p => p.id));
       return pedidos.concat(a.filter(p => !vistos.has(p.id)), b.filter(p => !vistos.has(p.id) && !a.some(x => x.id === p.id)));
@@ -279,17 +280,20 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
       que o painel de metricas do ML mostra.
    2) Tirou o filtro de status (so exclui cancelled/invalid) - melhorou mas ainda ficou uns
       9-13% abaixo do painel do ML.
-   Duas causas ainda nao descartadas e que essa versao tenta corrigir/instrumentar:
-   a) Janela corrida de 24h*N a partir do instante exato de "agora", em vez de dias civis
-      (fuso America/Sao_Paulo) como o painel do ML provavelmente usa - um pedido as 23h de um
-      dia podia cair numa janela diferente da que o painel considera. Trocado pra contagem por
-      dia civil (diaBR/diffDiasCivis).
-   b) A API de /orders/search tem teto de offset+limit=1000 - se a loja vender bastante (varios
-      SKUs, nao so o que esta sendo comparado), o periodo de 30 dias podia estourar esse teto e
-      perder pedidos mais antigos sem erro nenhum. Trocado pra busca recursiva que divide o
-      intervalo quando chega perto do teto (buscarPedidosNoIntervalo).
-   Tambem loga um resumo (pedidos/unidades/status) no console pra comparar com o painel do ML
-   caso ainda sobre alguma diferenca depois dessas duas correcoes. */
+   3) Trocou janela corrida de 24h*N por dia civil (fuso America/Sao_Paulo) e blindou contra o
+      teto de 1000 pedidos da API - melhorou o 30d (foi pra ~5% de diferenca) mas o 7d/15d
+      pioraram (18%/22%) - padrao classico de bucketar pela data errada: janela curta é muito
+      mais sensivel a um pedido cair no dia errado do que uma janela de 30 dias.
+   4) Essa versao bucketa por order.date_closed (data que o pagamento confirma e a ML "fecha"
+      o pedido - é quando a venda vira real, segundo a doc oficial) em vez de order.date_created
+      (data que o pedido é criado, que pode ser dias antes se o comprador pagar por boleto/pix
+      atrasado). O painel de metricas do ML provavelmente conta a venda na data que ela foi
+      confirmada, nao na data que o carrinho foi criado - isso bate com o padrao observado
+      (janela curta sofre mais: um pedido criado ha 9 dias mas pago ha 2 entra no "7d" do ML e
+      nao entrava no nosso "7d" antes). Pedidos sem date_closed (nunca pagos) naturalmente ficam
+      de fora, o que faz sentido - nao viraram venda.
+   Continua logando um resumo (pedidos/unidades/status) no console pra comparar com o painel do
+   ML caso ainda sobre diferenca. */
 async function buscarVendasPorItem(accessToken, sellerId) {
   const porItem = new Map();
   const hoje = diaBR(new Date().toISOString());
@@ -297,14 +301,15 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   const ate = new Date().toISOString();
   const statusExcluidos = new Set(['cancelled', 'invalid']);
   const log = { avisos: [] };
-  const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log);
+  const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
   let unidades30 = 0;
   let pedidosContados = 0;
   const porStatus = {};
   for (const pedido of pedidos) {
     porStatus[pedido.status] = (porStatus[pedido.status] || 0) + 1;
     if (statusExcluidos.has(pedido.status)) continue;
-    const diaPedido = diaBR(pedido.date_created);
+    if (!pedido.date_closed) continue; // nunca fechou/pagou - nao e venda
+    const diaPedido = diaBR(pedido.date_closed);
     const diasAtras = diffDiasCivis(hoje, diaPedido);
     if (diasAtras < 0 || diasAtras > 30) continue; // fora da janela (relogio do pedido no futuro, etc.)
     pedidosContados++;
