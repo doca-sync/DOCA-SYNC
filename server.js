@@ -17,6 +17,16 @@
  *
  * Variaveis de ambiente necessarias (ver .env.example):
  *   DATABASE_URL, ML_CLIENT_ID, ML_CLIENT_SECRET, ML_REDIRECT_URI, ALLOWED_ORIGIN
+ *
+ * Multi-loja (v15): cada loja pode ter seu PROPRIO aplicativo do Mercado Livre (Client ID/
+ * Secret diferentes), todos usando o MESMO Redirect URI (ML_REDIRECT_URI), ja que e' o mesmo
+ * backend/rota /oauth/callback pra todo mundo. As credenciais globais ML_CLIENT_ID/
+ * ML_CLIENT_SECRET continuam servindo de "padrao" (hoje sao as da TorvShop) - nao precisou
+ * mexer em nada pra ela continuar funcionando. Pra cada loja NOVA com aplicativo proprio,
+ * basta criar duas variaveis de ambiente extras no Render:
+ *   ML_CLIENT_ID_<LOJA>  e  ML_CLIENT_SECRET_<LOJA>
+ * onde <LOJA> e' o nome da loja em maiusculo, com espacos/acentos trocados por "_"
+ * (ver normalizarChaveLoja). Ex.: "Dor Block" -> ML_CLIENT_ID_DOR_BLOCK.
  */
 require('dotenv').config();
 const express = require('express');
@@ -46,6 +56,23 @@ app.use(cors({
   methods: ['GET', 'POST']
 }));
 const LOJAS_VALIDAS = ['TorvStore', 'Dor Block', 'Orbix Brasil', 'TorvShop'];
+/* "Dor Block" -> "DOR_BLOCK", "Orbix Brasil" -> "ORBIX_BRASIL" etc. — usado pra montar o nome
+   das variaveis de ambiente especificas de cada loja. */
+function normalizarChaveLoja(loja) {
+  return String(loja || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // tira acento
+    .toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+/* credenciais do aplicativo do Mercado Livre pra uma loja: se existir ML_CLIENT_ID_<LOJA> /
+   ML_CLIENT_SECRET_<LOJA> no ambiente, usa essas (aplicativo proprio da loja); senao cai pro
+   ML_CLIENT_ID/ML_CLIENT_SECRET globais (hoje sao os da TorvShop, primeira loja configurada -
+   continua funcionando sem precisar duplicar variavel de ambiente pra ela). */
+function credenciaisDaLoja(loja) {
+  const chave = normalizarChaveLoja(loja);
+  const clientId = process.env[`ML_CLIENT_ID_${chave}`] || ML_CLIENT_ID;
+  const clientSecret = process.env[`ML_CLIENT_SECRET_${chave}`] || ML_CLIENT_SECRET;
+  return { clientId, clientSecret };
+}
 const loginsPendentes = new Map();
 function limparLoginsAntigos() {
   const limite = Date.now() - 10 * 60 * 1000;
@@ -85,13 +112,14 @@ async function tokenValido(loja) {
   if (new Date(conta.expires_at).getTime() > Date.now()) {
     return conta.access_token;
   }
+  const { clientId, clientSecret } = credenciaisDaLoja(loja);
   const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
-      client_id: ML_CLIENT_ID,
-      client_secret: ML_CLIENT_SECRET,
+      client_id: clientId,
+      client_secret: clientSecret,
       refresh_token: conta.refresh_token
     })
   });
@@ -232,9 +260,10 @@ app.get('/oauth/login', (req, res) => {
   const state = base64url(crypto.randomBytes(24));
   const { codeVerifier, codeChallenge } = gerarPkce();
   loginsPendentes.set(state, { loja, codeVerifier, criadoEm: Date.now() });
+  const { clientId } = credenciaisDaLoja(loja);
   const url = new URL(ML_AUTH_DOMAIN + '/authorization');
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('client_id', ML_CLIENT_ID);
+  url.searchParams.set('client_id', clientId);
   url.searchParams.set('redirect_uri', ML_REDIRECT_URI);
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', codeChallenge);
@@ -248,13 +277,14 @@ app.get('/oauth/callback', async (req, res) => {
     const pendente = loginsPendentes.get(state);
     if (!pendente) return res.status(400).send('Sessao de login expirada ou invalida. Comece de novo pelo /oauth/login.');
     loginsPendentes.delete(state);
+    const { clientId, clientSecret } = credenciaisDaLoja(pendente.loja);
     const resp = await fetch('https://api.mercadolibre.com/oauth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: new URLSearchParams({
         grant_type: 'authorization_code',
-        client_id: ML_CLIENT_ID,
-        client_secret: ML_CLIENT_SECRET,
+        client_id: clientId,
+        client_secret: clientSecret,
         code,
         redirect_uri: ML_REDIRECT_URI,
         code_verifier: pendente.codeVerifier
@@ -320,7 +350,6 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
     return null;
   }
 }
-
 /* busca as perguntas sem resposta de todos os anuncios do vendedor de uma vez so (paginado),
    e devolve quantas tem por item_id. Se o vendedor nao tiver nenhuma pergunta o ML pode
    responder 404 - tratamos isso como "zero perguntas" em vez de erro. */
@@ -344,7 +373,6 @@ async function buscarPerguntasSemResposta(accessToken, sellerId) {
   }
   return porItem;
 }
-
 /* dia calendario (AAAA-MM-DD) na hora de Brasilia, pra bater com o jeito que o painel de
    metricas do ML conta "dias" (dia civil, nao janela corrida de 24h*N a partir de "agora"). */
 function diaBR(dataIso) {
@@ -353,7 +381,6 @@ function diaBR(dataIso) {
 function diffDiasCivis(diaA, diaB) {
   return Math.round((Date.parse(diaA + 'T00:00:00Z') - Date.parse(diaB + 'T00:00:00Z')) / 864e5);
 }
-
 /* busca todos os pedidos de um intervalo, paginando. A API do /orders/search tem um teto de
    offset+limit = 1000 (documentado) - se o intervalo tiver mais pedidos que isso, os mais
    antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
@@ -389,7 +416,6 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
   }
   return pedidos;
 }
-
 /* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
    (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
    paginada so pra loja inteira, nao e 1 chamada por item.
@@ -537,7 +563,6 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   console.log(`[vendas][top5] ${top5}`);
   return porItem;
 }
-
 /* quantidade em transferencia entre depositos do Full, pro item que ja tem inventory_id
    (so anuncios com logistic_type "fulfillment" tem isso). Nao existe fonte confirmada pra
    "a caminho" (mercadoria enviada mas ainda nao recebida pelo Full) - fica de fora por ora. */
@@ -554,7 +579,6 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
     return null;
   }
 }
-
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
@@ -663,3 +687,4 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
+ 
