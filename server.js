@@ -768,10 +768,47 @@ app.get('/estado', exigirLogin, async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* backup automatico (equivalente aos "backups" da pasta local): antes de CADA gravacao,
+   guarda o estado ANTERIOR (o que estava valendo ate agora) numa tabela de historico -
+   nunca sobrescreve sem antes salvar uma copia do que tinha. Guarda dois tipos:
+     'rotativo' -> uma copia a cada gravacao, mantendo so as ultimas NUM_ROTATIVOS
+     'diario'   -> uma copia por dia (a primeira gravacao de cada dia), guardada por mais tempo
+   Isso reproduz o que a pasta local fazia com PASTA_BACKUP (versoes rotativas + 1/dia). */
+const NUM_ROTATIVOS = 30;
+const DIAS_GUARDAR_DIARIO = 180;
+async function fazerBackupAntesDeGravar(dadosAntigos, atualizadoEmAntigo) {
+  if (!dadosAntigos) return; // nao tem nada ainda pra guardar copia
+  await pool.query(
+    `insert into doca_estado_hist (tipo, dados, criado_em) values ('rotativo', $1, coalesce($2, now()))`,
+    [JSON.stringify(dadosAntigos), atualizadoEmAntigo || null]
+  );
+  const jaTemDiarioHoje = await pool.query(
+    `select 1 from doca_estado_hist where tipo = 'diario' and criado_em::date = now()::date limit 1`
+  );
+  if (jaTemDiarioHoje.rowCount === 0) {
+    await pool.query(
+      `insert into doca_estado_hist (tipo, dados, criado_em) values ('diario', $1, coalesce($2, now()))`,
+      [JSON.stringify(dadosAntigos), atualizadoEmAntigo || null]
+    );
+  }
+  await pool.query(
+    `delete from doca_estado_hist where tipo = 'rotativo' and id not in (
+       select id from doca_estado_hist where tipo = 'rotativo' order by criado_em desc limit $1
+     )`,
+    [NUM_ROTATIVOS]
+  );
+  await pool.query(
+    `delete from doca_estado_hist where tipo = 'diario' and criado_em < now() - interval '${DIAS_GUARDAR_DIARIO} days'`
+  );
+}
 app.post('/estado', exigirLogin, async (req, res) => {
   try {
     const dados = req.body && req.body.dados;
     if (!dados || typeof dados !== 'object') return res.status(400).json({ ok: false, erro: 'Corpo precisa ter { dados: {...} }.' });
+    const anterior = await pegarEstadoNuvem();
+    if (anterior && anterior.dados) {
+      await fazerBackupAntesDeGravar(anterior.dados, anterior.atualizado_em);
+    }
     await pool.query(
       `insert into doca_estado (id, dados, atualizado_em) values (1, $1, now())
        on conflict (id) do update set dados = excluded.dados, atualizado_em = excluded.atualizado_em`,
@@ -779,6 +816,26 @@ app.post('/estado', exigirLogin, async (req, res) => {
     );
     const linha = await pegarEstadoNuvem();
     res.json({ ok: true, atualizadoEm: linha.atualizado_em });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.get('/estado/backups', exigirLogin, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `select id, tipo, criado_em, jsonb_array_length(coalesce(dados->'produtos','[]'::jsonb)) as produtos
+       from doca_estado_hist order by criado_em desc limit 80`
+    );
+    res.json({ ok: true, backups: r.rows.map(x => ({ id: x.id, tipo: x.tipo, criadoEm: x.criado_em, produtos: x.produtos })) });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.get('/estado/backups/:id', exigirLogin, async (req, res) => {
+  try {
+    const r = await pool.query('select dados, criado_em from doca_estado_hist where id = $1', [req.params.id]);
+    if (r.rowCount === 0) return res.status(404).json({ ok: false, erro: 'Backup nao encontrado.' });
+    res.json({ ok: true, dados: r.rows[0].dados, criadoEm: r.rows[0].criado_em });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
