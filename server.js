@@ -248,6 +248,58 @@ app.get('/debug/vendas', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* ---- Mercado Pago: saldo / reconciliacao financeira (v16) ----
+   Diferente do Mercado Livre, aqui NAO precisa de OAuth com redirect/callback: cada loja usa
+   direto o Access Token de PRODUCAO da propria conta Mercado Pago (gerado em "Credenciais de
+   producao", dentro do aplicativo criado no painel de desenvolvedores do MP) - e' um segredo
+   estatico tipo chave de API, nao um token que expira e precisa refresh feito pelo backend.
+   Guardado como variavel de ambiente MP_ACCESS_TOKEN_<LOJA> (mesma normalizacao de nome que
+   normalizarChaveLoja ja usa pro Mercado Livre - ver credenciaisDaLoja). */
+function tokenMpDaLoja(loja) {
+  const chave = normalizarChaveLoja(loja);
+  return process.env[`MP_ACCESS_TOKEN_${chave}`] || process.env.MP_ACCESS_TOKEN || null;
+}
+/* rota de diagnostico - a documentacao oficial do Mercado Pago nao deixa 100% claro qual
+   endpoint devolve o saldo (disponivel / a liberar) numa consulta direta e simples; ela so
+   documenta com detalhe o relatorio de "Liberacoes", que e assincrono (voce pede, ele gera um
+   CSV, avisa por webhook). Em vez de codar em cima de um chute, essa rota testa de uma vez os
+   candidatos mais provaveis de endpoint de saldo/conta e devolve a resposta CRUA de cada um -
+   decide com dado real qual usar (e quais campos ele tem) antes de ligar isso no /financeiro
+   de verdade. Ex.: /debug/mp?loja=TorvShop */
+app.get('/debug/mp', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    const token = tokenMpDaLoja(loja);
+    if (!token) {
+      return res.status(400).json({
+        ok: false,
+        erro: `Faltou a variavel de ambiente MP_ACCESS_TOKEN_${normalizarChaveLoja(loja)} (ou MP_ACCESS_TOKEN) no Render.`
+      });
+    }
+    const candidatos = [
+      { nome: 'account_balance_v1', url: 'https://api.mercadopago.com/v1/account/balance' },
+      { nome: 'account_sem_v1', url: 'https://api.mercadopago.com/account/balance' },
+      { nome: 'users_me', url: 'https://api.mercadopago.com/users/me' }
+    ];
+    const resultados = [];
+    for (const c of candidatos) {
+      try {
+        const r = await fetch(c.url, { headers: { Authorization: `Bearer ${token}` } });
+        let corpo;
+        try { corpo = await r.json(); } catch (e) { corpo = { erro_ao_ler_json: e.message }; }
+        resultados.push({ nome: c.nome, url: c.url, http_status: r.status, corpo });
+      } catch (e) {
+        resultados.push({ nome: c.nome, url: c.url, erro: e.message });
+      }
+    }
+    res.json({ ok: true, loja, resultados });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
 });
