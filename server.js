@@ -569,39 +569,51 @@ async function upsertFinanceiroMp(loja, patch) {
 /* termina o relatorio de Liberacoes pendente (se estiver pronto) ou pede um novo - so' pede
    7 dias porque a gente so' quer o PONTO mais recente do saldo, nao o historico. */
 async function passoSaldoMp(loja, row) {
-  /* se o relatorio pendente foi pedido ha muito tempo e nunca terminou (pode acontecer do lado
-     do Mercado Pago, sem aviso nenhum), fica preso esperando pra sempre - o nosso teste real
-     demorou uns 35min pra ficar pronto, entao 45min de folga e' um limite seguro pra desistir
-     e comecar de novo em vez de travar o campo indefinidamente. */
-  const LIMITE_ESPERA_MS = 45 * 60 * 1000;
-  const pedidoExpirou = !!(row && row.saldo_pedido_em && (Date.now() - new Date(row.saldo_pedido_em).getTime() > LIMITE_ESPERA_MS));
-  if (pedidoExpirou) console.warn(`[financeiro-mp] saldo: relatorio ${row.saldo_report_id} da loja ${loja} pedido em ${row.saldo_pedido_em} expirou sem terminar - pedindo um novo.`);
-  if (row && row.saldo_report_id && !pedidoExpirou) {
+  /* v23: descoberto (com dado real) que o "id" devolvido pelo POST /release_report NAO e' o
+     mesmo "id" que aparece depois em GET /release_report/list (ex.: POST devolveu 888109832,
+     mas na listagem so' apareciam ids tipo 64025074) - sao espacos de numeracao diferentes
+     dentro do Mercado Pago. Por causa disso o codigo anterior (que tentava casar os dois ids)
+     nunca encontrava o relatorio pronto, mesmo com ele 100% processado e baixavel havia horas.
+     Troca de estrategia: em vez de perseguir 1 id especifico, usa sempre o relatorio PRONTO
+     mais recente que a conta tiver (a listagem e' sempre so' dos relatorios dessa loja/token).
+     Isso funciona porque o saldo e' um razao sequencial UNICO da conta inteira - qualquer
+     relatorio processado e recente da o saldo atual correto, nao importa qual pedido exato
+     o gerou. So' aceita relatorio com ate 2h de idade (senao fica mostrando saldo velho pra
+     sempre se por algum motivo nenhum relatorio novo terminar de processar). */
+  const JANELA_FRESCOR_MS = 2 * 60 * 60 * 1000;
+  try {
     const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
-    const item = Array.isArray(jList) ? jList.find(x => String(x.id) === String(row.saldo_report_id)) : null;
-    if (item && item.file_name) {
-      const rDown = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(item.file_name)}`, { method: 'GET' });
-      const texto = await rDown.text();
-      const { linhas } = parseCsvPontoEVirgula(texto);
-      const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
-      const ultima = comData.length ? comData[comData.length - 1] : null;
-      const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
-      /* a MP ja devolve o file_name assim que o relatorio e' criado, mesmo antes do CSV estar
-         pronto de verdade pra baixar - entao um download vazio/sem linhas nao significa que o
-         relatorio falhou, so' que ainda nao terminou de processar. Nesse caso mantem o
-         saldo_report_id pra tentar de novo (baixar o MESMO relatorio) na proxima sincronizacao,
-         em vez de abandonar e pedir um relatorio novo toda vez (o que nunca convergia). */
-      if (isNaN(saldo)) return;
-      await upsertFinanceiroMp(loja, {
-        saldo_disponivel: saldo,
-        saldo_atualizado_em: new Date(),
-        saldo_report_id: null, saldo_pedido_em: null
-      });
-      return;
+    const prontos = (Array.isArray(jList) ? jList : [])
+      .filter(x => x.file_name && x.date_created)
+      .sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
+    if (prontos.length) {
+      const maisRecente = prontos[0];
+      const idadeMs = Date.now() - new Date(maisRecente.date_created).getTime();
+      if (idadeMs < JANELA_FRESCOR_MS) {
+        const rDown = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(maisRecente.file_name)}`, { method: 'GET' });
+        const texto = await rDown.text();
+        const { linhas } = parseCsvPontoEVirgula(texto);
+        const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
+        const ultima = comData.length ? comData[comData.length - 1] : null;
+        const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
+        if (!isNaN(saldo)) {
+          await upsertFinanceiroMp(loja, {
+            saldo_disponivel: saldo,
+            saldo_atualizado_em: new Date(),
+            saldo_report_id: null, saldo_pedido_em: null
+          });
+          return;
+        }
+      }
     }
-    return; // ainda pendente - tenta de novo na proxima sincronizacao
+  } catch (e) {
+    console.error('[financeiro-mp] falha ao tentar ler relatorio pronto (saldo):', loja, e.message);
   }
+  /* nao achou relatorio pronto e fresco pra usar - so' pede um novo se o ultimo pedido ja
+     tiver passado de 10min (evita spammar pedido novo a cada sincronizacao). */
+  const PAUSA_ENTRE_PEDIDOS_MS = 10 * 60 * 1000;
+  if (row && row.saldo_pedido_em && (Date.now() - new Date(row.saldo_pedido_em).getTime() < PAUSA_ENTRE_PEDIDOS_MS)) return;
   const dias = 7;
   const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -619,33 +631,44 @@ async function passoSaldoMp(loja, row) {
 /* termina o relatorio "Dinheiro em conta" pendente ou pede um novo - usa 60 dias (teto da API)
    pra ter certeza de pegar TODO dinheiro ainda nao liberado, mesmo o que demorar mais pra cair. */
 async function passoAReceberMp(loja, row) {
-  const LIMITE_ESPERA_MS = 45 * 60 * 1000;
-  const pedidoExpirou = !!(row && row.areceber_pedido_em && (Date.now() - new Date(row.areceber_pedido_em).getTime() > LIMITE_ESPERA_MS));
-  if (pedidoExpirou) console.warn(`[financeiro-mp] a-receber: relatorio ${row.areceber_report_id} da loja ${loja} pedido em ${row.areceber_pedido_em} expirou sem terminar - pedindo um novo.`);
-  if (row && row.areceber_report_id && !pedidoExpirou) {
+  /* v23: mesma estrategia do saldo (ver comentario em passoSaldoMp) - usa o relatorio "Dinheiro
+     em conta" PRONTO mais recente da conta, em vez de tentar casar o id devolvido no POST com
+     o id da listagem (o a-receber ate' vinha funcionando com o casamento por id, mas nao ha'
+     garantia disso - mais seguro usar a mesma logica robusta dos dois lados). Janela de frescor
+     maior (6h) porque "a receber" muda bem mais devagar que o saldo disponivel. */
+  const JANELA_FRESCOR_MS = 6 * 60 * 60 * 1000;
+  try {
     const rList = await mpFetch(loja, '/v1/account/settlement_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
-    const item = Array.isArray(jList) ? jList.find(x => String(x.id) === String(row.areceber_report_id)) : null;
-    if (item && item.file_name) {
-      const rDown = await mpFetch(loja, `/v1/account/settlement_report/${encodeURIComponent(item.file_name)}`, { method: 'GET' });
-      const texto = await rDown.text();
-      const { linhas } = parseCsvPontoEVirgula(texto);
-      /* mesma cautela do saldo: se por algum motivo o download vier vazio (sem nenhuma linha
-         com IS_RELEASED), nao abandona o relatorio pedido - tenta de novo no proximo sync. */
-      if (!linhas.length) return;
-      const pendentes = linhas.filter(l => (l.IS_RELEASED || '').toUpperCase() === 'FALSE');
-      const aReceber = Math.round(pendentes.reduce((s, l) => {
-        const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
-        return s + (isNaN(v) ? 0 : v);
-      }, 0) * 100) / 100;
-      await upsertFinanceiroMp(loja, {
-        a_receber: aReceber, a_receber_atualizado_em: new Date(),
-        areceber_report_id: null, areceber_pedido_em: null
-      });
-      return;
+    const prontos = (Array.isArray(jList) ? jList : [])
+      .filter(x => x.file_name && x.date_created)
+      .sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
+    if (prontos.length) {
+      const maisRecente = prontos[0];
+      const idadeMs = Date.now() - new Date(maisRecente.date_created).getTime();
+      if (idadeMs < JANELA_FRESCOR_MS) {
+        const rDown = await mpFetch(loja, `/v1/account/settlement_report/${encodeURIComponent(maisRecente.file_name)}`, { method: 'GET' });
+        const texto = await rDown.text();
+        const { linhas } = parseCsvPontoEVirgula(texto);
+        if (linhas.length) {
+          const pendentes = linhas.filter(l => (l.IS_RELEASED || '').toUpperCase() === 'FALSE');
+          const aReceber = Math.round(pendentes.reduce((s, l) => {
+            const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+            return s + (isNaN(v) ? 0 : v);
+          }, 0) * 100) / 100;
+          await upsertFinanceiroMp(loja, {
+            a_receber: aReceber, a_receber_atualizado_em: new Date(),
+            areceber_report_id: null, areceber_pedido_em: null
+          });
+          return;
+        }
+      }
     }
-    return;
+  } catch (e) {
+    console.error('[financeiro-mp] falha ao tentar ler relatorio pronto (a-receber):', loja, e.message);
   }
+  const PAUSA_ENTRE_PEDIDOS_MS = 10 * 60 * 1000;
+  if (row && row.areceber_pedido_em && (Date.now() - new Date(row.areceber_pedido_em).getTime() < PAUSA_ENTRE_PEDIDOS_MS)) return;
   const dias = 60;
   const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
