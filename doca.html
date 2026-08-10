@@ -1099,10 +1099,12 @@ function menuArquivo(){
       <p class="hint">O sistema percebe quando outro aparelho salvou e atualiza a tela sozinho. Se os dois mexerem ao mesmo tempo, ele avisa antes de sobrescrever.</p>
       <div class="modal-actions">
         <button class="btn" id="btnFechar">Fechar</button>
+        <button class="btn" id="btnVersoes">Ver backups</button>
         <button class="btn" id="btnRecarregar">Recarregar</button>
         <button class="btn danger-outline" id="btnDesconectar">Desconectar</button>
       </div>`;
     document.getElementById('btnFechar').onclick=closeModal;
+    document.getElementById('btnVersoes').onclick=openVersoesNuvemModal;
     document.getElementById('btnRecarregar').onclick=async()=>{ await carregarDaNuvem(); closeModal(); };
     document.getElementById('btnDesconectar').onclick=()=>{ closeModal(); desconectarNuvem(); };
     document.getElementById('selSync').onchange=e=>{ definirIntervaloSync(Number(e.target.value)); iniciarSyncNuvem(); toast('Verificação automática atualizada.'); };
@@ -1226,7 +1228,7 @@ async function desconectarArquivo(){
    Livre/Mercado Pago, em vez de escrever num arquivo local — por isso não depende de Dropbox
    nem de pasta nenhuma. Protegido por usuário/senha (Basic Auth); as credenciais, uma vez
    digitadas, ficam salvas neste navegador. */
-function nuvemBaseUrl(){ return (mlSyncCfg().baseUrl||'').trim().replace(/\/+$/,''); }
+function nuvemBaseUrl(){ return backendUrl(); }
 async function nuvemFetch(caminho,opts){
   const base=nuvemBaseUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (mesma usada no Atualizar do Mercado Livre).');
@@ -1313,6 +1315,51 @@ function iniciarSyncNuvem(){
   if(syncTimer) clearInterval(syncTimer);
   if(nuvemAuth&&intervaloSync>0) syncTimer=setInterval(verificarNuvem,intervaloSync*1000);
 }
+/* backups na nuvem: o servidor guarda sozinho uma cópia do estado ANTERIOR antes de cada
+   gravação (últimas 30 gravações + 1 por dia, guardado por 180 dias) — mesma lógica das
+   "versões" da pasta local, só que rodando no backend em vez de escrever arquivos. */
+async function listarBackupsNuvem(){
+  const r=await nuvemFetch('/estado/backups',{method:'GET'});
+  const j=await r.json();
+  if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao listar backups.');
+  return j.backups;
+}
+async function abrirBackupNuvem(id){
+  const r=await nuvemFetch('/estado/backups/'+id,{method:'GET'});
+  const j=await r.json();
+  if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao abrir backup.');
+  return j;
+}
+async function openVersoesNuvemModal(){
+  const body=openModal(true);
+  body.innerHTML=`<h3>Backups guardados na nuvem</h3><p class="empty-inline">Lendo...</p>`;
+  let vs=[];
+  try{ vs=await listarBackupsNuvem(); }
+  catch(e){ body.innerHTML=`<h3>Backups guardados na nuvem</h3><p class="empty-inline">Não consegui ler: ${esc(e.message)}</p><div class="modal-actions"><button class="btn" id="btnFechar">Fechar</button></div>`; document.getElementById('btnFechar').onclick=closeModal; return; }
+  body.innerHTML=`<h3>Backups guardados na nuvem</h3>
+    <p class="hint" style="margin:0 0 14px">Uma cópia é salva sozinha antes de cada gravação. <b>rotativo</b>: últimas 30 gravações; <b>diário</b>: 1 por dia, guardado por 180 dias.</p>
+    ${vs.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th>Tipo</th><th>Quando</th><th>SKUs</th><th></th></tr></thead><tbody>
+      ${vs.map(v=>`<tr><td>${v.tipo==='rotativo'?'rotativo':'diário'}</td>
+        <td>${new Date(v.criadoEm).toLocaleString('pt-BR')}</td>
+        <td class="num">${fmtInt(v.produtos)}</td>
+        <td><button class="btn sm danger-outline" data-restaurar="${v.id}">Restaurar</button></td></tr>`).join('')}
+    </tbody></table></div>`:`<p class="empty-inline">Ainda não há backups — eles são criados a partir da segunda gravação.</p>`}
+    <div class="modal-actions"><button class="btn" id="btnFechar">Fechar</button></div>`;
+  document.getElementById('btnFechar').onclick=closeModal;
+  body.querySelectorAll('[data-restaurar]').forEach(b=>b.onclick=async()=>{
+    const id=b.dataset.restaurar;
+    confirmAction('Restaurar esse backup? Os dados atuais serão substituídos pelos dele (o que está agora também vira um backup automaticamente, então dá pra reverter de novo se precisar).',async()=>{
+      try{
+        const j=await abrirBackupNuvem(id);
+        aplicarEstadoNuvem(j.dados,j.criadoEm);
+        await salvarNaNuvem();
+        closeModal(); renderAll();
+        toast('Backup restaurado.');
+      }catch(e){ alert('Não foi possível restaurar: '+e.message); }
+    });
+  });
+}
 function desconectarNuvem(){
   nuvemAuth=null; nuvemAtualizadoEm=0;
   if(syncTimer) clearInterval(syncTimer);
@@ -1325,8 +1372,8 @@ function abrirConectarNuvem(){
   body.innerHTML=`<h3>Sincronizar com a nuvem</h3>
     <p class="hint">Funciona em qualquer navegador, inclusive celular — não depende de pasta nem de Dropbox. Usa o mesmo backend já configurado no Atualizar (Mercado Livre): <b class="mono">${esc(nuvemBaseUrl()||'(configure a URL do backend primeiro em Produtos → Atualizar)')}</b>.</p>
     <div class="form-grid">
-      <label>Usuário<input id="fNuvemUser" type="text" autocomplete="username"></label>
-      <label>Senha<input id="fNuvemSenha" type="password" autocomplete="current-password"></label>
+      <label>Usuário<input id="fNuvemUser" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" style="text-transform:none"></label>
+      <label>Senha<input id="fNuvemSenha" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" style="text-transform:none"></label>
     </div>
     <div class="modal-actions"><button class="btn" id="btnCancelar">Cancelar</button>
       <button class="btn gold" id="btnConectar">Conectar</button></div>`;
@@ -2230,6 +2277,15 @@ function renderDashboard(){
 
 /* ---------- produtos ---------- */
 function mlSyncCfg(){ return state.mlSync.cfg; }
+/* URL do backend: se não foi digitada em Produtos → Atualizar, e o próprio Doca está sendo
+   aberto direto do backend (ex.: https://doca-sync.onrender.com/doca, o caso do celular), usa
+   o endereço da própria página como padrão — não precisa configurar nada à mão nesse caso. */
+function backendUrl(){
+  const configurada=(mlSyncCfg().baseUrl||'').trim().replace(/\/+$/,'');
+  if(configurada) return configurada;
+  if(location.protocol==='http:'||location.protocol==='https:') return location.origin;
+  return '';
+}
 
 function statusMlLabel(s){
   const mapa={active:'Ativo',paused:'Pausado',closed:'Encerrado',under_review:'Em revisão',inactive:'Inativo',payment_required:'Aguardando pagamento'};
@@ -2278,7 +2334,7 @@ function mlAtualizarFullDoSinc(p,item,loja){
 
 /* chama o backend hospedado: primeiro manda sincronizar (POST /sync), depois busca o resultado (GET /data) */
 async function mlSincronizarLoja(loja){
-  const base=(mlSyncCfg().baseUrl||'').trim().replace(/\/+$/,'');
+  const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (ex: https://doca-sync.onrender.com).');
   const rSync=await fetch(`${base}/sync?loja=${encodeURIComponent(loja)}`,{method:'POST'});
   let jSync; try{ jSync=await rSync.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+rSync.status+'). Confira a URL.'); }
@@ -2296,7 +2352,7 @@ async function mlSincronizarLoja(loja){
    configurado no backend, o retorno vem com configurado:false e essa loja simplesmente
    continua com os campos manuais — não é erro. */
 async function mpSincronizarFinanceiro(loja){
-  const base=(mlSyncCfg().baseUrl||'').trim().replace(/\/+$/,'');
+  const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro.');
   const r=await fetch(`${base}/financeiro/mp/sincronizar?loja=${encodeURIComponent(loja)}`,{method:'POST'});
   let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao sincronizar o financeiro.'); }
@@ -2399,9 +2455,10 @@ function abrirSincronizacaoML(){
     body.innerHTML=`<h3>🔄 Sincronizar com o Mercado Livre</h3>
       <p class="hint">Isso chama o backend que você hospedou (fora do Doca) pra buscar os anúncios e o estoque publicado de <b>todas as lojas</b> de uma vez. A loja escolhida abaixo é só pra ver a tabela de comparação aqui na tela — as outras são atualizadas em segundo plano, sem precisar abrir uma a uma. Anúncio que já bate com um SKU do Doca (por vínculo salvo ou pelo SKU) só atualiza os dados; anúncio novo é <b>cadastrado sozinho</b> no Doca (SKU e título do próprio anúncio, custo/fornecedor em branco pra completar depois em Produtos) — não precisa importar manualmente.</p>
       <div class="form-grid" style="grid-template-columns:2fr 1fr">
-        <label>URL do backend<input id="mlBaseUrl" type="text" placeholder="https://doca-sync.onrender.com" value="${esc(c.baseUrl)}"></label>
+        <label>URL do backend<input id="mlBaseUrl" type="text" placeholder="${esc(backendUrl()||'https://doca-sync.onrender.com')}" value="${esc(c.baseUrl)}"></label>
         <label>Loja (visualização)<select id="mlLoja">${optsLojas(c.loja)}</select></label>
       </div>
+      ${!c.baseUrl&&backendUrl()?`<p class="hint" style="margin-top:6px">Detectado automaticamente: <b class="mono">${esc(backendUrl())}</b> (o próprio endereço deste Doca). Só preencha o campo acima se quiser usar outro.</p>`:''}
       <div class="acoes-linha" style="margin-top:10px">
         <button class="btn gold" id="btnMlAtualizar">🔄 Atualizar todas as lojas</button>
         <span id="mlStatus" style="font-size:12.5px;color:var(--muted)"></span>
@@ -2452,7 +2509,7 @@ function abrirSincronizacaoML(){
   render(null,null);
   /* se a URL do backend já está salva, dispara a sincronização direto ao abrir —
      não precisa clicar duas vezes (uma pra abrir, outra pra atualizar) */
-  if(c.baseUrl) document.getElementById('btnMlAtualizar').onclick();
+  if(backendUrl()) document.getElementById('btnMlAtualizar').onclick();
 }
 
 function renderProdutos(){
@@ -4556,8 +4613,7 @@ tentarReconectar();
    pras próximas sem travar o resto do app — cada loja fica só com os dados de quando
    funcionou por último. */
 (async function sincronizarMlAoAbrir(){
-  const c=mlSyncCfg();
-  if(!c.baseUrl) return;
+  if(!backendUrl()) return;
   for(const loja of STORES){
     try{
       const resultado=await mlSincronizarLoja(loja);
