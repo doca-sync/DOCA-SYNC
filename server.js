@@ -642,11 +642,15 @@ app.post('/financeiro/mp/sincronizar', async (req, res) => {
     try { await passoSaldoMp(loja, row); } catch (e) { console.error('[financeiro-mp] falha no passo saldo:', loja, e.message); }
     try { await passoAReceberMp(loja, row); } catch (e) { console.error('[financeiro-mp] falha no passo a receber:', loja, e.message); }
     row = await pegarFinanceiroMp(loja);
+    /* node-postgres devolve colunas "numeric" como STRING (pra nao perder precisao) - sem
+       converter pra Number aqui, o Doca recebe tipo "2716.3" como texto e, ao somar com outros
+       valores em dinheiro, o JavaScript faz concatenacao de string em vez de soma. */
+    const paraNumero = (v) => (v==null ? null : Number(v));
     res.json({
       ok: true, loja, configurado: true,
-      saldoDisponivel: row ? row.saldo_disponivel : null,
+      saldoDisponivel: row ? paraNumero(row.saldo_disponivel) : null,
       saldoAtualizadoEm: row ? row.saldo_atualizado_em : null,
-      aReceber: row ? row.a_receber : null,
+      aReceber: row ? paraNumero(row.a_receber) : null,
       aReceberAtualizadoEm: row ? row.a_receber_atualizado_em : null
     });
   } catch (e) {
