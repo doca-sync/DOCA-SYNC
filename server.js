@@ -513,6 +513,146 @@ app.get('/debug/mp/dinheiro/areceber', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* ---- Mercado Pago: financeiro automatico de verdade (v19) ----
+   As rotas /debug/mp/* acima provaram, com dado real, que da pra calcular:
+     - saldo disponivel = BALANCE_AMOUNT da ultima linha COM DATA do relatorio de Liberacoes
+     - a receber = soma de SETTLEMENT_NET_AMOUNT de toda linha com IS_RELEASED=FALSE no
+       relatorio "Dinheiro em conta" (settlement_report)
+   O problema e' que os dois relatorios sao ASSINCRONOS (pede agora, fica pronto so' minutos
+   depois) - nao da pra fazer tudo numa unica chamada HTTP sem estourar o timeout do Render.
+   Por isso funciona em 2 passadas, guardadas na tabela mp_financeiro:
+     - se ja tem um relatorio pendente pra essa loja, tenta TERMINAR ele (ver se ja processou,
+       baixar, ler, salvar o valor) em vez de pedir outro
+     - se nao tem nenhum pendente, PEDE um novo e guarda o id pra proxima vez
+   Isso e' chamado toda vez que o Doca sincroniza (ao abrir e no botao Atualizar) - em geral um
+   pedido feito numa sincronizacao e' finalizado na proxima (alguns minutos depois), entao o
+   valor mostrado no Doca fica sempre "atualizado ha pouco", nunca "ao vivo" mas tambem nunca
+   preso - e sempre com o horario de quando foi lido de verdade, sem fingir que e' instantaneo. */
+async function pegarFinanceiroMp(loja) {
+  const r = await pool.query('select * from mp_financeiro where loja = $1', [loja]);
+  return r.rows[0] || null;
+}
+async function upsertFinanceiroMp(loja, patch) {
+  const atual = await pegarFinanceiroMp(loja);
+  const base = atual || {};
+  const linha = { ...base, ...patch, loja };
+  await pool.query(
+    `insert into mp_financeiro (loja, saldo_disponivel, saldo_atualizado_em, saldo_report_id, saldo_pedido_em,
+        a_receber, a_receber_atualizado_em, areceber_report_id, areceber_pedido_em)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     on conflict (loja) do update set
+       saldo_disponivel = excluded.saldo_disponivel,
+       saldo_atualizado_em = excluded.saldo_atualizado_em,
+       saldo_report_id = excluded.saldo_report_id,
+       saldo_pedido_em = excluded.saldo_pedido_em,
+       a_receber = excluded.a_receber,
+       a_receber_atualizado_em = excluded.a_receber_atualizado_em,
+       areceber_report_id = excluded.areceber_report_id,
+       areceber_pedido_em = excluded.areceber_pedido_em`,
+    [loja, linha.saldo_disponivel ?? null, linha.saldo_atualizado_em ?? null, linha.saldo_report_id ?? null,
+     linha.saldo_pedido_em ?? null, linha.a_receber ?? null, linha.a_receber_atualizado_em ?? null,
+     linha.areceber_report_id ?? null, linha.areceber_pedido_em ?? null]
+  );
+}
+/* termina o relatorio de Liberacoes pendente (se estiver pronto) ou pede um novo - so' pede
+   7 dias porque a gente so' quer o PONTO mais recente do saldo, nao o historico. */
+async function passoSaldoMp(loja, row) {
+  if (row && row.saldo_report_id) {
+    const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
+    const jList = await rList.json().catch(() => null);
+    const item = Array.isArray(jList) ? jList.find(x => String(x.id) === String(row.saldo_report_id)) : null;
+    if (item && item.file_name) {
+      const rDown = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(item.file_name)}`, { method: 'GET' });
+      const texto = await rDown.text();
+      const { linhas } = parseCsvPontoEVirgula(texto);
+      const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
+      const ultima = comData.length ? comData[comData.length - 1] : null;
+      const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
+      await upsertFinanceiroMp(loja, {
+        saldo_disponivel: isNaN(saldo) ? (row.saldo_disponivel ?? null) : saldo,
+        saldo_atualizado_em: isNaN(saldo) ? (row.saldo_atualizado_em ?? null) : new Date(),
+        saldo_report_id: null, saldo_pedido_em: null
+      });
+      return;
+    }
+    return; // ainda pendente - tenta de novo na proxima sincronizacao
+  }
+  const dias = 7;
+  const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const fim = diaUTC(new Date());
+  const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
+  const r = await mpFetch(loja, '/v1/account/release_report', {
+    method: 'POST',
+    body: JSON.stringify({ begin_date: fmtSemMs(inicio), end_date: fmtSemMs(fim) })
+  });
+  const corpo = await r.json().catch(() => null);
+  if (r.ok && corpo && corpo.id != null) {
+    await upsertFinanceiroMp(loja, { saldo_report_id: String(corpo.id), saldo_pedido_em: new Date() });
+  }
+}
+/* termina o relatorio "Dinheiro em conta" pendente ou pede um novo - usa 60 dias (teto da API)
+   pra ter certeza de pegar TODO dinheiro ainda nao liberado, mesmo o que demorar mais pra cair. */
+async function passoAReceberMp(loja, row) {
+  if (row && row.areceber_report_id) {
+    const rList = await mpFetch(loja, '/v1/account/settlement_report/list', { method: 'GET' });
+    const jList = await rList.json().catch(() => null);
+    const item = Array.isArray(jList) ? jList.find(x => String(x.id) === String(row.areceber_report_id)) : null;
+    if (item && item.file_name) {
+      const rDown = await mpFetch(loja, `/v1/account/settlement_report/${encodeURIComponent(item.file_name)}`, { method: 'GET' });
+      const texto = await rDown.text();
+      const { linhas } = parseCsvPontoEVirgula(texto);
+      const pendentes = linhas.filter(l => (l.IS_RELEASED || '').toUpperCase() === 'FALSE');
+      const aReceber = Math.round(pendentes.reduce((s, l) => {
+        const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+        return s + (isNaN(v) ? 0 : v);
+      }, 0) * 100) / 100;
+      await upsertFinanceiroMp(loja, {
+        a_receber: aReceber, a_receber_atualizado_em: new Date(),
+        areceber_report_id: null, areceber_pedido_em: null
+      });
+      return;
+    }
+    return;
+  }
+  const dias = 60;
+  const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const fim = diaUTC(new Date());
+  const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
+  const r = await mpFetch(loja, '/v1/account/settlement_report', {
+    method: 'POST',
+    body: JSON.stringify({ begin_date: fmtSemMs(inicio), end_date: fmtSemMs(fim) })
+  });
+  const corpo = await r.json().catch(() => null);
+  if (r.ok && corpo && corpo.id != null) {
+    await upsertFinanceiroMp(loja, { areceber_report_id: String(corpo.id), areceber_pedido_em: new Date() });
+  }
+}
+/* chamada pelo Doca (ao abrir e no botao Atualizar) - sempre tenta terminar o que ja estava
+   pendente e/ou comecar um pedido novo, e devolve o estado atual (melhor valor conhecido +
+   quando foi lido de verdade). Se a loja nao tem MP_ACCESS_TOKEN configurado, devolve
+   configurado:false sem erro - o Doca so' ignora e mantem os campos manuais nessa loja. */
+app.post('/financeiro/mp/sincronizar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!tokenMpDaLoja(loja)) return res.json({ ok: true, loja, configurado: false });
+    let row = await pegarFinanceiroMp(loja);
+    try { await passoSaldoMp(loja, row); } catch (e) { console.error('[financeiro-mp] falha no passo saldo:', loja, e.message); }
+    try { await passoAReceberMp(loja, row); } catch (e) { console.error('[financeiro-mp] falha no passo a receber:', loja, e.message); }
+    row = await pegarFinanceiroMp(loja);
+    res.json({
+      ok: true, loja, configurado: true,
+      saldoDisponivel: row ? row.saldo_disponivel : null,
+      saldoAtualizadoEm: row ? row.saldo_atualizado_em : null,
+      aReceber: row ? row.a_receber : null,
+      aReceberAtualizadoEm: row ? row.a_receber_atualizado_em : null
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
 });
