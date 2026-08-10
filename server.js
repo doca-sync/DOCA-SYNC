@@ -130,6 +130,16 @@ async function tokenValido(loja) {
 }
 app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOString() }));
 app.post('/ml/webhook', (_req, res) => res.sendStatus(200));
+/* rota de diagnostico temporaria - devolve a lista CRUA de pedidos que a API do ML retorna
+   pro item/periodo pedido, pra comparar pedido por pedido com o que a propria tela de
+   "Vendas" do vendedor no ML mostra (em vez de so comparar contagens agregadas). Ex.:
+   /debug/pedidos?loja=TorvShop&itemId=MLB7174620602&dias=7
+   Tambem aceita de/ate (ISO) direto: /debug/pedidos?loja=TorvShop&de=...&ate=...
+   IMPORTANTE: quando "dias" e' usado (sem de/ate explicito), a janela agora e' EXATAMENTE
+   a mesma que o /sync usa de verdade (dias civis fechados, terminando na meia-noite de hoje
+   fuso America/Sao_Paulo) - antes essa rota usava uma janela corrida "agora - N*24h" diferente
+   da que buscarVendasPorItem() calcula, o que fazia a auditoria comparar coisas diferentes
+   sem perceber. Agora as duas usam a mesma funcao inicioDoDiaBR(). */
 app.get('/debug/pedidos', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -177,6 +187,10 @@ app.get('/debug/pedidos', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
+   auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.
+   Devolve o objeto completo (status, status_detail, tags, pack_id, date_last_updated, etc). Ex.:
+   /debug/pedido?loja=TorvShop&id=2000012345678901 */
 app.get('/debug/pedido', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -195,6 +209,13 @@ app.get('/debug/pedido', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de auditoria - roda o MESMO calculo que o /sync usa de verdade (reusa
+   processarVendas(), a mesma funcao) restrito a 1 item, e devolve TODOS os pedidos
+   encontrados pra esse item na janela de 30d, cada um marcado com contado:true/false
+   e o motivo da exclusao quando nao contado (em vez de simplesmente descartar). Isso
+   garante que o numero mostrado aqui e' EXATAMENTE o que entra no vendas_7d/15d/30d
+   gravado no banco - zero risco de a auditoria olhar pra uma janela diferente da real. Ex.:
+   /debug/vendas?loja=TorvShop&itemId=MLB7174620602 */
 app.get('/debug/vendas', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -227,10 +248,24 @@ app.get('/debug/vendas', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* ---- Mercado Pago: saldo / reconciliacao financeira (v16) ----
+   Diferente do Mercado Livre, aqui NAO precisa de OAuth com redirect/callback: cada loja usa
+   direto o Access Token de PRODUCAO da propria conta Mercado Pago (gerado em "Credenciais de
+   producao", dentro do aplicativo criado no painel de desenvolvedores do MP) - e' um segredo
+   estatico tipo chave de API, nao um token que expira e precisa refresh feito pelo backend.
+   Guardado como variavel de ambiente MP_ACCESS_TOKEN_<LOJA> (mesma normalizacao de nome que
+   normalizarChaveLoja ja usa pro Mercado Livre - ver credenciaisDaLoja). */
 function tokenMpDaLoja(loja) {
   const chave = normalizarChaveLoja(loja);
   return process.env[`MP_ACCESS_TOKEN_${chave}`] || process.env.MP_ACCESS_TOKEN || null;
 }
+/* rota de diagnostico - a documentacao oficial do Mercado Pago nao deixa 100% claro qual
+   endpoint devolve o saldo (disponivel / a liberar) numa consulta direta e simples; ela so
+   documenta com detalhe o relatorio de "Liberacoes", que e assincrono (voce pede, ele gera um
+   CSV, avisa por webhook). Em vez de codar em cima de um chute, essa rota testa de uma vez os
+   candidatos mais provaveis de endpoint de saldo/conta e devolve a resposta CRUA de cada um -
+   decide com dado real qual usar (e quais campos ele tem) antes de ligar isso no /financeiro
+   de verdade. Ex.: /debug/mp?loja=TorvShop */
 app.get('/debug/mp', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -265,6 +300,17 @@ app.get('/debug/mp', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* ---- Mercado Pago: relatorio de Liberacoes (v17) ----
+   O /debug/mp (acima) ja provou que nao existe consulta direta de saldo pra apps de terceiros -
+   o unico caminho documentado e' esse relatorio assincrono de 3 passos:
+     1) POST /v1/account/release_report {begin_date, end_date} -> pede a geracao (responde 202,
+        arquivo ainda NAO fica pronto na hora)
+     2) GET  /v1/account/release_report/list -> lista os relatorios ja pedidos, cada um com
+        "status" (fica "processed" quando pronto pra baixar)
+     3) GET  /v1/account/release_report/:file_name -> baixa o CSV do relatorio pronto
+   As 3 rotas de debug abaixo testam cada passo manualmente (o nome exato do campo usado como
+   "file_name" no passo 3, e as colunas do CSV, so vao ficar 100% confirmados com um relatorio
+   real - por isso debug primeiro, automatizar depois). */
 async function mpFetch(loja, path, opts) {
   const token = tokenMpDaLoja(loja);
   if (!token) throw new Error(`Faltou a variavel de ambiente MP_ACCESS_TOKEN_${normalizarChaveLoja(loja)} (ou MP_ACCESS_TOKEN) no Render.`);
@@ -273,11 +319,17 @@ async function mpFetch(loja, path, opts) {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json', ...((opts && opts.headers) || {}) }
   });
 }
+/* Passo 1: pede a geracao do relatorio pro intervalo dos ultimos N dias (maximo 60, limite do
+   proprio Mercado Pago). Ex.: POST /debug/mp/relatorio/pedir?loja=TorvShop&dias=7 */
 app.post('/debug/mp/relatorio/pedir', async (req, res) => {
   try {
     const loja = req.query.loja;
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const dias = Math.min(60, Math.max(1, parseInt(req.query.dias || '7', 10)));
+    /* formato EXATO do exemplo oficial: "2019-05-01T00:00:00Z" - sem milissegundos, e em
+       fronteira de dia (meia-noite UTC). O 1o teste real mandando toISOString() puro (que
+       inclui milissegundos, tipo "...820Z") voltou erro 400 "invalid_begin_date" - por isso
+       aqui zera hora/minuto/segundo/ms explicitamente antes de formatar. */
     const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
     const fim = diaUTC(new Date());
@@ -291,6 +343,8 @@ app.post('/debug/mp/relatorio/pedir', async (req, res) => {
     res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: beginDate, end_date: endDate }, corpo });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* Passo 2: lista os relatorios ja pedidos pra essa conta, com o status de cada um. Ex.:
+   GET /debug/mp/relatorio/listar?loja=TorvShop */
 app.get('/debug/mp/relatorio/listar', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -300,6 +354,10 @@ app.get('/debug/mp/relatorio/listar', async (req, res) => {
     res.status(200).json({ ok: r.ok, http_status: r.status, corpo });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* Passo 3: baixa o conteudo (CSV) de um relatorio ja processado, usando o identificador que
+   aparecer no passo 2 (campo file_name, ou id/report_id se file_name nao vier - testar com
+   dado real). Devolve so os primeiros 20000 caracteres, o bastante pra ver o cabecalho e
+   algumas linhas sem lotar a resposta. Ex.: GET /debug/mp/relatorio/baixar?loja=TorvShop&arquivo=XXX */
 app.get('/debug/mp/relatorio/baixar', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -311,6 +369,8 @@ app.get('/debug/mp/relatorio/baixar', async (req, res) => {
     res.status(200).type('text/plain').send(`HTTP ${r.status}\n\n${texto.slice(0, 20000)}`);
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* le um CSV separado por ";" (formato dos relatorios do Mercado Pago) e devolve como lista de
+   objetos {coluna: valor}, usando a 1a linha como cabecalho. Ignora linhas vazias no fim. */
 function parseCsvPontoEVirgula(texto) {
   const linhas = texto.replace(/\r/g, '').split('\n').filter(l => l.trim().length > 0);
   if (!linhas.length) return { cabecalho: [], linhas: [] };
@@ -323,6 +383,10 @@ function parseCsvPontoEVirgula(texto) {
   });
   return { cabecalho, linhas: linhasObj };
 }
+/* baixa e ja LE o relatorio de Liberacoes, devolvendo so o que interessa pro /financeiro: o
+   saldo disponivel = BALANCE_AMOUNT da ULTIMA linha (o extrato roda o saldo linha a linha, a
+   ultima e' o saldo mais atual dentro da janela pedida). Ex.:
+   /debug/mp/relatorio/saldo?loja=TorvShop&arquivo=reserve-release-....csv */
 app.get('/debug/mp/relatorio/saldo', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -333,16 +397,28 @@ app.get('/debug/mp/relatorio/saldo', async (req, res) => {
     const texto = await r.text();
     const { cabecalho, linhas } = parseCsvPontoEVirgula(texto);
     if (!linhas.length) return res.status(200).json({ ok: false, erro: 'Relatorio vazio ou nao processado ainda.', http_status: r.status, cabecalho });
-    const ultima = linhas[linhas.length - 1];
+    /* a ultima linha literal do CSV costuma ser uma linha de TOTAIS (DATE vazio, sem saldo
+       corrente de verdade) - o saldo real e' o BALANCE_AMOUNT da ultima linha que tem DATE
+       preenchido (uma transacao de verdade). */
+    const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
+    const ultima = comData.length ? comData[comData.length - 1] : linhas[linhas.length - 1];
     const saldo = parseFloat(ultima.BALANCE_AMOUNT);
     res.status(200).json({
-      ok: true, loja, totalLinhas: linhas.length,
+      ok: true, loja, totalLinhas: linhas.length, linhasComData: comData.length,
       saldoDisponivel: isNaN(saldo) ? null : saldo,
       dataUltimaLinha: ultima.DATE || null,
       ultimaLinha: ultima
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* ---- Mercado Pago: relatorio "Dinheiro em conta" / settlement_report (v18) ----
+   Mesmo fluxo de 3 passos do /debug/mp/relatorio/*, mas outro relatorio (a API chama de
+   "settlement_report"). Esse tem 2 colunas que a Liberacoes NAO tem: IS_RELEASED (TRUE/FALSE -
+   se o dinheiro dessa operacao ja foi liberado) e SETTLEMENT_NET_AMOUNT (valor liquido que
+   entrou/vai entrar na conta). Somando SETTLEMENT_NET_AMOUNT de toda linha com IS_RELEASED=FALSE
+   dentro da janela pedida, da exatamente o "A Receber" (dinheiro ainda pendente de liberacao) -
+   o mesmo numero que a tela do Mercado Pago chama de "Disponivel para antecipacao" /
+   "Lancamentos futuros". */
 app.post('/debug/mp/dinheiro/pedir', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -359,6 +435,26 @@ app.post('/debug/mp/dinheiro/pedir', async (req, res) => {
     });
     let corpo; try { corpo = await r.json(); } catch (e) { corpo = { aviso: 'resposta sem JSON', texto: await r.text().catch(() => null) }; }
     res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: beginDate, end_date: endDate }, corpo });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+/* configura o relatorio "Dinheiro em conta" pela 1a vez - ao contrario do release_report
+   (Liberacoes), que funciona direto, o settlement_report parece exigir essa configuracao
+   antes (testado: POST /settlement_report direto sem isso deu 404). So' precisa rodar 1 vez
+   por loja. Ex.: POST /debug/mp/dinheiro/config?loja=TorvShop */
+app.post('/debug/mp/dinheiro/config', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const r = await mpFetch(loja, '/v1/account/settlement_report/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        file_name_prefix: `settlement-report-${normalizarChaveLoja(loja)}`,
+        show_fee_prevision: false,
+        show_chargeback_cancel: false
+      })
+    });
+    let corpo; try { corpo = await r.json(); } catch (e) { corpo = { aviso: 'resposta sem JSON', texto: await r.text().catch(() => null) }; }
+    res.status(200).json({ ok: r.ok, http_status: r.status, corpo });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 app.get('/debug/mp/dinheiro/listar', async (req, res) => {
@@ -381,6 +477,9 @@ app.get('/debug/mp/dinheiro/baixar', async (req, res) => {
     res.status(200).type('text/plain').send(`HTTP ${r.status}\n\n${texto.slice(0, 20000)}`);
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* baixa e ja LE o relatorio "Dinheiro em conta", somando SETTLEMENT_NET_AMOUNT de toda linha
+   com IS_RELEASED=FALSE - isso e' o "A Receber". Ex.:
+   /debug/mp/dinheiro/areceber?loja=TorvShop&arquivo=settlement-....csv */
 app.get('/debug/mp/dinheiro/areceber', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -487,6 +586,10 @@ async function buscarItensDoVendedor(loja, accessToken, mlUserId) {
   }
   return detalhes;
 }
+/* consulta se o anuncio catalogado esta perdendo ou empatando com outro vendedor na mesma
+   pagina de catalogo. O ML desativou o endpoint que listava todos os concorrentes (10/2025);
+   isso aqui usa o substituto oficial, que so diz se voce esta ganhando/perdendo/empatando
+   e o preco de quem esta ganhando (nao a lista inteira de vendedores). */
 async function buscarConcorrenciaCatalogo(accessToken, itemId) {
   try {
     const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/price_to_win?siteId=MLB&version=v2`, {
@@ -502,6 +605,9 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
     return null;
   }
 }
+/* busca as perguntas sem resposta de todos os anuncios do vendedor de uma vez so (paginado),
+   e devolve quantas tem por item_id. Se o vendedor nao tiver nenhuma pergunta o ML pode
+   responder 404 - tratamos isso como "zero perguntas" em vez de erro. */
 async function buscarPerguntasSemResposta(accessToken, sellerId) {
   const porItem = new Map();
   let offset = 0;
@@ -522,12 +628,19 @@ async function buscarPerguntasSemResposta(accessToken, sellerId) {
   }
   return porItem;
 }
+/* dia calendario (AAAA-MM-DD) na hora de Brasilia, pra bater com o jeito que o painel de
+   metricas do ML conta "dias" (dia civil, nao janela corrida de 24h*N a partir de "agora"). */
 function diaBR(dataIso) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date(dataIso));
 }
 function diffDiasCivis(diaA, diaB) {
   return Math.round((Date.parse(diaA + 'T00:00:00Z') - Date.parse(diaB + 'T00:00:00Z')) / 864e5);
 }
+/* busca todos os pedidos de um intervalo, paginando. A API do /orders/search tem um teto de
+   offset+limit = 1000 (documentado) - se o intervalo tiver mais pedidos que isso, os mais
+   antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
+   se o total bater perto do teto o intervalo e' dividido em dois e cada metade e' buscada
+   separado (recursivo) - e a soma das duas metades nunca esbarra no teto de novo. */
 async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, log, campoData) {
   campoData = campoData || 'order.date_created';
   const limit = 50;
@@ -545,6 +658,7 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
     offset += limit;
     if (pagina.length < limit || offset >= total) break;
     if (offset >= 950) {
+      // perto do teto de 1000 da API - divide o intervalo restante em duas metades e busca cada uma
       log.avisos.push(`intervalo ${deIso}..${ateIso} tem ${total} pedidos, perto do teto de 1000 - dividindo`);
       const meio = new Date((new Date(deIso).getTime() + new Date(ateIso).getTime()) / 2).toISOString();
       const [a, b] = await Promise.all([
@@ -557,10 +671,73 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
   }
   return pedidos;
 }
+/* soma as vendas dos ultimos 30 dias por item, ja divididas em janelas de 7/15/30 dias
+   (cada janela acumula a anterior - mesmo modelo que a Previsao do FULL ja usa). E 1 busca
+   paginada so pra loja inteira, nao e 1 chamada por item.
+   Historico dessa funcao (pra nao repetir os mesmos erros):
+   1) Filtrava por order.status=paid direto na API - contava ~7-8% a menos de unidades do
+      que o painel de metricas do ML mostra.
+   2) Tirou o filtro de status (so exclui cancelled/invalid) - melhorou mas ainda ficou uns
+      9-13% abaixo do painel do ML.
+   3) Trocou janela corrida de 24h*N por dia civil (fuso America/Sao_Paulo) e blindou contra o
+      teto de 1000 pedidos da API - melhorou o 30d (foi pra ~5% de diferenca) mas o 7d/15d
+      pioraram (18%/22%) - padrao classico de bucketar pela data errada: janela curta é muito
+      mais sensivel a um pedido cair no dia errado do que uma janela de 30 dias.
+   4) Trocou pra bucketar por order.date_closed em vez de order.date_created - testado e
+      CONFIRMADO que nao mudou nada (numeros identicos antes/depois), ou seja, nessa loja
+      date_created e date_closed sao praticamente o mesmo dia (pagamento instantaneo, sem
+      atraso de boleto). Descartada como causa.
+   5) Comparação ao vivo com o painel real do vendedor (sc-metrics-publications-fe) confirmou
+      que o Doca fica abaixo ate da contagem de PEDIDOS (nao so unidades) do ML pro mesmo
+      anuncio - ou seja, nao e' diferenca de unidades vs pedidos, sao pedidos inteiros faltando.
+   6) Investigado direto na tela "Vendas" do vendedor (que filtra por order.date_closed - mesmo
+      campo que a gente ja usava, confirmado pela URL startPeriod=WITH_DATE_CLOSED_7D_OLD): o
+      "Ultimos 7 dias" da ML NAO e' um corte por dia civil (00h-23h59) - e' uma JANELA CORRIDA
+      de 7*24h a partir de agora (prova: "Ultimas 24 horas" mostra "7 ago a 8 ago", ou seja
+      cruza 2 dias civis, so' faz sentido como janela corrida). O passo 3) tinha trocado pra
+      dia civil achando que batia com o rotulo "9 jul a 8 ago" do 30d, mas isso tambem e'
+      compativel com janela corrida (30*24h a partir de agora cai por volta do mesmo dia).
+      Trocou pra janela corrida (mantendo date_closed, paginacao segura, exclusao de
+      cancelled/invalid) - melhorou bastante (~6% de diferenca do que a tela Vendas mostrava
+      pro mesmo SKU/periodo), mas ainda sobrava um resto.
+   7) O resto que sobrou (passo 6) era o dia de HOJE entrando pela metade na janela corrida:
+      "hoje" ainda esta em andamento (nao terminou de acumular vendas), entao a fatia de hoje
+      que entra na janela tende a ficar abaixo da media do dia (o dia nao acabou), puxando o
+      total pra baixo em relacao ao que o proprio ML mostra quando o dia fecha. Teste direto:
+      pedindo pro usuario comparar manualmente "1 ago a 7 ago" (dias fechados, sem incluir
+      hoje=8 ago) na tela Vendas do ML deu 114 pedidos/127 unidades - bem mais perto do que a
+      janela corrida (108/120 no mesmo instante) e do numero de referencia da Metricas
+      (116/128). Confirmado tambem batendo os MESMOS pedidos brutos: filtrando por dia civil
+      fechado (meia-noite de hoje pra tras, America/Sao_Paulo) deu 110/123 vs 108/120 da janela
+      corrida - melhora real, nao coincidencia.
+      Troca final: janela de N dias civis FECHADOS terminando na meia-noite de hoje (exclui o
+      dia corrente inteiro, que ainda esta acumulando vendas). America/Sao_Paulo nao tem mais
+      horario de verao desde 2019 (fuso fixo -03:00), entao dá pra usar o offset fixo direto.
+   8) Revisao externa (outra IA) apontou 2 problemas reais no v12: (a) o /debug/pedidos usava
+      "agora - N*24h" quando chamado so' com "dias", DIFERENTE da janela de dias-fechados que
+      o /sync de fato usa - ou seja, a auditoria podia estar olhando pra um conjunto de pedidos
+      diferente do que realmente vira vendas_7d/15d/30d, sem a gente perceber. (b) o calculo
+      usava "msAtras <= N*864e5" (matematicamente equivalente a um intervalo fechado-aberto,
+      mas implicito) em vez de comparar contra os limites explicitos de cada janela - mais
+      dificil de auditar/confiar de bater o olho no codigo.
+      Corrigido: extraida a logica de contagem pra processarVendas(), reusada tanto pelo
+      /sync quanto pela nova rota /debug/vendas (mesma funcao = impossivel divergir de novo),
+      usando limites explicitos [inicioN, fim) por window. O /debug/pedidos tambem passou a
+      usar inicioDoDiaBR() como base quando chamado so' com "dias" (sem de/ate explicito),
+      pra sempre bater com a janela real do /sync por padrao. */
 function inicioDoDiaBR(instanteMs) {
-  const dia = diaBR(new Date(instanteMs).toISOString());
-  return Date.parse(dia + 'T00:00:00-03:00');
+  const dia = diaBR(new Date(instanteMs).toISOString()); // "AAAA-MM-DD" no fuso de Brasilia
+  return Date.parse(dia + 'T00:00:00-03:00'); // meia-noite local, como epoch ms UTC
 }
+/* logica de contagem de vendas, unica fonte de verdade usada tanto pelo /sync (buscarVendasPorItem,
+   agregado pra loja inteira) quanto pela rota de auditoria /debug/vendas (1 item, com detalhe
+   pedido a pedido). Recebe a lista crua de pedidos (ja buscada) e devolve:
+   - porItem: Map item_id -> {v7,v15,v30} (unidades), so' dos pedidos elegiveis
+   - detalhe: lista pedido-a-pedido (so' preenchida quando itemIdFiltro e' passado) com
+     contado:true/false e motivo da exclusao quando nao contado - nada e' descartado
+     silenciosamente, tudo fica visivel pra auditoria.
+   Janelas sao dias civis FECHADOS (fuso America/Sao_Paulo), terminando na meia-noite de hoje -
+   ver historico acima (passos 6, 7 e 8) pro raciocinio completo. */
 function processarVendas(pedidos, { itemIdFiltro } = {}) {
   const fim = inicioDoDiaBR(Date.now());
   const inicio7 = fim - 7 * 864e5;
@@ -633,11 +810,17 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
   const { porItem, porStatus } = processarVendas(pedidos);
   console.log(`[vendas] pedidos buscados=${pedidos.length} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
+  // diagnostico: mostra os 5 itens com mais unidades em 30d e o item_id exato usado - serve pra
+  // confirmar se o item_id que a API de pedidos devolve bate com o item_id que a /sync grava no
+  // banco (se nao bater, o SKU fica "mudo": o /sync grava vendas=0 pra ele mesmo tendo pedidos).
   const top5 = [...porItem.entries()].sort((a, b) => b[1].v30 - a[1].v30).slice(0, 5)
     .map(([id, v]) => `${id}:v7=${v.v7}/v15=${v.v15}/v30=${v.v30}`).join(' | ');
   console.log(`[vendas][top5] ${top5}`);
   return porItem;
 }
+/* quantidade em transferencia entre depositos do Full, pro item que ja tem inventory_id
+   (so anuncios com logistic_type "fulfillment" tem isso). Nao existe fonte confirmada pra
+   "a caminho" (mercadoria enviada mas ainda nao recebida pelo Full) - fica de fora por ora. */
 async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
   try {
     const r = await fetch(`https://api.mercadolibre.com/inventories/${inventoryId}/stock/fulfillment?seller_id=${sellerId}`, {
@@ -759,3 +942,4 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
+ 
