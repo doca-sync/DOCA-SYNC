@@ -568,9 +568,15 @@ async function passoSaldoMp(loja, row) {
       const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
       const ultima = comData.length ? comData[comData.length - 1] : null;
       const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
+      /* a MP ja devolve o file_name assim que o relatorio e' criado, mesmo antes do CSV estar
+         pronto de verdade pra baixar - entao um download vazio/sem linhas nao significa que o
+         relatorio falhou, so' que ainda nao terminou de processar. Nesse caso mantem o
+         saldo_report_id pra tentar de novo (baixar o MESMO relatorio) na proxima sincronizacao,
+         em vez de abandonar e pedir um relatorio novo toda vez (o que nunca convergia). */
+      if (isNaN(saldo)) return;
       await upsertFinanceiroMp(loja, {
-        saldo_disponivel: isNaN(saldo) ? (row.saldo_disponivel ?? null) : saldo,
-        saldo_atualizado_em: isNaN(saldo) ? (row.saldo_atualizado_em ?? null) : new Date(),
+        saldo_disponivel: saldo,
+        saldo_atualizado_em: new Date(),
         saldo_report_id: null, saldo_pedido_em: null
       });
       return;
@@ -602,6 +608,9 @@ async function passoAReceberMp(loja, row) {
       const rDown = await mpFetch(loja, `/v1/account/settlement_report/${encodeURIComponent(item.file_name)}`, { method: 'GET' });
       const texto = await rDown.text();
       const { linhas } = parseCsvPontoEVirgula(texto);
+      /* mesma cautela do saldo: se por algum motivo o download vier vazio (sem nenhuma linha
+         com IS_RELEASED), nao abandona o relatorio pedido - tenta de novo no proximo sync. */
+      if (!linhas.length) return;
       const pendentes = linhas.filter(l => (l.IS_RELEASED || '').toUpperCase() === 'FALSE');
       const aReceber = Math.round(pendentes.reduce((s, l) => {
         const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
