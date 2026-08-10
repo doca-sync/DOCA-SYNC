@@ -32,6 +32,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const path = require('path');
 const { Pool } = require('pg');
 const {
   PORT = 3000,
@@ -40,7 +41,9 @@ const {
   ML_CLIENT_SECRET,
   ML_REDIRECT_URI,
   ML_AUTH_DOMAIN = 'https://auth.mercadolivre.com.br',
-  ALLOWED_ORIGIN = '*'
+  ALLOWED_ORIGIN = '*',
+  DOCA_USER,
+  DOCA_SENHA
 } = process.env;
 if (!DATABASE_URL) { console.error('Faltou DATABASE_URL no .env'); process.exit(1); }
 if (!ML_CLIENT_ID || !ML_CLIENT_SECRET || !ML_REDIRECT_URI) {
@@ -49,12 +52,36 @@ if (!ML_CLIENT_ID || !ML_CLIENT_SECRET || !ML_REDIRECT_URI) {
 }
 const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // o estado inteiro do Doca (produtos, envios, historico) pode passar de 100kb (limite padrao)
 const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
   origin: allowedOrigins.includes('*') ? true : allowedOrigins,
   methods: ['GET', 'POST']
 }));
+/* ---- login (usuario/senha) pra proteger o app hospedado e os dados na nuvem (v25) ----
+   Usa autenticacao HTTP Basic - o proprio navegador sabe mostrar a tela de login sozinho
+   quando abre a pagina (funciona em celular tambem), sem precisar de nenhuma tela de login
+   customizada. So protege as rotas /doca (o app em si) e /estado (os dados) - as rotas de
+   sincronizacao com Mercado Livre/Mercado Pago continuam sem login (sao so numeros/estoque,
+   nao tem como um estranho adivinhar a URL exata + loja e fazer algo com isso, e travar
+   ELAS especificamente quebraria a sincronizacao automatica do proprio Doca, que nao manda
+   usuario/senha nessas chamadas). */
+function exigirLogin(req, res, next) {
+  if (!DOCA_USER || !DOCA_SENHA) {
+    return res.status(500).send('Login do Doca nao configurado no servidor (falta DOCA_USER e DOCA_SENHA nas variaveis de ambiente).');
+  }
+  const auth = req.headers.authorization || '';
+  const [tipo, credenciais] = auth.split(' ');
+  if (tipo === 'Basic' && credenciais) {
+    const decodificado = Buffer.from(credenciais, 'base64').toString('utf8');
+    const i = decodificado.indexOf(':');
+    const usuario = i >= 0 ? decodificado.slice(0, i) : decodificado;
+    const senha = i >= 0 ? decodificado.slice(i + 1) : '';
+    if (usuario === DOCA_USER && senha === DOCA_SENHA) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Doca"');
+  res.status(401).send('Login necessario.');
+}
 const LOJAS_VALIDAS = ['TorvStore', 'Dor Block', 'Orbix Brasil', 'TorvShop'];
 /* "Dor Block" -> "DOR_BLOCK", "Orbix Brasil" -> "ORBIX_BRASIL" etc. — usado pra montar o nome
    das variaveis de ambiente especificas de cada loja. */
@@ -713,6 +740,48 @@ app.post('/financeiro/mp/sincronizar', async (req, res) => {
 });
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
+});
+/* ---- app hospedado + dados na nuvem (v25) ----
+   Serve o proprio Doca (arquivo estatico doca.html, salvo na raiz do projeto ao lado do
+   server.js) numa URL fixa, protegida por login, pra poder abrir em qualquer navegador
+   (celular incluso) - sem isso, o app so' existia como arquivo local no computador. E guarda
+   o "estado" inteiro do Doca (produtos, envios, financeiro, etc - o mesmo JSON que hoje vai
+   pro arquivo estoque-dados.json de quem usa a opcao de pasta) numa tabela de UMA linha so'
+   (doca_estado, id sempre 1) - nao precisa de usuario/multi-tenant, e' um negocio so' usando
+   isso. O Doca manda esse JSON pra ca via /estado em vez de escrever num arquivo, o que
+   funciona em qualquer navegador (o "conectar pasta" so funciona em Chrome/Edge desktop). */
+app.get('/doca', exigirLogin, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'doca.html'), (err) => {
+    if (err) res.status(404).send('doca.html nao encontrado no servidor - salve o arquivo do Doca na raiz do projeto (ao lado do server.js) com esse nome exato.');
+  });
+});
+async function pegarEstadoNuvem() {
+  const r = await pool.query('select dados, atualizado_em from doca_estado where id = 1');
+  return r.rows[0] || null;
+}
+app.get('/estado', exigirLogin, async (req, res) => {
+  try {
+    const linha = await pegarEstadoNuvem();
+    if (!linha) return res.json({ ok: true, dados: null, atualizadoEm: null });
+    res.json({ ok: true, dados: linha.dados, atualizadoEm: linha.atualizado_em });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.post('/estado', exigirLogin, async (req, res) => {
+  try {
+    const dados = req.body && req.body.dados;
+    if (!dados || typeof dados !== 'object') return res.status(400).json({ ok: false, erro: 'Corpo precisa ter { dados: {...} }.' });
+    await pool.query(
+      `insert into doca_estado (id, dados, atualizado_em) values (1, $1, now())
+       on conflict (id) do update set dados = excluded.dados, atualizado_em = excluded.atualizado_em`,
+      [JSON.stringify(dados)]
+    );
+    const linha = await pegarEstadoNuvem();
+    res.json({ ok: true, atualizadoEm: linha.atualizado_em });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
 });
 app.get('/oauth/login', (req, res) => {
   const loja = req.query.loja;
