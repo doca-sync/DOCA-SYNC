@@ -532,6 +532,18 @@ async function pegarFinanceiroMp(loja) {
   const r = await pool.query('select * from mp_financeiro where loja = $1', [loja]);
   return r.rows[0] || null;
 }
+/* rota de diagnostico - mostra a linha CRUA da tabela mp_financeiro pra essa loja, sem
+   nenhum tratamento. Serve pra ver de verdade o que esta gravado (saldo_report_id pendente,
+   quando foi pedido, etc) quando o valor nao aparece no Doca mas o relatorio parece pronto -
+   em vez de tentar adivinhar pelo comportamento de fora. Ex.: /debug/mp/financeiro?loja=TorvShop */
+app.get('/debug/mp/financeiro', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const row = await pegarFinanceiroMp(loja);
+    res.json({ ok: true, loja, linha: row });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 async function upsertFinanceiroMp(loja, patch) {
   const atual = await pegarFinanceiroMp(loja);
   const base = atual || {};
