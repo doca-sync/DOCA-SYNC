@@ -441,6 +441,14 @@ app.post('/debug/mp/dinheiro/pedir', async (req, res) => {
    (Liberacoes), que funciona direto, o settlement_report parece exigir essa configuracao
    antes (testado: POST /settlement_report direto sem isso deu 404). So' precisa rodar 1 vez
    por loja. Ex.: POST /debug/mp/dinheiro/config?loja=TorvShop */
+/* colunas que a gente realmente usa pra calcular o "A Receber" (SETTLEMENT_NET_AMOUNT +
+   IS_RELEASED) mais um minimo de contexto pra conferir visualmente - a config exige "columns"
+   e "frequency" mesmo sem agendar nada de verdade (frequency so' importa se o agendamento
+   automatico for ligado, o que a gente nao esta fazendo aqui). */
+const COLUNAS_DINHEIRO_EM_CONTA = [
+  'TRANSACTION_DATE', 'SOURCE_ID', 'DESCRIPTION', 'TRANSACTION_TYPE', 'TRANSACTION_AMOUNT',
+  'SETTLEMENT_NET_AMOUNT', 'IS_RELEASED', 'MONEY_RELEASE_DATE', 'BUSINESS_UNIT', 'PAYMENT_METHOD_TYPE'
+].map(key => ({ key }));
 app.post('/debug/mp/dinheiro/config', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -449,6 +457,8 @@ app.post('/debug/mp/dinheiro/config', async (req, res) => {
       method: 'POST',
       body: JSON.stringify({
         file_name_prefix: `settlement-report-${normalizarChaveLoja(loja)}`,
+        columns: COLUNAS_DINHEIRO_EM_CONTA,
+        frequency: { type: 'daily', hour: 3, value: 1 },
         show_fee_prevision: false,
         show_chargeback_cancel: false
       })
@@ -942,4 +952,3 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
- 
