@@ -569,7 +569,14 @@ async function upsertFinanceiroMp(loja, patch) {
 /* termina o relatorio de Liberacoes pendente (se estiver pronto) ou pede um novo - so' pede
    7 dias porque a gente so' quer o PONTO mais recente do saldo, nao o historico. */
 async function passoSaldoMp(loja, row) {
-  if (row && row.saldo_report_id) {
+  /* se o relatorio pendente foi pedido ha muito tempo e nunca terminou (pode acontecer do lado
+     do Mercado Pago, sem aviso nenhum), fica preso esperando pra sempre - o nosso teste real
+     demorou uns 35min pra ficar pronto, entao 45min de folga e' um limite seguro pra desistir
+     e comecar de novo em vez de travar o campo indefinidamente. */
+  const LIMITE_ESPERA_MS = 45 * 60 * 1000;
+  const pedidoExpirou = !!(row && row.saldo_pedido_em && (Date.now() - new Date(row.saldo_pedido_em).getTime() > LIMITE_ESPERA_MS));
+  if (pedidoExpirou) console.warn(`[financeiro-mp] saldo: relatorio ${row.saldo_report_id} da loja ${loja} pedido em ${row.saldo_pedido_em} expirou sem terminar - pedindo um novo.`);
+  if (row && row.saldo_report_id && !pedidoExpirou) {
     const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
     const item = Array.isArray(jList) ? jList.find(x => String(x.id) === String(row.saldo_report_id)) : null;
@@ -612,7 +619,10 @@ async function passoSaldoMp(loja, row) {
 /* termina o relatorio "Dinheiro em conta" pendente ou pede um novo - usa 60 dias (teto da API)
    pra ter certeza de pegar TODO dinheiro ainda nao liberado, mesmo o que demorar mais pra cair. */
 async function passoAReceberMp(loja, row) {
-  if (row && row.areceber_report_id) {
+  const LIMITE_ESPERA_MS = 45 * 60 * 1000;
+  const pedidoExpirou = !!(row && row.areceber_pedido_em && (Date.now() - new Date(row.areceber_pedido_em).getTime() > LIMITE_ESPERA_MS));
+  if (pedidoExpirou) console.warn(`[financeiro-mp] a-receber: relatorio ${row.areceber_report_id} da loja ${loja} pedido em ${row.areceber_pedido_em} expirou sem terminar - pedindo um novo.`);
+  if (row && row.areceber_report_id && !pedidoExpirou) {
     const rList = await mpFetch(loja, '/v1/account/settlement_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
     const item = Array.isArray(jList) ? jList.find(x => String(x.id) === String(row.areceber_report_id)) : null;
