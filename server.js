@@ -300,6 +300,68 @@ app.get('/debug/mp', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* ---- Mercado Pago: relatorio de Liberacoes (v17) ----
+   O /debug/mp (acima) ja provou que nao existe consulta direta de saldo pra apps de terceiros -
+   o unico caminho documentado e' esse relatorio assincrono de 3 passos:
+     1) POST /v1/account/release_report {begin_date, end_date} -> pede a geracao (responde 202,
+        arquivo ainda NAO fica pronto na hora)
+     2) GET  /v1/account/release_report/list -> lista os relatorios ja pedidos, cada um com
+        "status" (fica "processed" quando pronto pra baixar)
+     3) GET  /v1/account/release_report/:file_name -> baixa o CSV do relatorio pronto
+   As 3 rotas de debug abaixo testam cada passo manualmente (o nome exato do campo usado como
+   "file_name" no passo 3, e as colunas do CSV, so vao ficar 100% confirmados com um relatorio
+   real - por isso debug primeiro, automatizar depois). */
+async function mpFetch(loja, path, opts) {
+  const token = tokenMpDaLoja(loja);
+  if (!token) throw new Error(`Faltou a variavel de ambiente MP_ACCESS_TOKEN_${normalizarChaveLoja(loja)} (ou MP_ACCESS_TOKEN) no Render.`);
+  return fetch(`https://api.mercadopago.com${path}`, {
+    ...opts,
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json', ...((opts && opts.headers) || {}) }
+  });
+}
+/* Passo 1: pede a geracao do relatorio pro intervalo dos ultimos N dias (maximo 60, limite do
+   proprio Mercado Pago). Ex.: POST /debug/mp/relatorio/pedir?loja=TorvShop&dias=7 */
+app.post('/debug/mp/relatorio/pedir', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const dias = Math.min(60, Math.max(1, parseInt(req.query.dias || '7', 10)));
+    const fim = new Date();
+    const inicio = new Date(fim.getTime() - dias * 864e5);
+    const r = await mpFetch(loja, '/v1/account/release_report', {
+      method: 'POST',
+      body: JSON.stringify({ begin_date: inicio.toISOString(), end_date: fim.toISOString() })
+    });
+    let corpo; try { corpo = await r.json(); } catch (e) { corpo = { aviso: 'resposta sem JSON', texto: await r.text().catch(() => null) }; }
+    res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: inicio.toISOString(), end_date: fim.toISOString() }, corpo });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+/* Passo 2: lista os relatorios ja pedidos pra essa conta, com o status de cada um. Ex.:
+   GET /debug/mp/relatorio/listar?loja=TorvShop */
+app.get('/debug/mp/relatorio/listar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const r = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
+    let corpo; try { corpo = await r.json(); } catch (e) { corpo = { aviso: 'resposta sem JSON' }; }
+    res.status(200).json({ ok: r.ok, http_status: r.status, corpo });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+/* Passo 3: baixa o conteudo (CSV) de um relatorio ja processado, usando o identificador que
+   aparecer no passo 2 (campo file_name, ou id/report_id se file_name nao vier - testar com
+   dado real). Devolve so os primeiros 20000 caracteres, o bastante pra ver o cabecalho e
+   algumas linhas sem lotar a resposta. Ex.: GET /debug/mp/relatorio/baixar?loja=TorvShop&arquivo=XXX */
+app.get('/debug/mp/relatorio/baixar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const arquivo = req.query.arquivo;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!arquivo) return res.status(400).json({ ok: false, erro: 'Parametro "arquivo" obrigatorio (ver o campo do relatorio em /debug/mp/relatorio/listar).' });
+    const r = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(arquivo)}`, { method: 'GET' });
+    const texto = await r.text();
+    res.status(200).type('text/plain').send(`HTTP ${r.status}\n\n${texto.slice(0, 20000)}`);
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.get('/', (_req, res) => {
   res.type('text/plain').send('Doca <-> Mercado Livre sync backend. Veja /health.');
 });
