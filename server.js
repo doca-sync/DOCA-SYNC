@@ -1042,6 +1042,36 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
     return null;
   }
 }
+/* rota de diagnostico - mostra o retorno CRU e COMPLETO do endpoint de estoque do Full pro
+   item (achado pelo SKU salvo em ml_produtos), sem nenhum filtro - inclusive o detalhe do
+   item (pra ver o inventory_id usado) e o array not_available_detail inteiro, nao so' a
+   quantidade da status "transfer" que buscarTransferenciaFull usa hoje. Serve pra confirmar
+   se tem algum campo/status que reflete "entrada pendente" de verdade que o codigo atual nao
+   esta capturando. Ex.: /debug/full/estoque?loja=Orbix%20Brasil&sku=canetadetectora */
+app.get('/debug/full/estoque', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const sku = req.query.sku;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!sku) return res.status(400).json({ ok: false, erro: 'Parametro "sku" obrigatorio.' });
+    const rProd = await pool.query('select ml_item_id, sku, titulo from ml_produtos where loja = $1 and lower(sku) = lower($2)', [loja, sku]);
+    if (!rProd.rows.length) return res.status(404).json({ ok: false, erro: `Nenhum produto com sku "${sku}" encontrado na loja ${loja} (ver /data?loja=...).` });
+    const { ml_item_id, titulo } = rProd.rows[0];
+    const accessToken = await tokenValido(loja);
+    const rItem = await fetch(`https://api.mercadolibre.com/items/${ml_item_id}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const item = await rItem.json();
+    if (!rItem.ok) return res.status(200).json({ ok: false, erro: 'Falha ao buscar o item.', http_status: rItem.status, corpo: item });
+    if (!item.inventory_id) return res.status(200).json({ ok: false, erro: 'Esse item nao tem inventory_id (nao e Full, ou nao esta vinculado ao Full).', item_id: ml_item_id, titulo, logistic_type: item.shipping && item.shipping.logistic_type });
+    const rInv = await fetch(`https://api.mercadolibre.com/inventories/${item.inventory_id}/stock/fulfillment?seller_id=${item.seller_id}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const inv = await rInv.json();
+    res.status(200).json({
+      ok: true, loja, sku, ml_item_id, titulo, inventory_id: item.inventory_id, seller_id: item.seller_id,
+      logistic_type: item.shipping && item.shipping.logistic_type,
+      available_quantity_item: item.available_quantity,
+      inventario_cru: inv
+    });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
