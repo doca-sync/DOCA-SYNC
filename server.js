@@ -326,14 +326,21 @@ app.post('/debug/mp/relatorio/pedir', async (req, res) => {
     const loja = req.query.loja;
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const dias = Math.min(60, Math.max(1, parseInt(req.query.dias || '7', 10)));
-    const fim = new Date();
-    const inicio = new Date(fim.getTime() - dias * 864e5);
+    /* formato EXATO do exemplo oficial: "2019-05-01T00:00:00Z" - sem milissegundos, e em
+       fronteira de dia (meia-noite UTC). O 1o teste real mandando toISOString() puro (que
+       inclui milissegundos, tipo "...820Z") voltou erro 400 "invalid_begin_date" - por isso
+       aqui zera hora/minuto/segundo/ms explicitamente antes de formatar. */
+    const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const fim = diaUTC(new Date());
+    const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
+    const beginDate = fmtSemMs(inicio), endDate = fmtSemMs(fim);
     const r = await mpFetch(loja, '/v1/account/release_report', {
       method: 'POST',
-      body: JSON.stringify({ begin_date: inicio.toISOString(), end_date: fim.toISOString() })
+      body: JSON.stringify({ begin_date: beginDate, end_date: endDate })
     });
     let corpo; try { corpo = await r.json(); } catch (e) { corpo = { aviso: 'resposta sem JSON', texto: await r.text().catch(() => null) }; }
-    res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: inicio.toISOString(), end_date: fim.toISOString() }, corpo });
+    res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: beginDate, end_date: endDate }, corpo });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 /* Passo 2: lista os relatorios ja pedidos pra essa conta, com o status de cada um. Ex.:
@@ -669,9 +676,6 @@ async function buscarVendasPorItem(accessToken, sellerId) {
   const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
   const { porItem, porStatus } = processarVendas(pedidos);
   console.log(`[vendas] pedidos buscados=${pedidos.length} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
-  // diagnostico: mostra os 5 itens com mais unidades em 30d e o item_id exato usado - serve pra
-  // confirmar se o item_id que a API de pedidos devolve bate com o item_id que a /sync grava no
-  // banco (se nao bater, o SKU fica "mudo": o /sync grava vendas=0 pra ele mesmo tendo pedidos).
   const top5 = [...porItem.entries()].sort((a, b) => b[1].v30 - a[1].v30).slice(0, 5)
     .map(([id, v]) => `${id}:v7=${v.v7}/v15=${v.v15}/v30=${v.v30}`).join(' | ');
   console.log(`[vendas][top5] ${top5}`);
@@ -801,4 +805,3 @@ app.get('/data', async (req, res) => {
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
- 
