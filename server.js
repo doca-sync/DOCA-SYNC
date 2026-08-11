@@ -1238,11 +1238,13 @@ async function buscarAdvertiserId(loja) {
   return { advertisers, primeiro: advertisers[0] || null };
 }
 function dataYMD(d) { return new Date(d).toISOString().slice(0, 10); }
-async function buscarCampanhasAds(loja, advertiserId, dias) {
+/* endpoint legado (/advertising/advertisers/{id}/product_ads/campaigns) foi desativado em
+   27/05/2026 (dava 404) - o novo caminho tem o site_id no meio e termina em /search */
+async function buscarCampanhasAds(loja, siteId, advertiserId, dias) {
   const accessToken = await tokenValido(loja);
   const de = dataYMD(Date.now() - (dias - 1) * 864e5);
   const ate = dataYMD(Date.now());
-  const url = `https://api.mercadolibre.com/advertising/advertisers/${advertiserId}/product_ads/campaigns?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${ADS_METRICAS}`;
+  const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${ADS_METRICAS}`;
   return fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
 }
 /* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
@@ -1262,13 +1264,15 @@ app.get('/debug/ads/campanhas', async (req, res) => {
     const dias = parseInt(req.query.dias || '30', 10);
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido (recebi: ${JSON.stringify(loja || null)}). Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     let advertiserId = req.query.advertiserId;
-    if (!advertiserId) {
+    let siteId = req.query.siteId;
+    if (!advertiserId || !siteId) {
       const { primeiro } = await buscarAdvertiserId(loja);
       if (!primeiro) return res.status(200).json({ ok: false, erro: 'Nenhum advertiser_id encontrado pra essa loja (ver /debug/ads/advertiser).' });
-      advertiserId = primeiro.advertiser_id;
+      advertiserId = advertiserId || primeiro.advertiser_id;
+      siteId = siteId || primeiro.site_id;
     }
-    const campanhas = await buscarCampanhasAds(loja, advertiserId, dias);
-    res.json({ ok: true, loja, advertiserId, dias, campanhas });
+    const campanhas = await buscarCampanhasAds(loja, siteId, advertiserId, dias);
+    res.json({ ok: true, loja, siteId, advertiserId, dias, campanhas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
 app.post('/sync', async (req, res) => {
