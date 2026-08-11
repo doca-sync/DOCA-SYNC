@@ -2241,8 +2241,11 @@ function renderDashboard(){
   });
   const tv=totals.reduce((a,t)=>a+t.valor,0), tc=totals.reduce((a,t)=>a+t.capitalGiro,0), tvc=totals.reduce((a,t)=>a+t.valorColetar,0);
   const tmp=totals.reduce((a,t)=>a+(t.fin.mercadoPago||0),0), trec=totals.reduce((a,t)=>a+(t.fin.aReceber||0),0);
-  /* estoque abaixo do mínimo: mesma lógica — agrupado por loja, curva A primeiro, depois quem
-     está mais perto de zerar */
+  /* classificação de curva A/B/C por loja, usada tanto no alerta de ruptura quanto no de
+     estoque mínimo logo abaixo — precisa vir antes dos dois */
+  const curvasPorLoja={}; STORES.forEach(l=>curvasPorLoja[l]=classificarCurvaLoja(l));
+  /* estoque abaixo do mínimo: agrupado por loja, curva A primeiro, depois quem está mais
+     perto de zerar */
   const baixosPorLoja=STORES.map(loja=>{
     const itens=state.produtos.filter(p=>p.loja===loja&&estoqueBaixo(p))
       .map(p=>({produto:p,curva:curvasPorLoja[loja].get(p.id)||null}))
@@ -2255,9 +2258,8 @@ function renderDashboard(){
     return {loja,itens};
   }).filter(g=>g.itens.length);
   const diasAlertaRuptura=fullCfg().diasAlertaRuptura||10;
-  /* agrupado por loja e ranqueado por curva de vendas (A primeiro) — dentro da mesma curva,
-     o mais urgente (menos dias) vem antes */
-  const curvasPorLoja={}; STORES.forEach(l=>curvasPorLoja[l]=classificarCurvaLoja(l));
+  /* ruptura no FULL: mesma agrupação, curva A primeiro, empate resolvido pelo mais urgente
+     (menos dias) */
   const rupturasPorLoja=STORES.map(loja=>{
     const itens=rupturaProximaLista(diasAlertaRuptura).filter(r=>r.produto.loja===loja)
       .map(r=>({...r,curva:curvasPorLoja[loja].get(r.produto.id)||null}))
