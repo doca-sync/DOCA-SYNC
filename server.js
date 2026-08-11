@@ -1299,6 +1299,27 @@ app.get('/debug/ads/campanhas', async (req, res) => {
     res.json({ ok: true, loja, siteId, advertiserId, dias, campanhas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
+/* rota de diagnostico - tenta buscar impression_share/top_impression_share/
+   lost_impression_share_by_budget/lost_impression_share_by_ad_rank ("ganho de leiloes") por
+   uma campanha especifica, num endpoint diferente (por campanha, sem passar por advertiser/
+   site_id) - o endpoint de lista/search recusou esses campos com 400, entao testando se esse
+   outro formato aceita. Ex.: /debug/ads/leiloes?loja=TorvStore&campanhaId=353016528&dias=30 */
+app.get('/debug/ads/leiloes', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const campanhaId = req.query.campanhaId;
+    const dias = parseInt(req.query.dias || '30', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    const accessToken = await tokenValido(loja);
+    const de = dataYMD(Date.now() - (dias - 1) * 864e5);
+    const ate = dataYMD(Date.now());
+    const metricas = 'impression_share,top_impression_share,lost_impression_share_by_budget,lost_impression_share_by_ad_rank,clicks,prints,cost';
+    const url = `https://api.mercadolibre.com/advertising/product_ads/campaigns/${campanhaId}?date_from=${de}&date_to=${ate}&metrics=${metricas}`;
+    const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+    res.json({ ok: true, loja, campanhaId, dias, resultado: j });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+});
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
    Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
    aqui - isso fica pro Doca decidir depois, conforme formos definindo filtros/calculos. Uma
