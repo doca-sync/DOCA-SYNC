@@ -3664,6 +3664,10 @@ function renderAds(){
   if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacos-a.tacos);
   else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacos-b.tacos);
   else if(adsFiltro==='custo_desc') linhas=linhas.slice().sort((a,b)=>(b.m.cost||0)-(a.m.cost||0));
+  else if(adsFiltro==='roas_score'){
+    const nota=x=>{ const av=avalAtual.get(x.camp.id); return av?av.score:-1; };
+    linhas=linhas.slice().sort((a,b)=>nota(b)-nota(a));
+  }
 
   el.innerHTML=`
     <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
@@ -3685,6 +3689,7 @@ function renderAds(){
             <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
             <option value="tacos_asc" ${adsFiltro==='tacos_asc'?'selected':''}>Menor TACOS</option>
             <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
+            <option value="roas_score" ${adsFiltro==='roas_score'?'selected':''}>Subir ROAS (mais critérios batidos primeiro)</option>
           </select>
         </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
