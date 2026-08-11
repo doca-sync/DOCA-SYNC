@@ -896,7 +896,7 @@ function desfazer(){
 /* ---------- persistência ---------- */
 function loadFromLocalStorage(){
   const raw=localStorage.getItem('estoque_full_data');
-  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}}}; }catch(e){} }
+  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}}; }catch(e){} }
   migrar();
 }
 function saveToLocalStorage(){ localStorage.setItem('estoque_full_data',JSON.stringify(state)); }
@@ -979,7 +979,7 @@ async function restaurarVersao(nome){
     const d=JSON.parse(await (await (await bdir.getFileHandle(nome)).getFile()).text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('arquivo inválido');
     snapshot('restauração de backup');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}};
     migrar(); persist();
     toast('Restaurado o backup '+nome+'.');
   }catch(e){ alert('Não consegui restaurar: '+e.message); }
@@ -1026,7 +1026,7 @@ async function carregarDoArquivo(silencioso){
     const f=await fileHandle.getFile();
     const d=JSON.parse(await f.text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('conteúdo inválido');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}};
     migrar(); saveToLocalStorage();
     ultimoMod=f.lastModified; alteracaoLocal=false; undoStack=[];
     renderAll();
@@ -1233,7 +1233,7 @@ async function abrirArquivo(){
     const d=JSON.parse(await (await h.getFile()).text());
     if(!d||!Array.isArray(d.produtos)){ alert('Esse arquivo não parece ser um arquivo de dados válido deste sistema.'); return; }
     fileHandle=h; handlePendente=null;
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}};
     migrar(); undoStack=[];
     try{ ultimoMod=(await h.getFile()).lastModified; }catch(e){}
     alteracaoLocal=false;
@@ -1310,7 +1310,7 @@ async function conectarNuvem(usuario,senha){
   }catch(e){ nuvemAuth=antigo; throw e; }
 }
 function aplicarEstadoNuvem(d,atualizadoEmIso){
-  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[]};
+  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[]};
   migrar(); saveToLocalStorage();
   nuvemAtualizadoEm=atualizadoEmIso?new Date(atualizadoEmIso).getTime():Date.now();
   alteracaoLocal=false; undoStack=[];
@@ -3416,6 +3416,9 @@ function abrirColarAds(){
 let adsExpandido=new Set();
 let adsOrdenacao='recentes';
 let adsSoUrgente=false;
+let adsPeriodoApi='d30';
+let adsSincronizando=false;
+let adsDetalheAberto=new Set();
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -3532,6 +3535,102 @@ function renderAds(){
   el.querySelectorAll('[data-adstoggle]').forEach(h=>h.onclick=()=>{
     const id=h.dataset.adstoggle;
     if(adsExpandido.has(id)) adsExpandido.delete(id); else adsExpandido.add(id);
+    renderAds();
+  });
+}
+/* ---------- Ads: puxado direto da API (Product Ads / Mercado Ads) ----------
+   Substitui o renderAds() manual acima (ficou parado, sem uso, caso algum pedaço da análise
+   dele — scores, sugestões etc — sirva de referência depois). Por enquanto só mostra tudo que
+   a API devolve, sem calcular nada por cima: filtros e cálculos entram numa etapa seguinte,
+   depois de decidirmos o que faz sentido com dado real na mão. */
+function adsApiLoja(loja){
+  if(!state.adsApi) state.adsApi={};
+  if(!state.adsApi[loja]) state.adsApi[loja]={advertiserId:null,siteId:null,atualizadoEm:null,periodos:{}};
+  return state.adsApi[loja];
+}
+async function adsSincronizarLoja(loja){
+  const base=backendUrl();
+  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  const rSync=await fetch(`${base}/ads/sync?loja=${encodeURIComponent(loja)}`,{method:'POST'});
+  let jSync; try{ jSync=await rSync.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao sincronizar Ads (status '+rSync.status+').'); }
+  if(!rSync.ok||!jSync.ok) throw new Error(jSync.erro||('Falha ao sincronizar Ads (status '+rSync.status+').'));
+  const rData=await fetch(`${base}/ads/data?loja=${encodeURIComponent(loja)}`);
+  let jData; try{ jData=await rData.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao buscar os dados de Ads.'); }
+  if(!rData.ok||!jData.ok) throw new Error(jData.erro||'Falha ao buscar os dados de Ads sincronizados.');
+  const alvo=adsApiLoja(loja);
+  alvo.periodos=jData.periodos||{};
+  alvo.atualizadoEm=jData.atualizadoEm;
+  persist();
+  return jData;
+}
+function renderAds(){
+  const el=document.getElementById('tab-ads'); if(!el) return;
+  const c=adsCfg();
+  const dados=adsApiLoja(c.loja);
+  const periodo=dados.periodos[adsPeriodoApi];
+  const campanhas=(periodo&&periodo.results)||[];
+  const rotuloPeriodo={d7:'7 dias',d15:'15 dias',d30:'30 dias'}[adsPeriodoApi];
+  el.innerHTML=`
+    <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
+    <div class="card">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr">
+        <label>Loja<select id="adLoja">${optsLojas(c.loja)}</select></label>
+        <label>Período<select id="adPeriodo">
+          <option value="d7" ${adsPeriodoApi==='d7'?'selected':''}>Últimos 7 dias</option>
+          <option value="d15" ${adsPeriodoApi==='d15'?'selected':''}>Últimos 15 dias</option>
+          <option value="d30" ${adsPeriodoApi==='d30'?'selected':''}>Últimos 30 dias</option>
+        </select></label>
+      </div>
+      <div class="acoes-linha" style="margin-top:14px">
+        <button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>
+        <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
+      </div>
+      <p class="hint">Puxado direto da API de Ads do Mercado Livre (Product Ads) — sem cálculo nenhum ainda, só o que a API devolve mesmo.${campanhas.length?' '+fmtInt(campanhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}</p>
+    </div>
+    ${campanhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th>Campanha</th><th>Status</th><th class="num">Orçamento</th><th class="num">Cliques</th><th class="num">Impressões</th>
+      <th class="num">Custo</th><th class="num">CPC</th><th class="num">CTR</th><th class="num">CVR</th>
+      <th class="num">Vendas diretas</th><th class="num">Vendas indiretas</th><th class="num">Valor direto</th><th class="num">Valor indireto</th>
+      <th class="num">ACOS</th><th class="num">ROAS</th><th class="num">ACOS obj.</th><th class="num">ROAS obj.</th><th></th>
+    </tr></thead><tbody>
+      ${campanhas.map(camp=>{
+        const m=camp.metrics||{};
+        const aberto=adsDetalheAberto.has(String(camp.id));
+        return `<tr>
+          <td>${esc(camp.name||'')}</td>
+          <td><span class="badge" style="${camp.status==='active'?'background:rgba(52,211,153,.15);color:var(--ok)':'background:rgba(148,163,184,.15);color:var(--muted)'}">${esc(camp.status||'—')}</span></td>
+          <td class="num">${fmtMoney(camp.budget||0)}</td>
+          <td class="num">${fmtInt(m.clicks||0)}</td>
+          <td class="num">${fmtInt(m.prints||0)}</td>
+          <td class="num">${fmtMoney(m.cost||0)}</td>
+          <td class="num">${fmtMoney(m.cpc||0)}</td>
+          <td class="num">${(m.ctr||0).toFixed(2)}%</td>
+          <td class="num">${(m.cvr||0).toFixed(2)}%</td>
+          <td class="num">${fmtInt(m.direct_units_quantity||0)}</td>
+          <td class="num">${fmtInt(m.indirect_units_quantity||0)}</td>
+          <td class="num">${fmtMoney(m.direct_amount||0)}</td>
+          <td class="num">${fmtMoney(m.indirect_amount||0)}</td>
+          <td class="num">${(m.acos||0).toFixed(2)}%</td>
+          <td class="num">${(m.roas||0).toFixed(2)}x</td>
+          <td class="num">${camp.acos_target||0}%</td>
+          <td class="num">${camp.roas_target||0}x</td>
+          <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
+        </tr>
+        ${aberto?`<tr><td colspan="18"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
+      }).join('')}
+    </tbody></table></div>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
+  `;
+  document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
+  document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
+  document.getElementById('adAtualizar').onclick=async()=>{
+    adsSincronizando=true; renderAds();
+    try{ await adsSincronizarLoja(c.loja); toast('Ads atualizado.'); }
+    catch(e){ alert('Não foi possível sincronizar: '+e.message); }
+    finally{ adsSincronizando=false; renderAds(); }
+  };
+  el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
+    const id=String(b.dataset.adsver);
+    if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
     renderAds();
   });
 }
