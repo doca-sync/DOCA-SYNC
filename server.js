@@ -1299,6 +1299,54 @@ app.get('/debug/ads/campanhas', async (req, res) => {
     res.json({ ok: true, loja, siteId, advertiserId, dias, campanhas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
+/* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
+   Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
+   aqui - isso fica pro Doca decidir depois, conforme formos definindo filtros/calculos. Uma
+   linha por loja+periodo, sempre sobrescrita na sincronizacao seguinte (nao guarda historico
+   por enquanto). Precisa da tabela ml_ads_campanhas (ver SQL de migracao). */
+async function sincronizarAdsLoja(loja) {
+  const { primeiro } = await buscarAdvertiserId(loja);
+  if (!primeiro) throw new Error('Nenhum advertiser_id encontrado pra essa loja.');
+  const { advertiser_id, site_id } = primeiro;
+  const periodos = [7, 15, 30];
+  const resultado = {};
+  for (const dias of periodos) {
+    const campanhas = await buscarCampanhasAds(loja, site_id, advertiser_id, dias);
+    const chave = 'd' + dias;
+    resultado[chave] = campanhas;
+    await pool.query(
+      `insert into ml_ads_campanhas (loja, periodo, advertiser_id, site_id, dados, atualizado_em)
+       values ($1,$2,$3,$4,$5, now())
+       on conflict (loja, periodo) do update set
+         advertiser_id = excluded.advertiser_id, site_id = excluded.site_id,
+         dados = excluded.dados, atualizado_em = now()`,
+      [loja, chave, advertiser_id, site_id, JSON.stringify(campanhas)]
+    );
+  }
+  return { advertiserId: advertiser_id, siteId: site_id, periodos: resultado };
+}
+app.post('/ads/sync', async (req, res) => {
+  try {
+    const loja = req.query.loja || req.body?.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const r = await sincronizarAdsLoja(loja);
+    res.json({ ok: true, loja, advertiserId: r.advertiserId, siteId: r.siteId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+app.get('/ads/data', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const r = await pool.query('select periodo, advertiser_id, site_id, dados, atualizado_em from ml_ads_campanhas where loja = $1', [loja]);
+    const periodos = {};
+    let atualizadoEm = null;
+    r.rows.forEach(row => {
+      periodos[row.periodo] = row.dados;
+      if (!atualizadoEm || row.atualizado_em > atualizadoEm) atualizadoEm = row.atualizado_em;
+    });
+    res.json({ ok: true, loja, periodos, atualizadoEm });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
