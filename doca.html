@@ -131,6 +131,9 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .curva-badge.curva-A{background:rgba(52,211,153,.18);color:var(--ok)}
 .curva-badge.curva-B{background:rgba(251,191,36,.18);color:var(--warn)}
 .curva-badge.curva-C{background:rgba(148,163,184,.18);color:var(--muted)}
+.acao-ok{color:var(--ok);font-weight:600}
+.acao-aten{color:var(--warn);font-weight:600}
+.acao-risco{color:var(--danger);font-weight:600}
 
 .toolbar-produtos{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
 .toolbar-produtos select, .toolbar-produtos input[type=text], .toolbar-produtos input[type=date]{font:inherit;font-size:13.5px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--text);color-scheme:dark}
@@ -683,6 +686,16 @@ function coletarLivre(p){ return Math.max(0, p.qtd.coletar - reservadoColetaDe(p
 /* total que está fisicamente no galpão (livre + o que já está etiquetado pra um envio) */
 function totalNoGalpao(p){ return p.qtd.local + reservadoLocalDe(p); }
 function disponivel(p){ return coletarLivre(p)+p.qtd.local; }
+/* pra alertas de ruptura: diz se já dá pra montar um envio agora (tem no galpão), se precisa
+   só ir buscar no fornecedor (comprado, aguardando coleta) ou se nem foi comprado ainda —
+   nessa ordem de prioridade, porque cada uma exige uma ação bem diferente */
+function statusAcaoFull(p){
+  const galpao=p.qtd.local||0, coletar=coletarLivre(p), comprar=p.qtd.comprar||0;
+  if(galpao>0) return {texto:`✅ ${fmtInt(galpao)} un. disponível no galpão`,tipo:'ok'};
+  if(coletar>0) return {texto:`📦 precisa coletar ${fmtInt(coletar)} un.`,tipo:'aten'};
+  if(comprar>0) return {texto:`🛒 precisa comprar ${fmtInt(comprar)} un.`,tipo:'risco'};
+  return {texto:'sem estoque, compra ou coleta pendente',tipo:'risco'};
+}
 /* qtd.coletar já contém o reservadoColeta — não somar duas vezes */
 function valorEstoque(p){ return (p.custo||0)*(p.qtd.coletar+p.qtd.local+reservadoLocalDe(p)); }
 /* "Valor estoque" na aba Produtos mostra o total (local + FULL) com o detalhe no hover.
@@ -2248,7 +2261,12 @@ function renderDashboard(){
      perto de zerar */
   const baixosPorLoja=STORES.map(loja=>{
     const itens=state.produtos.filter(p=>p.loja===loja&&estoqueBaixo(p))
-      .map(p=>({produto:p,curva:curvasPorLoja[loja].get(p.id)||null}))
+      .map(p=>{
+        const media=mediaVendasDiaria(p);
+        const dias=(media&&media>0)?Math.floor(disponivel(p)/media):null;
+        const diaZero=dias!=null?new Date(Date.now()+Math.max(0,dias)*864e5).toISOString().slice(0,10):null;
+        return {produto:p,curva:curvasPorLoja[loja].get(p.id)||null,media,dias,diaZero};
+      })
       .sort((a,b)=>{
         const ord={A:0,B:1,C:2,null:3};
         const ca=ord[a.curva??'null'], cb=ord[b.curva??'null'];
@@ -2338,11 +2356,11 @@ function renderDashboard(){
       </tbody></table></div>`:''}
     ${rupturasPorLoja.length?`<div class="alert-baixo risco"><div class="alert-head">🚨 Risco de ruptura no FULL em até ${diasAlertaRuptura} dia(s)</div>
       ${rupturasPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
-        <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${esc(r.produto.codigo)}: ${r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`} (${fmtData(r.diaZero)})</span>`).join('')}</div></div>`).join('')}
+        <div class="alert-list">${g.itens.map(r=>{const st=statusAcaoFull(r.produto); return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`} (${fmtData(r.diaZero)}) — média: ${(mediaVendasDiaria(r.produto)||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span></span>`;}).join('')}</div></div>`).join('')}
       <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL).</p></div>`:''}
     ${baixosPorLoja.length?`<div class="alert-baixo"><div class="alert-head">⚠ Estoque disponível abaixo do mínimo definido</div>
       ${baixosPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
-        <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${esc(r.produto.codigo)}: disponível ${fmtInt(disponivel(r.produto))} / mín. ${fmtInt(estoqueMinimoEfetivo(r.produto))}${estoqueMinimoSugerido(r.produto)!=null?' <small class="muted">(auto: vendas do FULL × 30d)</small>':''}</span>`).join('')}</div></div>`).join('')}</div>`:''}
+        <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${r.dias==null?'sem venda registrada':(r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`)}${r.diaZero?` (${fmtData(r.diaZero)})`:''} — média: ${r.media!=null?r.media.toFixed(2):'—'}/dia</span>`).join('')}</div></div>`).join('')}</div>`:''}
     <p class="hint"><b>Comprar</b>, <b>Coletar</b> e <b>Local</b> mostram onde a mercadoria está fisicamente (a comprar, no fornecedor, no galpão). <b>Reservado</b> é quanto disso já tem destino num envio FULL — por isso ele se sobrepõe a Coletar e Local, não soma com eles. <b>Mercado Pago</b> e <b>A receber</b> são automáticos nas lojas já integradas (passe o mouse pro detalhe) e digitados à mão nas demais.</p>`;
   el.querySelectorAll('[data-mpago]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.mpago,{mercadoPago:i.value});
