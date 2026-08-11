@@ -1424,6 +1424,9 @@ function updateFileStatus(){
     : nuvemAuth
       ? (alteracaoLocal?'Gravando na nuvem…':'Tudo salvo na nuvem')
       : 'Salvando só no cache deste navegador';
+  document.getElementById('btnArquivo').textContent = (dirHandle||fileHandle)
+    ? '📂 Arquivo'
+    : nuvemAuth ? '☁ Nuvem' : '📂 Conectar arquivo';
   const b=document.getElementById('btnDesfazer'), l=document.getElementById('undoLabel');
   b.disabled=undoStack.length===0;
   l.textContent = undoStack.length ? '← desfaz: '+undoStack[undoStack.length-1].desc : '';
@@ -1935,7 +1938,7 @@ function renderAvisos(){
   const el=document.getElementById('avisosBox');
   let h='';
 
-  if(!fileHandle&&!handlePendente&&!verificandoArquivo&&state.produtos.length>0)
+  if(!fileHandle&&!handlePendente&&!verificandoArquivo&&!nuvemAuth&&state.produtos.length>0)
     h+=`<div class="aviso risco"><span>⚠</span><span><b>Seus dados estão só no cache deste navegador.</b> Se limpar o cache ou trocar de computador, você perde tudo. Conecte um arquivo (de preferência numa pasta do Dropbox) ou baixe um backup.</span><button class="btn sm" id="avisoConectar">Conectar arquivo</button></div>`;
   const sc=state.produtos.filter(p=>!p.custo||p.custo<=0);
   if(sc.length)
