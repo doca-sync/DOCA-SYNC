@@ -1205,6 +1205,9 @@ app.get('/debug/full/estoque', async (req, res) => {
    nesse caso precisa habilitar isso no app antes de funcionar. Fluxo: 1) descobre o
    advertiser_id do vendedor (1x por loja), 2) usa esse id pra puxar campanhas + metricas por
    periodo (ate 90 dias pra tras). Doc: developers.mercadolivre.com.br/pt_br/product-ads-leitura */
+/* lista "otimista" com tudo que a documentacao menciona - buscarCampanhasAds() tira sozinho
+   qualquer campo que a API recusar (400 "Field X not allowed"), entao nao tem problema pedir
+   mais do que esse endpoint aceita */
 const ADS_METRICAS = [
   'clicks', 'prints', 'ctr', 'cost', 'cpc', 'acos', 'organic_units_quantity', 'organic_units_amount',
   'organic_items_quantity', 'direct_items_quantity', 'indirect_items_quantity', 'advertising_items_quantity',
@@ -1240,12 +1243,33 @@ async function buscarAdvertiserId(loja) {
 function dataYMD(d) { return new Date(d).toISOString().slice(0, 10); }
 /* endpoint legado (/advertising/advertisers/{id}/product_ads/campaigns) foi desativado em
    27/05/2026 (dava 404) - o novo caminho tem o site_id no meio e termina em /search */
+/* se a API recusar algum campo de metrics (400 "Field X not allowed"), tira esse campo e
+   tenta de novo sozinho - assim nao precisamos descobrir na mao, um por um, quais campos esse
+   endpoint aceita (o corpo do erro ja diz o nome exato do campo problematico) */
 async function buscarCampanhasAds(loja, siteId, advertiserId, dias) {
   const accessToken = await tokenValido(loja);
   const de = dataYMD(Date.now() - (dias - 1) * 864e5);
   const ate = dataYMD(Date.now());
-  const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${ADS_METRICAS}`;
-  return fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+  let metricas = ADS_METRICAS.split(',');
+  const removidas = [];
+  for (let tentativa = 0; tentativa < 15; tentativa++) {
+    const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}`;
+    try {
+      const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+      if (removidas.length) j._metricas_removidas_pela_api = removidas;
+      return j;
+    } catch (e) {
+      const desc = (e.corpo && e.corpo.description) || '';
+      const m = desc.match(/Field (\w+) not allowed/i);
+      if (e.http_status === 400 && m) {
+        const campo = m[1].toLowerCase();
+        const idx = metricas.indexOf(campo);
+        if (idx >= 0) { metricas.splice(idx, 1); removidas.push(campo); continue; }
+      }
+      throw e;
+    }
+  }
+  throw new Error('Muitas metricas invalidas seguidas - parei de tentar. Removidas: ' + removidas.join(', '));
 }
 /* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
    Doca. Testar assim: /debug/ads/advertiser?loja=TorvStore
