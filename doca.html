@@ -122,6 +122,15 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .alert-baixo.risco{background:rgba(251,113,133,.10);border-color:rgba(251,113,133,.4)}
 .alert-baixo.risco .alert-head{color:var(--danger)}
 .alert-list{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.alert-grupo-loja{margin-top:12px}
+.alert-grupo-loja:first-of-type{margin-top:0}
+.alert-loja{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+  margin-bottom:5px;padding-bottom:4px;border-bottom:1px solid var(--line)}
+.curva-badge{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+  border-radius:5px;font-size:9.5px;font-weight:800;line-height:1;background:var(--bg2);color:var(--muted)}
+.curva-badge.curva-A{background:rgba(52,211,153,.18);color:var(--ok)}
+.curva-badge.curva-B{background:rgba(251,191,36,.18);color:var(--warn)}
+.curva-badge.curva-C{background:rgba(148,163,184,.18);color:var(--muted)}
 
 .toolbar-produtos{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
 .toolbar-produtos select, .toolbar-produtos input[type=text], .toolbar-produtos input[type=date]{font:inherit;font-size:13.5px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--text);color-scheme:dark}
@@ -707,8 +716,22 @@ function mediaVendasDiaria(p){
   const m=fullCalc(it).media;
   return m>0?m:0;
 }
-/* classifica uma lista de produtos em curva A/B/C pela % acumulada da média de vendas/dia
-   (Pareto: A até 80% acumulado, B até 95%, C o resto). Produtos sem leitura do FULL ficam sem classe. */
+/* classifica os produtos de 1 loja em curva A/B/C pela % acumulada da média de vendas/dia
+   (Pareto: A até 80% acumulado, B até 95%, C o resto). Produtos sem leitura do FULL ficam sem
+   classe (fora do mapa). Devolve um Map produtoId -> 'A'|'B'|'C'. */
+function classificarCurvaLoja(loja){
+  const ps=state.produtos.filter(p=>p.loja===loja).map(p=>({p,m:mediaVendasDiaria(p)||0})).filter(x=>x.m>0);
+  ps.sort((a,b)=>b.m-a.m);
+  const total=ps.reduce((s,x)=>s+x.m,0);
+  const mapa=new Map();
+  let acc=0;
+  ps.forEach(x=>{
+    acc+=x.m;
+    const pct=total>0?acc/total:1;
+    mapa.set(x.p.id,pct<=0.8?'A':(pct<=0.95?'B':'C'));
+  });
+  return mapa;
+}
 
 /* ---------- migração ---------- */
 /* Dados criados antes deste vínculo: descobre de qual envio veio cada pedido,
@@ -2218,9 +2241,33 @@ function renderDashboard(){
   });
   const tv=totals.reduce((a,t)=>a+t.valor,0), tc=totals.reduce((a,t)=>a+t.capitalGiro,0), tvc=totals.reduce((a,t)=>a+t.valorColetar,0);
   const tmp=totals.reduce((a,t)=>a+(t.fin.mercadoPago||0),0), trec=totals.reduce((a,t)=>a+(t.fin.aReceber||0),0);
-  const baixos=state.produtos.filter(estoqueBaixo).sort((a,b)=>disponivel(a)-disponivel(b)).slice(0,10);
+  /* estoque abaixo do mínimo: mesma lógica — agrupado por loja, curva A primeiro, depois quem
+     está mais perto de zerar */
+  const baixosPorLoja=STORES.map(loja=>{
+    const itens=state.produtos.filter(p=>p.loja===loja&&estoqueBaixo(p))
+      .map(p=>({produto:p,curva:curvasPorLoja[loja].get(p.id)||null}))
+      .sort((a,b)=>{
+        const ord={A:0,B:1,C:2,null:3};
+        const ca=ord[a.curva??'null'], cb=ord[b.curva??'null'];
+        if(ca!==cb) return ca-cb;
+        return disponivel(a.produto)-disponivel(b.produto);
+      });
+    return {loja,itens};
+  }).filter(g=>g.itens.length);
   const diasAlertaRuptura=fullCfg().diasAlertaRuptura||10;
-  const rupturasProx=rupturaProximaLista(diasAlertaRuptura).slice(0,10);
+  /* agrupado por loja e ranqueado por curva de vendas (A primeiro) — dentro da mesma curva,
+     o mais urgente (menos dias) vem antes */
+  const curvasPorLoja={}; STORES.forEach(l=>curvasPorLoja[l]=classificarCurvaLoja(l));
+  const rupturasPorLoja=STORES.map(loja=>{
+    const itens=rupturaProximaLista(diasAlertaRuptura).filter(r=>r.produto.loja===loja)
+      .map(r=>({...r,curva:curvasPorLoja[loja].get(r.produto.id)||null}))
+      .sort((a,b)=>{
+        const ord={A:0,B:1,C:2,null:3};
+        const ca=ord[a.curva??'null'], cb=ord[b.curva??'null'];
+        return ca!==cb?ca-cb:a.dias-b.dias;
+      });
+    return {loja,itens};
+  }).filter(g=>g.itens.length);
   const prox=enviosOrdenados().filter(e=>e.data).slice(0,5);
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
@@ -2287,11 +2334,13 @@ function renderDashboard(){
           <td class="num ${g?'pend':''}">${fmtInt(g)}</td></tr>`;
       }).join('')}
       </tbody></table></div>`:''}
-    ${rupturasProx.length?`<div class="alert-baixo risco"><div class="alert-head">🚨 Risco de ruptura no FULL em até ${diasAlertaRuptura} dia(s)</div>
-      <div class="alert-list">${rupturasProx.map(r=>`<span>${esc(r.produto.loja)} · <span class="mono">${esc(r.produto.sku)}</span> — ${esc(r.produto.codigo)}: ${r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`} (${fmtData(r.diaZero)})</span>`).join('')}</div>
-      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>.</p></div>`:''}
-    ${baixos.length?`<div class="alert-baixo"><div class="alert-head">⚠ Estoque disponível abaixo do mínimo definido</div>
-      <div class="alert-list">${baixos.map(p=>`<span>${esc(p.loja)} · <span class="mono">${esc(p.sku)}</span> — ${esc(p.codigo)}: disponível ${fmtInt(disponivel(p))} / mín. ${fmtInt(estoqueMinimoEfetivo(p))}${estoqueMinimoSugerido(p)!=null?' <small class="muted">(auto: vendas do FULL × 30d)</small>':''}</span>`).join('')}</div></div>`:''}
+    ${rupturasPorLoja.length?`<div class="alert-baixo risco"><div class="alert-head">🚨 Risco de ruptura no FULL em até ${diasAlertaRuptura} dia(s)</div>
+      ${rupturasPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
+        <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${esc(r.produto.codigo)}: ${r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`} (${fmtData(r.diaZero)})</span>`).join('')}</div></div>`).join('')}
+      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL).</p></div>`:''}
+    ${baixosPorLoja.length?`<div class="alert-baixo"><div class="alert-head">⚠ Estoque disponível abaixo do mínimo definido</div>
+      ${baixosPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
+        <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${esc(r.produto.codigo)}: disponível ${fmtInt(disponivel(r.produto))} / mín. ${fmtInt(estoqueMinimoEfetivo(r.produto))}${estoqueMinimoSugerido(r.produto)!=null?' <small class="muted">(auto: vendas do FULL × 30d)</small>':''}</span>`).join('')}</div></div>`).join('')}</div>`:''}
     <p class="hint"><b>Comprar</b>, <b>Coletar</b> e <b>Local</b> mostram onde a mercadoria está fisicamente (a comprar, no fornecedor, no galpão). <b>Reservado</b> é quanto disso já tem destino num envio FULL — por isso ele se sobrepõe a Coletar e Local, não soma com eles. <b>Mercado Pago</b> e <b>A receber</b> são automáticos nas lojas já integradas (passe o mouse pro detalhe) e digitados à mão nas demais.</p>`;
   el.querySelectorAll('[data-mpago]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.mpago,{mercadoPago:i.value});
