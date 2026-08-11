@@ -1198,6 +1198,67 @@ app.get('/debug/full/estoque', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* ---------- Mercado Ads (Product Ads) ----------
+   API separada da de estoque/pedidos - o token OAuth e' o mesmo de sempre (a URL de login nao
+   pede nenhum escopo especial), mas se o aplicativo (client_id) da loja nao tiver o produto
+   "Advertising API" habilitado no painel de developers do Mercado Livre, a API devolve 403 -
+   nesse caso precisa habilitar isso no app antes de funcionar. Fluxo: 1) descobre o
+   advertiser_id do vendedor (1x por loja), 2) usa esse id pra puxar campanhas + metricas por
+   periodo (ate 90 dias pra tras). Doc: developers.mercadolivre.com.br/pt_br/product-ads-leitura */
+const ADS_METRICAS = [
+  'clicks', 'prints', 'ctr', 'cost', 'cpc', 'acos', 'organic_units_quantity', 'organic_units_amount',
+  'organic_items_quantity', 'direct_items_quantity', 'indirect_items_quantity', 'advertising_items_quantity',
+  'cvr', 'roas', 'sov', 'direct_units_quantity', 'indirect_units_quantity', 'units_quantity', 'direct_amount',
+  'indirect_amount', 'total_amount', 'impression_share', 'top_impression_share',
+  'lost_impression_share_by_budget', 'lost_impression_share_by_ad_rank', 'acos_benchmark'
+].join(',');
+async function buscarAdvertiserId(loja) {
+  const accessToken = await tokenValido(loja);
+  const conta = await pegarConta(loja);
+  const url = `https://api.mercadolibre.com/advertising/advertisers?product_id=PADS&user_id=${conta.ml_user_id}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+  const j = await r.json();
+  if (!r.ok) { const e = new Error('Falha ao buscar advertiser_id: ' + JSON.stringify(j)); e.http_status = r.status; e.corpo = j; throw e; }
+  const advertisers = j.advertisers || [];
+  return { advertisers, primeiro: advertisers[0] || null };
+}
+function dataYMD(d) { return new Date(d).toISOString().slice(0, 10); }
+async function buscarCampanhasAds(loja, advertiserId, dias) {
+  const accessToken = await tokenValido(loja);
+  const de = dataYMD(Date.now() - (dias - 1) * 864e5);
+  const ate = dataYMD(Date.now());
+  const url = `https://api.mercadolibre.com/advertising/advertisers/${advertiserId}/product_ads/campaigns?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${ADS_METRICAS}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+  const j = await r.json();
+  if (!r.ok) { const e = new Error('Falha ao buscar campanhas: ' + JSON.stringify(j)); e.http_status = r.status; e.corpo = j; throw e; }
+  return j;
+}
+/* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
+   Doca. Testar assim: /debug/ads/advertiser?loja=TorvStore
+                        /debug/ads/campanhas?loja=TorvStore&dias=30 */
+app.get('/debug/ads/advertiser', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const { advertisers, primeiro } = await buscarAdvertiserId(loja);
+    res.json({ ok: true, loja, advertisers, advertiser_id_sugerido: primeiro && primeiro.advertiser_id });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+app.get('/debug/ads/campanhas', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const dias = parseInt(req.query.dias || '30', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    let advertiserId = req.query.advertiserId;
+    if (!advertiserId) {
+      const { primeiro } = await buscarAdvertiserId(loja);
+      if (!primeiro) return res.status(200).json({ ok: false, erro: 'Nenhum advertiser_id encontrado pra essa loja (ver /debug/ads/advertiser).' });
+      advertiserId = primeiro.advertiser_id;
+    }
+    const campanhas = await buscarCampanhasAds(loja, advertiserId, dias);
+    res.json({ ok: true, loja, advertiserId, dias, campanhas });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
