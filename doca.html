@@ -3420,7 +3420,7 @@ let adsSoUrgente=false;
 let adsPeriodoApi='d7';
 let adsSincronizando=false;
 let adsDetalheAberto=new Set();
-let adsFiltro='padrao';
+let adsFiltro='tacos_desc';
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -3583,24 +3583,6 @@ function calcAporteAds(m){
   const total=vendasAds+outrasVendas;
   return total>0?vendasAds/total*100:0;
 }
-/* quanto precisaria subir o orçamento diário pra parar de perder leilão por falta de dinheiro.
-   Se a API diz que X% dos leilões elegíveis foram perdidos por orçamento, e supondo que o custo
-   escala proporcional à parcela de leilões que você disputa, o orçamento que cobriria 100% dos
-   leilões é orcamento_atual / (1 - perda). Aproximação, não é garantia (CPC pode mudar com mais
-   competição), mas dá uma referência de quanto testar. */
-function calcOrcamentoSugerido(budget,perdaPct){
-  if(!perdaPct||perdaPct<=0||!budget) return null;
-  const fracao=Math.min(perdaPct/100,0.95);
-  return budget/(1-fracao);
-}
-/* "eficiência": tacos dividido por (custo x vendas) — quanto menor, mais eficiente (favorece
-   campanha com TACOS baixo E volume relevante de custo/vendas, não só TACOS baixo isolado,
-   que pode ser só uma campanha pequena com pouco dado). Sem custo/vendas = fica no fim da lista. */
-function calcEficienciaAds(m,tacos){
-  const vendas=(m.direct_units_quantity||0)+(m.indirect_units_quantity||0);
-  const denom=(m.cost||0)*vendas;
-  return denom>0?tacos/denom:Infinity;
-}
 /* seta comparando o valor atual com o de um período mais longo (ex.: 7d vs 30d) — verde quando
    melhora, vermelho quando piora; maiorMelhor diz se, pra essa métrica, subir é bom (ROAS/CTR/
    CVR) ou ruim (TACOS/ACOS) */
@@ -3628,14 +3610,11 @@ function renderAds(){
   let linhas=campanhas.map(camp=>{
     const m=camp.metrics||{};
     const tacos=calcTacos(m);
-    return {camp,m,tacos,eficiencia:calcEficienciaAds(m,tacos)};
+    return {camp,m,tacos};
   });
   if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacos-a.tacos);
+  else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacos-b.tacos);
   else if(adsFiltro==='custo_desc') linhas=linhas.slice().sort((a,b)=>(b.m.cost||0)-(a.m.cost||0));
-  else if(adsFiltro==='eficiente') linhas=linhas.slice().sort((a,b)=>a.eficiencia-b.eficiencia);
-  else if(adsFiltro==='acima_margem') linhas=linhas.filter(l=>l.tacos>c.margemPct);
-  else if(adsFiltro==='foto_capa') linhas=linhas.filter(l=>(l.m.ctr||0)<=0.8);
-  else if(adsFiltro==='oferta') linhas=linhas.filter(l=>(l.m.cvr||0)<=10);
 
   el.innerHTML=`
     <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
@@ -3654,45 +3633,26 @@ function renderAds(){
         <button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Filtro
           <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px">
-            <option value="padrao" ${adsFiltro==='padrao'?'selected':''}>Padrão (como veio da API)</option>
             <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
+            <option value="tacos_asc" ${adsFiltro==='tacos_asc'?'selected':''}>Menor TACOS</option>
             <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
-            <option value="eficiente" ${adsFiltro==='eficiente'?'selected':''}>Mais eficiente</option>
-            <option value="acima_margem" ${adsFiltro==='acima_margem'?'selected':''}>TACOS acima da margem</option>
-            <option value="foto_capa" ${adsFiltro==='foto_capa'?'selected':''}>Melhorar foto de capa (CTR ≤ 0,8%)</option>
-            <option value="oferta" ${adsFiltro==='oferta'?'selected':''}>Melhorar oferta (CVR ≤ 10%)</option>
           </select>
         </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
       </div>
-      <p class="hint">TACOS e eficiência são calculados aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' de '+fmtInt(campanhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}</p>
+      <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}</p>
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Campanha</th><th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
-      <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th>
-      <th class="num">Perda por orçamento</th><th></th>
+      <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
       ${linhas.map(({camp,m,tacos})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
-        const ctrBaixo=(m.ctr||0)<=0.8, cvrBaixo=(m.cvr||0)<=10, tacosAlto=tacos>c.margemPct;
-        /* a API não libera "perda por orçamento" nem "não exibidos por classificação" (testado
-           e recusado com 400 nos dois). Mas dá pra calcular a perda por orçamento sozinha se a
-           pessoa informar "não exibidos por classificação" (esse SIM aparece no painel do
-           Mercado Ads, é só copiar de lá) — a regra do próprio Mercado/Google Ads é que
-           Ganho de Leilões + Perda por orçamento + Não exibidos por classificação = 100% dos
-           leilões elegíveis, então: Perda por orçamento = 100% − Ganho de Leilões − Classificação */
-        const chaveManual=String(camp.id)+'_'+adsPeriodoApi;
-        const lostRankManual=dados.manualLostRank[chaveManual];
-        const sovAtual=m.sov!=null?Number(m.sov):null;
-        const perdaPct=(lostRankManual!=null&&lostRankManual!==''&&sovAtual!=null)?Math.max(0,100-sovAtual-Number(lostRankManual)):null;
-        const orcSugerido=perdaPct!=null?calcOrcamentoSugerido(camp.budget||0,perdaPct):null;
+        const tacosAlto=tacos>c.margemPct;
         return `<tr>
-          <td>${esc(camp.name||'')}
-            ${ctrBaixo?'<span class="badge" style="background:rgba(251,191,36,.15);color:var(--warn);margin-left:6px" title="CTR ≤ 0,8% — considere trocar a foto de capa">📷 foto</span>':''}
-            ${cvrBaixo?'<span class="badge" style="background:rgba(251,191,36,.15);color:var(--warn);margin-left:6px" title="CVR ≤ 10% — considere revisar preço/oferta">🏷️ oferta</span>':''}
-          </td>
+          <td>${esc(camp.name||'')}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -3700,31 +3660,22 @@ function renderAds(){
           <td class="num">${(m.cvr||0).toFixed(2)}%${setaTrendAds(m.cvr||0,comp?comp.cvr:null,true)}</td>
           <td class="num">${fmtInt(m.clicks||0)}</td>
           <td class="num">${fmtInt(m.prints||0)}</td>
-          <td class="num">${perdaPct==null?'<span class="muted" title="Preencha \'Não exibidos por classificação\' no ▼ dessa campanha (copiado do painel do Mercado Ads) que eu calculo sozinho.">Informar no ▼</span>':(perdaPct<=0?'<span class="okv">Sem perda</span>':`<b class="pend">Perdendo ${perdaPct.toFixed(1)}%</b>${orcSugerido?' · subir p/ '+fmtMoney(orcSugerido):''}`)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="10">
+        ${aberto?`<tr><td colspan="9">
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
-            <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
+            <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
+            <div><span class="muted" style="font-size:11px">Vendas</span><br>${fmtInt(m.units_quantity||0)}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
-            <div><span class="muted" style="font-size:11px">Status</span><br>${esc(camp.status||'—')}</div>
-            <div><span class="muted" style="font-size:11px">Estratégia</span><br>${esc(camp.strategy||'—')}</div>
-          </div>
-          <div style="background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
-            <label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px">
-              <span>Não exibidos por classificação (%) neste período <span class="muted" title="Não vem pela API — copie do painel do Mercado Ads (Métricas dessa campanha, mesmo lugar do &quot;Não foram exibidos por falta de orçamento&quot;). Com Ganho de Leilões + isso, calculamos a Perda por orçamento automaticamente.">ⓘ</span></span>
-              <input type="number" min="0" max="100" step="0.1" class="input-lostrank" data-camp="${camp.id}" value="${lostRankManual!=null&&lostRankManual!==''?lostRankManual:''}" placeholder="ex: 20" style="width:90px;padding:5px 8px;font-size:12.5px">
-              ${perdaPct!=null?`<span class="muted">→ Perda por orçamento calculada: <b class="${perdaPct>0?'pend':'okv'}">${perdaPct.toFixed(1)}%</b>${orcSugerido?' · orçamento sugerido: '+fmtMoney(orcSugerido):''}</span>`:''}
-            </label>
           </div>
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). A API não libera nem "perda por orçamento" nem "não exibidos por classificação" — mas dá pra calcular a perda por orçamento sozinha: clique no ▼ da campanha, copie o "Não foram exibidos por classificação" do painel do Mercado Ads e cole no campo — a conta é Ganho de Leilões + Perda por orçamento + Classificação = 100% dos leilões elegíveis, então isolamos a perda por orçamento sozinhos.</p>`:`<p class="empty-inline">${campanhas.length?'Nenhuma campanha bate com esse filtro.':(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov).</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
@@ -3741,13 +3692,6 @@ function renderAds(){
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
     renderAds();
-  });
-  el.querySelectorAll('.input-lostrank').forEach(inp=>inp.onchange=()=>{
-    const v=inp.value.trim();
-    if(v!==''){ const n=Number(v); if(isNaN(n)||n<0||n>100){ alert('Digite um número entre 0 e 100.'); renderAds(); return; } }
-    const chave=String(inp.dataset.camp)+'_'+adsPeriodoApi;
-    if(v==='') delete dados.manualLostRank[chave]; else dados.manualLostRank[chave]=v;
-    persist(); renderAds();
   });
 }
 
