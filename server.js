@@ -1212,13 +1212,28 @@ const ADS_METRICAS = [
   'indirect_amount', 'total_amount', 'impression_share', 'top_impression_share',
   'lost_impression_share_by_budget', 'lost_impression_share_by_ad_rank', 'acos_benchmark'
 ].join(',');
+/* fetch defensivo: le a resposta como TEXTO primeiro (nunca chama r.json() direto), porque
+   uma API pode devolver corpo vazio ou HTML de erro em vez de JSON (ex.: bloqueio de gateway
+   por falta de permissao) - isso travava com "Unexpected end of JSON input" sem mostrar o
+   status/corpo real que ajudaria a diagnosticar. */
+async function fetchMLDebug(url, opts) {
+  const r = await fetch(url, opts);
+  const bruto = await r.text();
+  let corpo = bruto;
+  try { corpo = bruto ? JSON.parse(bruto) : null; } catch (e) { /* nao era JSON - mantem texto cru */ }
+  if (!r.ok) {
+    const e = new Error(`A API do Mercado Livre respondeu status ${r.status} em ${url.split('?')[0]}`);
+    e.http_status = r.status; e.corpo = corpo; e.corpo_bruto = bruto.slice(0, 500);
+    throw e;
+  }
+  if (corpo === null) { const e = new Error('A API respondeu com o corpo vazio (status ' + r.status + ').'); e.http_status = r.status; throw e; }
+  return corpo;
+}
 async function buscarAdvertiserId(loja) {
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const url = `https://api.mercadolibre.com/advertising/advertisers?product_id=PADS&user_id=${conta.ml_user_id}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
-  const j = await r.json();
-  if (!r.ok) { const e = new Error('Falha ao buscar advertiser_id: ' + JSON.stringify(j)); e.http_status = r.status; e.corpo = j; throw e; }
+  const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
   const advertisers = j.advertisers || [];
   return { advertisers, primeiro: advertisers[0] || null };
 }
@@ -1228,10 +1243,7 @@ async function buscarCampanhasAds(loja, advertiserId, dias) {
   const de = dataYMD(Date.now() - (dias - 1) * 864e5);
   const ate = dataYMD(Date.now());
   const url = `https://api.mercadolibre.com/advertising/advertisers/${advertiserId}/product_ads/campaigns?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${ADS_METRICAS}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
-  const j = await r.json();
-  if (!r.ok) { const e = new Error('Falha ao buscar campanhas: ' + JSON.stringify(j)); e.http_status = r.status; e.corpo = j; throw e; }
-  return j;
+  return fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
 }
 /* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
    Doca. Testar assim: /debug/ads/advertiser?loja=TorvStore
@@ -1239,16 +1251,16 @@ async function buscarCampanhasAds(loja, advertiserId, dias) {
 app.get('/debug/ads/advertiser', async (req, res) => {
   try {
     const loja = req.query.loja;
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido (recebi: ${JSON.stringify(loja || null)}). Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const { advertisers, primeiro } = await buscarAdvertiserId(loja);
     res.json({ ok: true, loja, advertisers, advertiser_id_sugerido: primeiro && primeiro.advertiser_id });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
 app.get('/debug/ads/campanhas', async (req, res) => {
   try {
     const loja = req.query.loja;
     const dias = parseInt(req.query.dias || '30', 10);
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido (recebi: ${JSON.stringify(loja || null)}). Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     let advertiserId = req.query.advertiserId;
     if (!advertiserId) {
       const { primeiro } = await buscarAdvertiserId(loja);
@@ -1257,7 +1269,7 @@ app.get('/debug/ads/campanhas', async (req, res) => {
     }
     const campanhas = await buscarCampanhasAds(loja, advertiserId, dias);
     res.json({ ok: true, loja, advertiserId, dias, campanhas });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
