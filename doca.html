@@ -3548,6 +3548,7 @@ function renderAds(){
 function adsApiLoja(loja){
   if(!state.adsApi) state.adsApi={};
   if(!state.adsApi[loja]) state.adsApi[loja]={advertiserId:null,siteId:null,atualizadoEm:null,periodos:{}};
+  if(!state.adsApi[loja].manualLostRank) state.adsApi[loja].manualLostRank={};
   return state.adsApi[loja];
 }
 async function adsSincronizarLoja(loja){
@@ -3676,7 +3677,16 @@ function renderAds(){
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
         const ctrBaixo=(m.ctr||0)<=0.8, cvrBaixo=(m.cvr||0)<=10, tacosAlto=tacos>c.margemPct;
-        const perdaPct=(m.lost_impression_share_by_budget!=null)?Number(m.lost_impression_share_by_budget):null;
+        /* a API não libera "perda por orçamento" nem "não exibidos por classificação" (testado
+           e recusado com 400 nos dois). Mas dá pra calcular a perda por orçamento sozinha se a
+           pessoa informar "não exibidos por classificação" (esse SIM aparece no painel do
+           Mercado Ads, é só copiar de lá) — a regra do próprio Mercado/Google Ads é que
+           Ganho de Leilões + Perda por orçamento + Não exibidos por classificação = 100% dos
+           leilões elegíveis, então: Perda por orçamento = 100% − Ganho de Leilões − Classificação */
+        const chaveManual=String(camp.id)+'_'+adsPeriodoApi;
+        const lostRankManual=dados.manualLostRank[chaveManual];
+        const sovAtual=m.sov!=null?Number(m.sov):null;
+        const perdaPct=(lostRankManual!=null&&lostRankManual!==''&&sovAtual!=null)?Math.max(0,100-sovAtual-Number(lostRankManual)):null;
         const orcSugerido=perdaPct!=null?calcOrcamentoSugerido(camp.budget||0,perdaPct):null;
         return `<tr>
           <td>${esc(camp.name||'')}
@@ -3690,7 +3700,7 @@ function renderAds(){
           <td class="num">${(m.cvr||0).toFixed(2)}%${setaTrendAds(m.cvr||0,comp?comp.cvr:null,true)}</td>
           <td class="num">${fmtInt(m.clicks||0)}</td>
           <td class="num">${fmtInt(m.prints||0)}</td>
-          <td class="num">${perdaPct==null?'<span class="muted">— (API não libera ainda)</span>':(perdaPct<=0?'<span class="okv">Sem perda</span>':`<b class="pend">Perdendo ${perdaPct.toFixed(1)}%</b>${orcSugerido?' · subir p/ '+fmtMoney(orcSugerido):''}`)}</td>
+          <td class="num">${perdaPct==null?'<span class="muted" title="Preencha \'Não exibidos por classificação\' no ▼ dessa campanha (copiado do painel do Mercado Ads) que eu calculo sozinho.">Informar no ▼</span>':(perdaPct<=0?'<span class="okv">Sem perda</span>':`<b class="pend">Perdendo ${perdaPct.toFixed(1)}%</b>${orcSugerido?' · subir p/ '+fmtMoney(orcSugerido):''}`)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
         ${aberto?`<tr><td colspan="10">
@@ -3704,11 +3714,17 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">Status</span><br>${esc(camp.status||'—')}</div>
             <div><span class="muted" style="font-size:11px">Estratégia</span><br>${esc(camp.strategy||'—')}</div>
           </div>
-          <pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0;border-top:1px solid var(--line)">${esc(JSON.stringify(camp,null,2))}</pre>
+          <div style="background:rgba(255,255,255,.03);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+            <label style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px">
+              <span>Não exibidos por classificação (%) neste período <span class="muted" title="Não vem pela API — copie do painel do Mercado Ads (Métricas dessa campanha, mesmo lugar do &quot;Não foram exibidos por falta de orçamento&quot;). Com Ganho de Leilões + isso, calculamos a Perda por orçamento automaticamente.">ⓘ</span></span>
+              <input type="number" min="0" max="100" step="0.1" class="input-lostrank" data-camp="${camp.id}" value="${lostRankManual!=null&&lostRankManual!==''?lostRankManual:''}" placeholder="ex: 20" style="width:90px;padding:5px 8px;font-size:12.5px">
+              ${perdaPct!=null?`<span class="muted">→ Perda por orçamento calculada: <b class="${perdaPct>0?'pend':'okv'}">${perdaPct.toFixed(1)}%</b>${orcSugerido?' · orçamento sugerido: '+fmtMoney(orcSugerido):''}</span>`:''}
+            </label>
+          </div>
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Perda por orçamento" ainda depende de a API liberar o campo lost_impression_share_by_budget — enquanto isso, clique em ▼ pra ver orçamento, ACOS, ROAS, custo, CPC e tudo mais que a API traz sobre a campanha.</p>`:`<p class="empty-inline">${campanhas.length?'Nenhuma campanha bate com esse filtro.':(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). A API não libera nem "perda por orçamento" nem "não exibidos por classificação" — mas dá pra calcular a perda por orçamento sozinha: clique no ▼ da campanha, copie o "Não foram exibidos por classificação" do painel do Mercado Ads e cole no campo — a conta é Ganho de Leilões + Perda por orçamento + Classificação = 100% dos leilões elegíveis, então isolamos a perda por orçamento sozinhos.</p>`:`<p class="empty-inline">${campanhas.length?'Nenhuma campanha bate com esse filtro.':(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
@@ -3725,6 +3741,13 @@ function renderAds(){
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
     renderAds();
+  });
+  el.querySelectorAll('.input-lostrank').forEach(inp=>inp.onchange=()=>{
+    const v=inp.value.trim();
+    if(v!==''){ const n=Number(v); if(isNaN(n)||n<0||n>100){ alert('Digite um número entre 0 e 100.'); renderAds(); return; } }
+    const chave=String(inp.dataset.camp)+'_'+adsPeriodoApi;
+    if(v==='') delete dados.manualLostRank[chave]; else dados.manualLostRank[chave]=v;
+    persist(); renderAds();
   });
 }
 
