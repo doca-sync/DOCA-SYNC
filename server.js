@@ -1338,6 +1338,42 @@ app.get('/debug/ads/leiloes', async (req, res) => {
     res.json({ ok: false, erro: 'Nenhum dos formatos de endpoint testados funcionou.', tentativas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
+/* rota de diagnostico - testa campo por campo (um de cada vez) no endpoint que JA FUNCIONA
+   (o /search com campaign_ids filtrando 1 campanha), pra descobrir exatamente qual desses
+   campos de "perda por leilao/orcamento" a API aceita e qual ela recusa - em vez de mandar
+   todos juntos e so' saber que "algum" foi recusado.
+   Ex.: /debug/ads/metrica?loja=TorvStore&campanhaId=357022681&dias=7
+   Ex. escolhendo os campos: /debug/ads/metrica?loja=TorvStore&campanhaId=357022681&campos=lost_impression_share_by_budget,top_impression_share */
+app.get('/debug/ads/metrica', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const campanhaId = req.query.campanhaId;
+    const dias = parseInt(req.query.dias || '7', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    const accessToken = await tokenValido(loja);
+    const { primeiro } = await buscarAdvertiserId(loja);
+    const siteId = primeiro && primeiro.site_id;
+    const advertiserId = primeiro && primeiro.advertiser_id;
+    const de = dataYMD(Date.now() - (dias - 1) * 864e5);
+    const ate = dataYMD(Date.now());
+    const candidatos = (req.query.campos || 'lost_impression_share_by_budget,lost_impression_share_by_ad_rank,top_impression_share,impression_share,acos_benchmark')
+      .split(',').map(s => s.trim()).filter(Boolean);
+    const resultado = {};
+    for (const campo of candidatos) {
+      const metricas = `cost,clicks,prints,${campo}`;
+      const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?campaign_ids=${campanhaId}&date_from=${de}&date_to=${ate}&metrics=${metricas}`;
+      try {
+        const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+        const m = (j.results && j.results[0] && j.results[0].metrics) || null;
+        resultado[campo] = { ok: true, valor: m && (campo in m) ? m[campo] : m };
+      } catch (e) {
+        resultado[campo] = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo };
+      }
+    }
+    res.json({ ok: true, loja, campanhaId, dias, resultado });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+});
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
    Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
    aqui - isso fica pro Doca decidir depois, conforme formos definindo filtros/calculos. Uma
