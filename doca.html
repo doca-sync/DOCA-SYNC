@@ -144,6 +144,9 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
    do lado — nao tem como ter as duas coisas (rolagem so horizontal + popup sem corte) no mesmo
    elemento. Deixa sem rolagem nenhuma aqui; se a tabela for larga demais, quem rola é a página inteira. */
 .table-wrap{overflow:visible;background:var(--paper);border:1px solid var(--line);border-radius:var(--r)}
+/* variante com rolagem só horizontal contida dentro do card, em vez de rolar a página inteira -
+   só usar em tabelas SEM popup/tooltip dentro (overflow-x:auto corta overflow-y também) */
+.table-wrap.scroll-x{overflow-x:auto;max-width:100%}
 table.tbl-produtos{width:100%;border-collapse:collapse;font-size:13.5px}
 table.tbl-produtos th{text-align:left;font-size:10.5px;letter-spacing:.05em;color:var(--muted);
   padding:11px 12px;border-bottom:1px solid var(--line);white-space:nowrap;text-transform:uppercase}
@@ -3563,6 +3566,14 @@ async function adsSincronizarLoja(loja){
   persist();
   return jData;
 }
+/* TACOS (Total Advertising Cost of Sale) = custo do anúncio dividido pela receita TOTAL do
+   produto anunciado (venda atribuída ao anúncio + venda orgânica dele) — diferente do ACOS,
+   que só considera a venda atribuída ao anúncio. A API de Ads não devolve isso pronto (só
+   ACOS/ROAS), então calculamos a partir do que ela devolve. */
+function calcTacos(m){
+  const receita=(m.total_amount||0)+(m.organic_units_amount||0);
+  return receita>0?(m.cost||0)/receita*100:0;
+}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -3587,19 +3598,24 @@ function renderAds(){
       </div>
       <p class="hint">Puxado direto da API de Ads do Mercado Livre (Product Ads) — sem cálculo nenhum ainda, só o que a API devolve mesmo.${campanhas.length?' '+fmtInt(campanhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}</p>
     </div>
-    ${campanhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-      <th>Campanha</th><th>Status</th><th class="num">Orçamento</th><th class="num">Cliques</th><th class="num">Impressões</th>
+    ${campanhas.length?`<div class="table-wrap scroll-x"><table class="tbl-produtos"><thead><tr>
+      <th>Campanha</th><th>Status</th><th class="num">Orçamento</th><th class="num">TACOS</th><th class="num">ACOS</th><th class="num">ROAS</th>
+      <th class="num">Cliques</th><th class="num">Impressões</th>
       <th class="num">Custo</th><th class="num">CPC</th><th class="num">CTR</th><th class="num">CVR</th>
       <th class="num">Vendas diretas</th><th class="num">Vendas indiretas</th><th class="num">Valor direto</th><th class="num">Valor indireto</th>
-      <th class="num">ACOS</th><th class="num">ROAS</th><th class="num">ACOS obj.</th><th class="num">ROAS obj.</th><th></th>
+      <th class="num">ACOS obj.</th><th class="num">ROAS obj.</th><th></th>
     </tr></thead><tbody>
       ${campanhas.map(camp=>{
         const m=camp.metrics||{};
         const aberto=adsDetalheAberto.has(String(camp.id));
+        const tacos=calcTacos(m);
         return `<tr>
           <td>${esc(camp.name||'')}</td>
           <td><span class="badge" style="${camp.status==='active'?'background:rgba(52,211,153,.15);color:var(--ok)':'background:rgba(148,163,184,.15);color:var(--muted)'}">${esc(camp.status||'—')}</span></td>
           <td class="num">${fmtMoney(camp.budget||0)}</td>
+          <td class="num"><b>${tacos.toFixed(2)}%</b></td>
+          <td class="num">${(m.acos||0).toFixed(2)}%</td>
+          <td class="num">${(m.roas||0).toFixed(2)}x</td>
           <td class="num">${fmtInt(m.clicks||0)}</td>
           <td class="num">${fmtInt(m.prints||0)}</td>
           <td class="num">${fmtMoney(m.cost||0)}</td>
@@ -3610,15 +3626,14 @@ function renderAds(){
           <td class="num">${fmtInt(m.indirect_units_quantity||0)}</td>
           <td class="num">${fmtMoney(m.direct_amount||0)}</td>
           <td class="num">${fmtMoney(m.indirect_amount||0)}</td>
-          <td class="num">${(m.acos||0).toFixed(2)}%</td>
-          <td class="num">${(m.roas||0).toFixed(2)}x</td>
           <td class="num">${camp.acos_target||0}%</td>
           <td class="num">${camp.roas_target||0}x</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="18"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
+        ${aberto?`<tr><td colspan="19"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
       }).join('')}
-    </tbody></table></div>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
+    </tbody></table></div>
+    <p class="hint">TACOS = custo do anúncio ÷ (vendas atribuídas ao anúncio + vendas orgânicas do mesmo produto) — a API não devolve esse número pronto, então calculamos aqui. "Ganho de impressões" (leilões) ainda não confirmado se a API libera — investigando.</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
@@ -4826,6 +4841,11 @@ tentarReconectar();
       aplicarSincronizacaoFinanceira(loja,await mpSincronizarFinanceiro(loja));
     }catch(e){
       console.error(`Sincronização automática do financeiro (Mercado Pago) falhou ao abrir o Doca (loja ${loja}):`,e.message);
+    }
+    try{
+      await adsSincronizarLoja(loja);
+    }catch(e){
+      console.error(`Sincronização automática de Ads falhou ao abrir o Doca (loja ${loja}):`,e.message);
     }
   }
 })();
