@@ -139,14 +139,12 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .toolbar-produtos select, .toolbar-produtos input[type=text], .toolbar-produtos input[type=date]{font:inherit;font-size:13.5px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--text);color-scheme:dark}
 .toolbar-produtos input[type=text].grow{flex:1;min-width:180px}
 
-/* sem rolagem propria: a especificacao de CSS obriga overflow-y a virar "auto" (cortando o
-   popup verticalmente) sempre que overflow-x nao for "visible", mesmo declarando overflow-y:visible
-   do lado — nao tem como ter as duas coisas (rolagem so horizontal + popup sem corte) no mesmo
-   elemento. Deixa sem rolagem nenhuma aqui; se a tabela for larga demais, quem rola é a página inteira. */
-.table-wrap{overflow:visible;background:var(--paper);border:1px solid var(--line);border-radius:var(--r)}
-/* variante com rolagem só horizontal contida dentro do card, em vez de rolar a página inteira -
-   só usar em tabelas SEM popup/tooltip dentro (overflow-x:auto corta overflow-y também) */
-.table-wrap.scroll-x{overflow-x:auto;max-width:100%}
+/* rolagem só horizontal contida dentro do card, em vez de rolar a página inteira. Isso corta o
+   popup do ícone "i" quando ele estoura o card (CSS não permite ter as duas coisas: rolagem
+   horizontal + popup sem corte no mesmo elemento) — mas pra isso já existe o clique no "i" que
+   abre o mesmo detalhe num modal normal, que nunca corta (ver o listener de '.det .i' mais
+   abaixo no arquivo). Por isso dá pra manter isso ligado em todas as tabelas sem problema. */
+.table-wrap{overflow-x:auto;max-width:100%;background:var(--paper);border:1px solid var(--line);border-radius:var(--r)}
 table.tbl-produtos{width:100%;border-collapse:collapse;font-size:13.5px}
 table.tbl-produtos th{text-align:left;font-size:10.5px;letter-spacing:.05em;color:var(--muted);
   padding:11px 12px;border-bottom:1px solid var(--line);white-space:nowrap;text-transform:uppercase}
@@ -3419,9 +3417,10 @@ function abrirColarAds(){
 let adsExpandido=new Set();
 let adsOrdenacao='recentes';
 let adsSoUrgente=false;
-let adsPeriodoApi='d30';
+let adsPeriodoApi='d7';
 let adsSincronizando=false;
 let adsDetalheAberto=new Set();
+let adsFiltro='padrao';
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -3574,6 +3573,24 @@ function calcTacos(m){
   const receita=(m.total_amount||0)+(m.organic_units_amount||0);
   return receita>0?(m.cost||0)/receita*100:0;
 }
+/* "eficiência": tacos dividido por (custo x vendas) — quanto menor, mais eficiente (favorece
+   campanha com TACOS baixo E volume relevante de custo/vendas, não só TACOS baixo isolado,
+   que pode ser só uma campanha pequena com pouco dado). Sem custo/vendas = fica no fim da lista. */
+function calcEficienciaAds(m,tacos){
+  const vendas=(m.direct_units_quantity||0)+(m.indirect_units_quantity||0);
+  const denom=(m.cost||0)*vendas;
+  return denom>0?tacos/denom:Infinity;
+}
+/* seta comparando o valor atual com o de um período mais longo (ex.: 7d vs 30d) — verde quando
+   melhora, vermelho quando piora; maiorMelhor diz se, pra essa métrica, subir é bom (ROAS/CTR/
+   CVR) ou ruim (TACOS/ACOS) */
+function setaTrendAds(atual,base,maiorMelhor){
+  if(base==null||!isFinite(base)) return '';
+  const diff=atual-base;
+  if(Math.abs(diff)<0.05) return ' <span class="muted" style="font-size:10px">=</span>';
+  const melhorou=maiorMelhor?diff>0:diff<0;
+  return ` <span class="${melhorou?'okv':'pend'}" style="font-size:10px">${diff>0?'▲':'▼'}</span>`;
+}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -3581,62 +3598,94 @@ function renderAds(){
   const periodo=dados.periodos[adsPeriodoApi];
   const campanhas=(periodo&&periodo.results)||[];
   const rotuloPeriodo={d7:'7 dias',d15:'15 dias',d30:'30 dias'}[adsPeriodoApi];
+  /* período de comparação pras setas: sempre o de 30 dias (a "base"), exceto quando já
+     estamos vendo 30 dias — aí não tem um período maior pra comparar */
+  const periodoComp=adsPeriodoApi==='d30'?null:'d30';
+  const dadosComp=periodoComp?dados.periodos[periodoComp]:null;
+  const mapaComp={};
+  if(dadosComp) (dadosComp.results||[]).forEach(camp=>mapaComp[camp.id]=camp.metrics||{});
+
+  let linhas=campanhas.map(camp=>{
+    const m=camp.metrics||{};
+    const tacos=calcTacos(m);
+    return {camp,m,tacos,eficiencia:calcEficienciaAds(m,tacos)};
+  });
+  if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacos-a.tacos);
+  else if(adsFiltro==='custo_desc') linhas=linhas.slice().sort((a,b)=>(b.m.cost||0)-(a.m.cost||0));
+  else if(adsFiltro==='eficiente') linhas=linhas.slice().sort((a,b)=>a.eficiencia-b.eficiencia);
+  else if(adsFiltro==='acima_margem') linhas=linhas.filter(l=>l.tacos>c.margemPct);
+  else if(adsFiltro==='foto_capa') linhas=linhas.filter(l=>(l.m.ctr||0)<=0.8);
+  else if(adsFiltro==='oferta') linhas=linhas.filter(l=>(l.m.cvr||0)<=10);
+
   el.innerHTML=`
     <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
     <div class="card">
-      <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
         <label>Loja<select id="adLoja">${optsLojas(c.loja)}</select></label>
         <label>Período<select id="adPeriodo">
           <option value="d7" ${adsPeriodoApi==='d7'?'selected':''}>Últimos 7 dias</option>
           <option value="d15" ${adsPeriodoApi==='d15'?'selected':''}>Últimos 15 dias</option>
           <option value="d30" ${adsPeriodoApi==='d30'?'selected':''}>Últimos 30 dias</option>
         </select></label>
+        <label>Margem (%)<small>usada no filtro "TACOS acima da margem"</small><input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
+        <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}"></label>
       </div>
-      <div class="acoes-linha" style="margin-top:14px">
+      <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         <button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Filtro
+          <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px">
+            <option value="padrao" ${adsFiltro==='padrao'?'selected':''}>Padrão (como veio da API)</option>
+            <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
+            <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
+            <option value="eficiente" ${adsFiltro==='eficiente'?'selected':''}>Mais eficiente</option>
+            <option value="acima_margem" ${adsFiltro==='acima_margem'?'selected':''}>TACOS acima da margem</option>
+            <option value="foto_capa" ${adsFiltro==='foto_capa'?'selected':''}>Melhorar foto de capa (CTR ≤ 0,8%)</option>
+            <option value="oferta" ${adsFiltro==='oferta'?'selected':''}>Melhorar oferta (CVR ≤ 10%)</option>
+          </select>
+        </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
       </div>
-      <p class="hint">Puxado direto da API de Ads do Mercado Livre (Product Ads) — sem cálculo nenhum ainda, só o que a API devolve mesmo.${campanhas.length?' '+fmtInt(campanhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}</p>
+      <p class="hint">TACOS e eficiência são calculados aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' de '+fmtInt(campanhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}</p>
     </div>
-    ${campanhas.length?`<div class="table-wrap scroll-x"><table class="tbl-produtos"><thead><tr>
-      <th>Campanha</th><th>Status</th><th class="num">Orçamento</th><th class="num">TACOS</th><th class="num">ACOS</th><th class="num">ROAS</th>
+    ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th>Campanha</th><th class="num">Orçamento</th><th class="num">TACOS</th><th class="num">ACOS</th><th class="num">ROAS</th>
       <th class="num">Cliques</th><th class="num">Impressões</th>
       <th class="num">Custo</th><th class="num">CPC</th><th class="num">CTR</th><th class="num">CVR</th>
-      <th class="num">Vendas diretas</th><th class="num">Vendas indiretas</th><th class="num">Valor direto</th><th class="num">Valor indireto</th>
-      <th class="num">ACOS obj.</th><th class="num">ROAS obj.</th><th></th>
+      <th class="num">ROAS obj.</th><th></th>
     </tr></thead><tbody>
-      ${campanhas.map(camp=>{
-        const m=camp.metrics||{};
+      ${linhas.map(({camp,m,tacos})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
-        const tacos=calcTacos(m);
+        const comp=mapaComp[camp.id];
+        const tacosComp=comp?calcTacos(comp):null;
+        const ctrBaixo=(m.ctr||0)<=0.8, cvrBaixo=(m.cvr||0)<=10, tacosAlto=tacos>c.margemPct;
         return `<tr>
-          <td>${esc(camp.name||'')}</td>
-          <td><span class="badge" style="${camp.status==='active'?'background:rgba(52,211,153,.15);color:var(--ok)':'background:rgba(148,163,184,.15);color:var(--muted)'}">${esc(camp.status||'—')}</span></td>
+          <td>${esc(camp.name||'')}
+            ${ctrBaixo?'<span class="badge" style="background:rgba(251,191,36,.15);color:var(--warn);margin-left:6px" title="CTR ≤ 0,8% — considere trocar a foto de capa">📷 foto</span>':''}
+            ${cvrBaixo?'<span class="badge" style="background:rgba(251,191,36,.15);color:var(--warn);margin-left:6px" title="CVR ≤ 10% — considere revisar preço/oferta">🏷️ oferta</span>':''}
+          </td>
           <td class="num">${fmtMoney(camp.budget||0)}</td>
-          <td class="num"><b>${tacos.toFixed(2)}%</b></td>
-          <td class="num">${(m.acos||0).toFixed(2)}%</td>
-          <td class="num">${(m.roas||0).toFixed(2)}x</td>
+          <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
+          <td class="num">${(m.acos||0).toFixed(2)}%${setaTrendAds(m.acos||0,comp?comp.acos:null,false)}</td>
+          <td class="num">${(m.roas||0).toFixed(2)}x${setaTrendAds(m.roas||0,comp?comp.roas:null,true)}</td>
           <td class="num">${fmtInt(m.clicks||0)}</td>
           <td class="num">${fmtInt(m.prints||0)}</td>
           <td class="num">${fmtMoney(m.cost||0)}</td>
           <td class="num">${fmtMoney(m.cpc||0)}</td>
-          <td class="num">${(m.ctr||0).toFixed(2)}%</td>
-          <td class="num">${(m.cvr||0).toFixed(2)}%</td>
-          <td class="num">${fmtInt(m.direct_units_quantity||0)}</td>
-          <td class="num">${fmtInt(m.indirect_units_quantity||0)}</td>
-          <td class="num">${fmtMoney(m.direct_amount||0)}</td>
-          <td class="num">${fmtMoney(m.indirect_amount||0)}</td>
-          <td class="num">${camp.acos_target||0}%</td>
+          <td class="num">${(m.ctr||0).toFixed(2)}%${setaTrendAds(m.ctr||0,comp?comp.ctr:null,true)}</td>
+          <td class="num">${(m.cvr||0).toFixed(2)}%${setaTrendAds(m.cvr||0,comp?comp.cvr:null,true)}</td>
           <td class="num">${camp.roas_target||0}x</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="19"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
+        ${aberto?`<tr><td colspan="13"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo do anúncio ÷ (vendas atribuídas ao anúncio + vendas orgânicas do mesmo produto) — a API não devolve esse número pronto, então calculamos aqui. "Ganho de impressões" (leilões) ainda não confirmado se a API libera — investigando.</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). Eficiência = TACOS ÷ (custo × vendas) — usada só pra ordenar, não é mostrada em coluna. "Ganho de impressões" (leilões) ainda não confirmado se a API libera — investigando.</p>`:`<p class="empty-inline">${campanhas.length?'Nenhuma campanha bate com esse filtro.':(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
+  document.getElementById('adFiltro').onchange=e=>{ adsFiltro=e.target.value; renderAds(); };
+  document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
+  document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.tacosTeto=v; persist(); renderAds(); };
   document.getElementById('adAtualizar').onclick=async()=>{
     adsSincronizando=true; renderAds();
     try{ await adsSincronizarLoja(c.loja); toast('Ads atualizado.'); }
