@@ -3651,7 +3651,7 @@ function renderAds(){
       <th>Campanha</th><th class="num">Orçamento</th><th class="num">TACOS</th><th class="num">ACOS</th><th class="num">ROAS</th>
       <th class="num">Cliques</th><th class="num">Impressões</th>
       <th class="num">Custo</th><th class="num">CPC</th><th class="num">CTR</th><th class="num">CVR</th>
-      <th class="num">ROAS obj.</th><th></th>
+      <th class="num">ROAS obj.</th><th class="num">Leilões (SOV)</th><th></th>
     </tr></thead><tbody>
       ${linhas.map(({camp,m,tacos})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
@@ -3674,12 +3674,13 @@ function renderAds(){
           <td class="num">${(m.ctr||0).toFixed(2)}%${setaTrendAds(m.ctr||0,comp?comp.ctr:null,true)}</td>
           <td class="num">${(m.cvr||0).toFixed(2)}%${setaTrendAds(m.cvr||0,comp?comp.cvr:null,true)}</td>
           <td class="num">${camp.roas_target||0}x</td>
+          <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="13"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
+        ${aberto?`<tr><td colspan="14"><pre style="white-space:pre-wrap;font-size:11px;color:var(--muted);margin:0;padding:8px 0">${esc(JSON.stringify(camp,null,2))}</pre></td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). Eficiência = TACOS ÷ (custo × vendas) — usada só pra ordenar, não é mostrada em coluna. "Ganho de impressões" (leilões) ainda não confirmado se a API libera — investigando.</p>`:`<p class="empty-inline">${campanhas.length?'Nenhuma campanha bate com esse filtro.':(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). Eficiência = TACOS ÷ (custo × vendas) — usada só pra ordenar, não é mostrada em coluna. "Leilões (SOV)" = share of voice, o campo que a API já entrega dentro de cada campanha (não existe um endpoint separado de impression-share liberado pra Product Ads — testamos 4 formatos de URL diferentes e todos deram 404/400).</p>`:`<p class="empty-inline">${campanhas.length?'Nenhuma campanha bate com esse filtro.':(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
