@@ -686,15 +686,18 @@ function coletarLivre(p){ return Math.max(0, p.qtd.coletar - reservadoColetaDe(p
 /* total que está fisicamente no galpão (livre + o que já está etiquetado pra um envio) */
 function totalNoGalpao(p){ return p.qtd.local + reservadoLocalDe(p); }
 function disponivel(p){ return coletarLivre(p)+p.qtd.local; }
-/* pra alertas de ruptura: diz se já dá pra montar um envio agora (tem no galpão), se precisa
-   só ir buscar no fornecedor (comprado, aguardando coleta) ou se nem foi comprado ainda —
-   nessa ordem de prioridade, porque cada uma exige uma ação bem diferente */
+/* pra alertas de ruptura: mostra quanto tem em cada situação — no galpão (pronto pra enviar),
+   a coletar (já comprado, só falta buscar no fornecedor) e a comprar (nem foi comprado ainda) —
+   só lista o que for maior que zero. Cor: verde se já tem algo pronto no galpão, amarelo se só
+   tem coisa a coletar, vermelho se só falta comprar (ou não tem nada pendente). */
 function statusAcaoFull(p){
   const galpao=p.qtd.local||0, coletar=coletarLivre(p), comprar=p.qtd.comprar||0;
-  if(galpao>0) return {texto:`✅ ${fmtInt(galpao)} un. disponível no galpão`,tipo:'ok'};
-  if(coletar>0) return {texto:`📦 precisa coletar ${fmtInt(coletar)} un.`,tipo:'aten'};
-  if(comprar>0) return {texto:`🛒 precisa comprar ${fmtInt(comprar)} un.`,tipo:'risco'};
-  return {texto:'sem estoque, compra ou coleta pendente',tipo:'risco'};
+  const partes=[];
+  if(galpao>0) partes.push(`galpão: ${fmtInt(galpao)}`);
+  if(coletar>0) partes.push(`a coletar: ${fmtInt(coletar)}`);
+  if(comprar>0) partes.push(`a comprar: ${fmtInt(comprar)}`);
+  const tipo=galpao>0?'ok':(coletar>0?'aten':'risco');
+  return {texto:partes.length?partes.join(' · '):'sem estoque, compra ou coleta pendente',tipo};
 }
 /* qtd.coletar já contém o reservadoColeta — não somar duas vezes */
 function valorEstoque(p){ return (p.custo||0)*(p.qtd.coletar+p.qtd.local+reservadoLocalDe(p)); }
