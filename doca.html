@@ -3549,6 +3549,7 @@ function adsApiLoja(loja){
   if(!state.adsApi) state.adsApi={};
   if(!state.adsApi[loja]) state.adsApi[loja]={advertiserId:null,siteId:null,atualizadoEm:null,periodos:{}};
   if(!state.adsApi[loja].manualLostRank) state.adsApi[loja].manualLostRank={};
+  if(!state.adsApi[loja].tagMaisVendido) state.adsApi[loja].tagMaisVendido={};
   return state.adsApi[loja];
 }
 async function adsSincronizarLoja(loja){
@@ -3593,6 +3594,51 @@ function setaTrendAds(atual,base,maiorMelhor){
   const melhorou=maiorMelhor?diff>0:diff<0;
   return ` <span class="${melhorou?'okv':'pend'}" style="font-size:10px">${diff>0?'▲':'▼'}</span>`;
 }
+/* ---------- sugestão "subir ROAS" (regra combinada com o usuário — ver
+   regras_sugestao_roas_ads.md pra descrição completa de cada critério) ----------
+   Reescrita pra 6 critérios, SEMPRE em cima dos últimos 7 dias (não muda com o período
+   selecionado na tela) - as tendências (critérios 5 e 6) comparam contra 15d E 30d juntos. */
+function percentilAds(valores,p){
+  const ord=valores.filter(v=>v!=null&&isFinite(v)).sort((a,b)=>a-b);
+  if(!ord.length) return null;
+  const idx=Math.min(ord.length-1,Math.floor(p*ord.length));
+  return ord[idx];
+}
+/* avalia os 6 critérios pra TODAS as campanhas de 1 loja de uma vez (sempre com base nos
+   últimos 7 dias), porque o critério de CVR alto só faz sentido comparando uma campanha com
+   as outras da MESMA loja/período - por isso o percentil é calculado 1x em cima do conjunto
+   inteiro. Devolve um Map campanhaId -> {score (0-100), criterios:[6 booleans], vendasDia}. */
+function avaliarSugestoesRoas7d(loja,dados){
+  const p7=dados.periodos.d7, p15=dados.periodos.d15, p30=dados.periodos.d30;
+  const campanhas7=(p7&&p7.results)||[];
+  const mapa15={}, mapa30={};
+  ((p15&&p15.results)||[]).forEach(cp=>mapa15[cp.id]=cp.metrics||{});
+  ((p30&&p30.results)||[]).forEach(cp=>mapa30[cp.id]=cp.metrics||{});
+  const cvrs=campanhas7.map(cp=>(cp.metrics||{}).cvr).filter(v=>v!=null&&v>0);
+  const p75Cvr=percentilAds(cvrs,0.75);
+  const resultado=new Map();
+  campanhas7.forEach(camp=>{
+    const m=camp.metrics||{};
+    const m15=mapa15[camp.id], m30=mapa30[camp.id];
+    const vendasTotal=(m.units_quantity||0)+(m.organic_units_quantity||0);
+    const vendasDia=vendasTotal/7;
+    const tacos7=calcTacos(m);
+    const tacos15=m15?calcTacos(m15):null;
+    const tacos30=m30?calcTacos(m30):null;
+    const cvr7=m.cvr||0, cvr15=m15?(m15.cvr||0):null, cvr30=m30?(m30.cvr||0):null;
+    const criterios=[
+      m.roas!=null&&camp.roas_target!=null&&m.roas>camp.roas_target,          // 1. ROAS real > objetivo
+      m.sov!=null&&m.sov>50,                                                  // 2. Ganho de Leilões > 50%
+      vendasDia>=10,                                                          // 3. 10 vendas/dia (orgânica+ads)
+      p75Cvr!=null&&cvr7>=p75Cvr,                                             // 4. CVR alto vs. outras campanhas
+      (tacos15!=null&&tacos7<tacos15)&&(tacos30!=null&&tacos7<tacos30),       // 5. TACOS caindo vs. 15d E 30d
+      (cvr15!=null&&cvr7>=cvr15-0.05)&&(cvr30!=null&&cvr7>=cvr30-0.05)        // 6. CVR subindo ou igual vs. 15d E 30d
+    ];
+    const score=criterios.filter(Boolean).length/6*100;
+    resultado.set(camp.id,{score,criterios,vendasDia,tacos:tacos7});
+  });
+  return resultado;
+}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -3606,6 +3652,9 @@ function renderAds(){
   const dadosComp=periodoComp?dados.periodos[periodoComp]:null;
   const mapaComp={};
   if(dadosComp) (dadosComp.results||[]).forEach(camp=>mapaComp[camp.id]=camp.metrics||{});
+  /* sugestão "subir ROAS" - sempre calculada em cima dos últimos 7 dias, independente do
+     período escolhido pra ver o resto da tabela (ver avaliarSugestoesRoas7d) */
+  const avalAtual=avaliarSugestoesRoas7d(c.loja,dados);
 
   let linhas=campanhas.map(camp=>{
     const m=camp.metrics||{};
@@ -3643,7 +3692,8 @@ function renderAds(){
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}</p>
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-      <th>Campanha</th><th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
+      <th>Campanha</th>
+      <th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
       ${linhas.map(({camp,m,tacos})=>{
@@ -3651,31 +3701,33 @@ function renderAds(){
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
         const tacosAlto=tacos>c.margemPct;
+        const av=avalAtual.get(camp.id);
+        const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','CVR alto vs. outras','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')).join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
         return `<tr>
-          <td>${esc(camp.name||'')}</td>
+          <td>${esc(camp.name||'')}${notaRoas}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
           <td class="num">${(m.ctr||0).toFixed(2)}%${setaTrendAds(m.ctr||0,comp?comp.ctr:null,true)}</td>
           <td class="num">${(m.cvr||0).toFixed(2)}%${setaTrendAds(m.cvr||0,comp?comp.cvr:null,true)}</td>
-          <td class="num">${fmtInt(m.clicks||0)}</td>
-          <td class="num">${fmtInt(m.prints||0)}</td>
+          <td class="num">${fmtInt(m.clicks||0)}${setaTrendAds(m.clicks||0,comp?comp.clicks:null,true)}</td>
+          <td class="num">${fmtInt(m.prints||0)}${setaTrendAds(m.prints||0,comp?comp.prints:null,true)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="9">
+        ${aberto?`<tr><td colspan="10">
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
-            <div><span class="muted" style="font-size:11px">Vendas</span><br>${fmtInt(m.units_quantity||0)}</div>
+            <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov).</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
