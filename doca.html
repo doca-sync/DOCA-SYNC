@@ -1982,6 +1982,53 @@ function moverItemParaNovoEmergencia(envioIdOrigem,itemId,data,localColeta){
   });
   return res;
 }
+/* re-etiqueta uma quantidade PARCIAL de pedidos de compra (envioId+origem) de um envio pro
+   outro - igual moverItemEnvio faz, só que aqui pode ter que partir 1 pedido em 2 (uma parte
+   fica com o envio de origem, outra vai pro de destino), porque nem sempre a fatia que está
+   indo de emergência bate exatamente com 1 pedido inteiro. */
+function reetiquetarPedidosParcial(p,envioIdOrigem,envioIdDestino,marcaDestino,qtd){
+  if(!p.pedidos) return;
+  let restante=qtd;
+  for(const c of p.pedidos){
+    if(restante<=0) break;
+    if(c.envioId!==envioIdOrigem) continue;
+    if(c.qtd<=restante){ c.envioId=envioIdDestino; c.origem=marcaDestino; restante-=c.qtd; }
+    else { c.qtd-=restante; p.pedidos.push({id:gerarId('c'),qtd:restante,data:c.data,obs:c.obs,origem:marcaDestino,envioId:envioIdDestino}); restante=0; }
+  }
+  sincronizarPedidos(p);
+}
+/* cria um FULL de emergência com só uma PARTE da quantidade programada no item (o resto
+   continua no envio de origem, programado normalmente) - prioriza tirar do que já está mais
+   pronto (galpão primeiro, depois a coletar, só por último o que ainda nem foi comprado),
+   igual o resto do sistema já faz ao reservar. Se a quantidade pedida cobrir o item inteiro,
+   cai no mesmo caminho de moverItemParaNovoEmergencia (sem sobrar item vazio no envio de
+   origem). */
+function moverQtdParaNovoEmergencia(envioIdOrigem,itemId,qtd,data,localColeta){
+  const eo=envioById(envioIdOrigem); if(!eo) return {ok:false,msg:'Envio de origem não encontrado.'};
+  const it=eo.itens.find(i=>i.id===itemId); if(!it) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(it.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  qtd=Math.max(0,Math.min(Math.round(qtd),it.solicitado||0));
+  if(qtd<=0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  if(qtd>=(it.solicitado||0)) return moverItemParaNovoEmergencia(envioIdOrigem,itemId,data,localColeta);
+  let res=null;
+  batch('criação de FULL de emergência (parcial) a partir do envio '+eo.nome,()=>{
+    const novo=criarEnvio('🚨 Emergência '+fmtData(data),data,p.loja,'',localColeta||LOCAIS_COLETA[0]);
+    novo.origem='emergencia';
+    const marcaDestino='FULL '+(novo.nome||'')+(novo.loja?' · '+novo.loja:'');
+    let restante=qtd;
+    const tirarAlocado=Math.min(restante,it.alocado||0); restante-=tirarAlocado;
+    const tirarColeta=Math.min(restante,it.reservadoColeta||0); restante-=tirarColeta;
+    const tirarCompra=Math.min(restante,it.geradoCompra||0); restante-=tirarCompra;
+    if(tirarCompra>0) reetiquetarPedidosParcial(p,envioIdOrigem,novo.id,marcaDestino,tirarCompra);
+    it.alocado=(it.alocado||0)-tirarAlocado;
+    it.reservadoColeta=(it.reservadoColeta||0)-tirarColeta;
+    it.geradoCompra=(it.geradoCompra||0)-tirarCompra;
+    it.solicitado=(it.solicitado||0)-qtd;
+    novo.itens.push({id:gerarId('it'),produtoId:it.produtoId,solicitado:qtd,alocado:tirarAlocado,reservadoColeta:tirarColeta,geradoCompra:tirarCompra});
+    res={ok:true,envio:novo};
+  });
+  return res;
+}
 /* reduz o envio ao que já está etiquetado no galpão, liberando o que faltava */
 function ajustarEnvioParaPronto(envioId){
   const e=envioById(envioId); if(!e) return 0;
@@ -4180,6 +4227,8 @@ function abrirMoverItemEnvio(envioId,itemId){
   const e=envioById(envioId); if(!e) return;
   const it=e.itens.find(i=>i.id===itemId); if(!it) return;
   const p=prodById(it.produtoId); if(!p) return;
+  const fi=itemFullDoProduto(p);
+  const media=fi?fullCalc(fi).media:0;
   const outros=state.envios.filter(x=>x.id!==envioId&&x.loja===p.loja).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
   const body=openModal(false);
   body.innerHTML=`<h3>Mover ${esc(p.sku)}</h3>
@@ -4187,17 +4236,26 @@ function abrirMoverItemEnvio(envioId,itemId){
     ${outros.length?`<div class="form-grid">
       <label class="span2">Mover para o envio<select id="mvDestino"><option value="">Escolha...</option>${outros.map(x=>`<option value="${x.id}">${esc(x.nome)} — ${esc(x.loja)} (${fmtData(x.data)})</option>`).join('')}</select></label>
     </div>
-    <button class="btn acc" id="mvBtnMover">Mover para este envio</button>
+    <button class="btn acc" id="mvBtnMover">Mover para este envio (tudo, ${fmtInt(it.solicitado)} un.)</button>
     <hr class="modal-sep">`:`<p class="hint muted">Não há outro envio programado nesta loja pra mover.</p>`}
-    <h4>Ou criar um FULL de emergência só com este item</h4>
-    <p class="hint" style="margin-top:-4px">Use quando este produto vai zerar antes do envio programado chegar — separa só ele num envio à parte, pra antecipar.</p>
+    <h4>Ou criar um FULL de emergência</h4>
+    <p class="hint" style="margin-top:-4px">Pra antecipar quando este produto vai zerar antes do envio programado chegar. Não precisa ser tudo — dá pra mandar só o suficiente pra cobrir alguns dias e deixar o resto no envio programado normalmente.</p>
     <div class="form-grid">
       <label>Data deste envio de emergência<input id="mvEmData" type="date" value="${esc(hoje())}"></label>
       <label>Local da coleta<select id="mvEmColeta">${optsColeta(LOCAIS_COLETA[0])}</select></label>
+      <label>Dias de cobertura desta emergência<input id="mvEmDias" type="number" min="1" placeholder="Ex: 15" ${media>0?'':'disabled title="Sem média de vendas/dia lida ainda pra este SKU — informe a quantidade direto"'}></label>
+      <label>Quantidade a enviar<input id="mvEmQtd" type="number" min="1" max="${it.solicitado}" value="${it.solicitado}"></label>
     </div>
-    <button class="btn gold" id="mvBtnEmergencia">🚨 Criar FULL de emergência com este item</button>
+    <p class="hint" id="mvEmInfo" style="margin-top:-6px">${media>0?`Média de vendas: <b>${media.toFixed(2)}</b> un./dia. No máximo dá pra tirar ${fmtInt(it.solicitado)} un. deste envio (o que sobrar continua programado normalmente pra ${fmtData(e.data)}).`:'Sem média de vendas/dia lida ainda pra este SKU — o campo de dias fica desativado, informe a quantidade direto.'}</p>
+    <button class="btn gold" id="mvBtnEmergencia">🚨 Criar FULL de emergência</button>
     <div class="modal-actions" style="margin-top:14px"><button class="btn" id="mvCancelar">Fechar</button></div>`;
   document.getElementById('mvCancelar').onclick=closeModal;
+  const mvEmDias=document.getElementById('mvEmDias'), mvEmQtd=document.getElementById('mvEmQtd');
+  if(media>0) mvEmDias.oninput=()=>{
+    const d=Number(mvEmDias.value);
+    if(!d||d<=0) return;
+    mvEmQtd.value=Math.min(it.solicitado,Math.ceil(d*media));
+  };
   const btnMover=document.getElementById('mvBtnMover');
   if(btnMover) btnMover.onclick=()=>{
     const destino=document.getElementById('mvDestino').value;
@@ -4211,9 +4269,13 @@ function abrirMoverItemEnvio(envioId,itemId){
     const data=document.getElementById('mvEmData').value;
     if(!data){ alert('Informe a data.'); return; }
     const localColeta=document.getElementById('mvEmColeta').value;
-    const r=moverItemParaNovoEmergencia(envioId,itemId,data,localColeta);
+    const qtd=Math.round(Number(mvEmQtd.value)||0);
+    if(qtd<=0){ alert('Informe uma quantidade válida.'); return; }
+    const r=moverQtdParaNovoEmergencia(envioId,itemId,qtd,data,localColeta);
     if(!r.ok){ alert(r.msg); return; }
-    closeModal(); toast(`FULL de emergência criado com ${p.sku}.`);
+    closeModal();
+    const restou=it.solicitado-qtd;
+    toast(`FULL de emergência criado com ${fmtInt(qtd)} un. de ${p.sku}.`+(restou>0?` As outras ${fmtInt(restou)} un. continuam no envio "${e.nome}".`:''));
   };
 }
 function openEnvioModal(id,lojaPadrao){
