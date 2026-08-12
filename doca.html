@@ -1937,6 +1937,51 @@ function removerItemEnvio(envioId,itemId){
   e.itens=e.itens.filter(i=>i.id!==itemId);
   persist();
 }
+/* move a programação de 1 item de um envio pra outro já existente (mesma loja) - diferente de
+   remover+recriar, isso NÃO libera e re-reserva o estoque (que ficaria idêntico de qualquer
+   forma): só muda qual envio "é dono" da reserva/compra que já está feita. Se o envio de
+   destino já tiver esse mesmo produto, soma nele em vez de duplicar linha. */
+function moverItemEnvio(envioIdOrigem,itemId,envioIdDestino){
+  const eo=envioById(envioIdOrigem); if(!eo) return {ok:false,msg:'Envio de origem não encontrado.'};
+  const ed=envioById(envioIdDestino); if(!ed) return {ok:false,msg:'Envio de destino não encontrado.'};
+  if(envioIdOrigem===envioIdDestino) return {ok:false,msg:'Já está neste envio.'};
+  const it=eo.itens.find(i=>i.id===itemId); if(!it) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(it.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  if(ed.loja!==p.loja) return {ok:false,msg:'O envio de destino é de outra loja.'};
+  snapshot('mover '+p.sku+' do envio '+eo.nome+' para '+ed.nome);
+  /* re-marca os pedidos de compra deste produto que estavam etiquetados pro envio de origem -
+     senão, se um dos dois envios for cancelado depois, o sistema ia procurar a ordem de compra
+     pelo envio errado (removerCompraDoEnvio casa por envioId) e não achava/reduzia certo. */
+  const marcaDestino='FULL '+(ed.nome||'')+(ed.loja?' · '+ed.loja:'');
+  (p.pedidos||[]).forEach(c=>{ if(c.envioId===envioIdOrigem){ c.envioId=envioIdDestino; c.origem=marcaDestino; } });
+  eo.itens=eo.itens.filter(i=>i.id!==itemId);
+  const existente=ed.itens.find(i=>i.produtoId===it.produtoId);
+  if(existente){
+    existente.solicitado=(existente.solicitado||0)+(it.solicitado||0);
+    existente.alocado=(existente.alocado||0)+(it.alocado||0);
+    existente.reservadoColeta=(existente.reservadoColeta||0)+(it.reservadoColeta||0);
+    existente.geradoCompra=(existente.geradoCompra||0)+(it.geradoCompra||0);
+  } else {
+    ed.itens.push({...it,id:gerarId('it')});
+  }
+  persist();
+  return {ok:true};
+}
+/* cria um envio novo de emergência (separado dos programados) e já move este item pra ele */
+function moverItemParaNovoEmergencia(envioIdOrigem,itemId,data,localColeta){
+  const eo=envioById(envioIdOrigem); if(!eo) return {ok:false,msg:'Envio de origem não encontrado.'};
+  const it=eo.itens.find(i=>i.id===itemId); if(!it) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(it.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  let res=null;
+  batch('criação de FULL de emergência a partir do envio '+eo.nome,()=>{
+    const novo=criarEnvio('🚨 Emergência '+fmtData(data),data,p.loja,'',localColeta||LOCAIS_COLETA[0]);
+    novo.origem='emergencia';
+    res=moverItemEnvio(envioIdOrigem,itemId,novo.id);
+    if(res.ok) res.envio=novo;
+    else state.envios=state.envios.filter(x=>x.id!==novo.id);
+  });
+  return res;
+}
 /* reduz o envio ao que já está etiquetado no galpão, liberando o que faltava */
 function ajustarEnvioParaPronto(envioId){
   const e=envioById(envioId); if(!e) return 0;
@@ -4030,7 +4075,8 @@ function renderEnvio(){
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totitem="${e.id}|${i.id}"
               title="Altere a quantidade desta programação — o sistema refaz a reserva e a compra">
               ${avisoItem?` <button class="btn sm danger" data-avisofok="${avisoItem.id}" title="${fmtInt(avisoItem.qtd)} un. ${avisoItem.direcao==='adicionar'?'adicionadas aqui':'tiradas daqui'} (${avisoItem.motivo==='manual'?'alterado manualmente':'fornecedor não tem tudo'}) — clique depois de ${avisoItem.direcao==='adicionar'?'adicionar':'retirar'} o mesmo tanto no envio real do Mercado Livre.">${avisoItem.direcao==='adicionar'?'➕ ajustar no ML ↺':'🚨 ajustar no ML ↺'}</button>`:''}</td>
-            <td><button class="btn sm danger-outline" data-remitem="${e.id}|${i.id}">Remover</button></td></tr>`;
+            <td><button class="btn sm" data-movitem="${e.id}|${i.id}" title="Mover para outro envio já programado, ou criar um FULL de emergência só com este item">↦ Mover</button>
+              <button class="btn sm danger-outline" data-remitem="${e.id}|${i.id}">Remover</button></td></tr>`;
         }).join('')}
         </tbody></table></div>`:`<p class="empty-inline">Envio sem itens.</p>`}
         ${(c||g)?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span><b>Ainda não pode ser finalizado.</b> Faltam ${fmtInt(c+g)} un. das ${fmtInt(a+c+g)} un. do envio: ${c?`<b>${fmtInt(c)}</b> por coletar`:''}${c&&g?' e ':''}${g?`<b>${fmtInt(g)}</b> por comprar`:''}.${a>0?' Receba tudo no galpão, ou use Editar para reduzir a quantidade do SKU.':' Compre e receba a mercadoria no galpão.'}</span></div>`:''}
@@ -4064,6 +4110,10 @@ function renderEnvio(){
     confirmAction(`Remover esta programação de ${p.sku} (${fmtInt(it.solicitado)} un.) do envio "${e.nome}"? ${fmtInt(it.alocado||0)} un. voltam pro Local${it.reservadoColeta?`, ${fmtInt(it.reservadoColeta)} un. voltam a ficar livres em Coletar`:''}${it.geradoCompra?` e ${fmtInt(it.geradoCompra)} un. saem de Comprar`:''}.`,()=>{
       removerItemEnvio(eid,iid); toast('Programação removida do envio.');
     });
+  });
+  el.querySelectorAll('[data-movitem]').forEach(b=>b.onclick=()=>{
+    const [eid,iid]=b.dataset.movitem.split('|');
+    abrirMoverItemEnvio(eid,iid);
   });
   el.querySelectorAll('[data-totitem]').forEach(inp=>inp.onchange=()=>{
     const [eid,iid]=inp.dataset.totitem.split('|');
@@ -4121,6 +4171,49 @@ function modalRecalculo(envioId,novaData,localColeta,r){
     closeModal();
     if(!res.ok){ alert(res.msg); return; }
     toast(`Envio recalculado para ${fmtData(novaData)}.`+(res.soma?` +${fmtInt(res.soma)} un.`:'')+(res.sub?` −${fmtInt(res.sub)} un. liberadas.`:''));
+  };
+}
+/* modal do botão "↦ Mover" na linha do item, dentro de Envios FULL: mover pra outro envio já
+   programado da mesma loja, ou criar um FULL de emergência separado só com este item (pra
+   antecipar quando vai dar ruptura antes do envio programado chegar). */
+function abrirMoverItemEnvio(envioId,itemId){
+  const e=envioById(envioId); if(!e) return;
+  const it=e.itens.find(i=>i.id===itemId); if(!it) return;
+  const p=prodById(it.produtoId); if(!p) return;
+  const outros=state.envios.filter(x=>x.id!==envioId&&x.loja===p.loja).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
+  const body=openModal(false);
+  body.innerHTML=`<h3>Mover ${esc(p.sku)}</h3>
+    <p class="hint" style="margin:0 0 12px">${fmtInt(it.solicitado)} un. programadas no envio "<b>${esc(e.nome)}</b>" (${esc(e.loja)}). A reserva/compra que já existe não muda — só passa a pertencer ao envio de destino.</p>
+    ${outros.length?`<div class="form-grid">
+      <label class="span2">Mover para o envio<select id="mvDestino"><option value="">Escolha...</option>${outros.map(x=>`<option value="${x.id}">${esc(x.nome)} — ${esc(x.loja)} (${fmtData(x.data)})</option>`).join('')}</select></label>
+    </div>
+    <button class="btn acc" id="mvBtnMover">Mover para este envio</button>
+    <hr class="modal-sep">`:`<p class="hint muted">Não há outro envio programado nesta loja pra mover.</p>`}
+    <h4>Ou criar um FULL de emergência só com este item</h4>
+    <p class="hint" style="margin-top:-4px">Use quando este produto vai zerar antes do envio programado chegar — separa só ele num envio à parte, pra antecipar.</p>
+    <div class="form-grid">
+      <label>Data deste envio de emergência<input id="mvEmData" type="date" value="${esc(hoje())}"></label>
+      <label>Local da coleta<select id="mvEmColeta">${optsColeta(LOCAIS_COLETA[0])}</select></label>
+    </div>
+    <button class="btn gold" id="mvBtnEmergencia">🚨 Criar FULL de emergência com este item</button>
+    <div class="modal-actions" style="margin-top:14px"><button class="btn" id="mvCancelar">Fechar</button></div>`;
+  document.getElementById('mvCancelar').onclick=closeModal;
+  const btnMover=document.getElementById('mvBtnMover');
+  if(btnMover) btnMover.onclick=()=>{
+    const destino=document.getElementById('mvDestino').value;
+    if(!destino){ alert('Escolha o envio de destino.'); return; }
+    const ed=envioById(destino);
+    const r=moverItemEnvio(envioId,itemId,destino);
+    if(!r.ok){ alert(r.msg); return; }
+    closeModal(); toast(`${p.sku} movido para o envio "${ed.nome}".`);
+  };
+  document.getElementById('mvBtnEmergencia').onclick=()=>{
+    const data=document.getElementById('mvEmData').value;
+    if(!data){ alert('Informe a data.'); return; }
+    const localColeta=document.getElementById('mvEmColeta').value;
+    const r=moverItemParaNovoEmergencia(envioId,itemId,data,localColeta);
+    if(!r.ok){ alert(r.msg); return; }
+    closeModal(); toast(`FULL de emergência criado com ${p.sku}.`);
   };
 }
 function openEnvioModal(id,lojaPadrao){
