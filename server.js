@@ -257,7 +257,7 @@ app.get('/debug/vendas', async (req, res) => {
     const de = new Date(fim - 31 * 864e5).toISOString();
     const ate = new Date(fim).toISOString();
     const log = { avisos: [] };
-    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, de, ate, log, 'order.date_closed');
+    const pedidos = await buscarPedidosComPendentes(accessToken, conta.ml_user_id, de, ate, log);
     const { porItem, detalhe, janela } = processarVendas(pedidos, { itemIdFiltro: itemId });
     const totais = porItem.get(itemId) || { v7: 0, v15: 0, v30: 0 };
     const contados = detalhe.filter(d => d.contado);
@@ -269,7 +269,7 @@ app.get('/debug/vendas', async (req, res) => {
       unidades_contadas_30d: contados.reduce((s, d) => s + d.qtd, 0),
       pedidos_excluidos: excluidos.length,
       avisos: log.avisos,
-      pedidos: detalhe.sort((a, b) => (a.date_closed || '').localeCompare(b.date_closed || ''))
+      pedidos: detalhe.sort((a, b) => (a.date_closed || a.date_created || '').localeCompare(b.date_closed || b.date_created || ''))
     });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
@@ -1085,16 +1085,25 @@ function processarVendas(pedidos, { itemIdFiltro } = {}) {
     porStatus[pedido.status] = (porStatus[pedido.status] || 0) + 1;
     let contado = true;
     let motivo = null;
-    let closedMs = null;
+    let dataUsada = null;   // data usada pra bucketar esse pedido na janela 7/15/30d
+    let fonteData = null;   // so' informativo, pra auditoria
     if (statusExcluidos.has(pedido.status)) {
       contado = false; motivo = `status=${pedido.status}`;
-    } else if (!pedido.date_closed) {
-      contado = false; motivo = 'sem date_closed (nunca fechou/pagou)';
+    } else if (pedido.date_closed) {
+      dataUsada = new Date(pedido.date_closed).getTime();
+      fonteData = 'date_closed';
+    } else if (pedido.date_created) {
+      /* pedido ainda nao fechou o pagamento (sem date_closed), mas conta pra previsao de
+         reposicao do FULL mesmo assim - a pessoa quer enxergar a demanda mesmo antes do
+         pagamento confirmar, entao usa a data de CRIACAO do pedido como base no lugar (e' a
+         unica data que todo pedido sempre tem). */
+      dataUsada = new Date(pedido.date_created).getTime();
+      fonteData = 'date_created (pagamento ainda nao fechou)';
     } else {
-      closedMs = new Date(pedido.date_closed).getTime();
-      if (closedMs < inicio30 || closedMs >= fim) {
-        contado = false; motivo = 'date_closed fora da janela de 30d';
-      }
+      contado = false; motivo = 'sem date_closed nem date_created';
+    }
+    if (contado && (dataUsada < inicio30 || dataUsada >= fim)) {
+      contado = false; motivo = `${fonteData} fora da janela de 30d`;
     }
     for (const oi of (pedido.order_items || [])) {
       const itemId = oi.item && oi.item.id;
@@ -1104,9 +1113,9 @@ function processarVendas(pedidos, { itemIdFiltro } = {}) {
       if (contado) {
         if (!porItem.has(itemId)) porItem.set(itemId, { v7: 0, v15: 0, v30: 0 });
         const acc = porItem.get(itemId);
-        if (closedMs >= inicio30 && closedMs < fim) acc.v30 += qtd;
-        if (closedMs >= inicio15 && closedMs < fim) acc.v15 += qtd;
-        if (closedMs >= inicio7 && closedMs < fim) acc.v7 += qtd;
+        if (dataUsada >= inicio30 && dataUsada < fim) acc.v30 += qtd;
+        if (dataUsada >= inicio15 && dataUsada < fim) acc.v15 += qtd;
+        if (dataUsada >= inicio7 && dataUsada < fim) acc.v7 += qtd;
       }
       if (itemIdFiltro) {
         detalhe.push({
@@ -1121,6 +1130,7 @@ function processarVendas(pedidos, { itemIdFiltro } = {}) {
           item_id: itemId,
           qtd,
           contado,
+          fonte_data: fonteData,
           motivo
         });
       }
@@ -1136,12 +1146,30 @@ function processarVendas(pedidos, { itemIdFiltro } = {}) {
     }
   };
 }
+/* busca pedidos por date_closed E por date_created, juntando sem duplicar - so' por
+   date_closed deixa de fora todo pedido que ainda nao fechou o pagamento (a API de busca do ML
+   nao devolve pedido nenhum quando o campo do filtro esta vazio nele), e a pessoa quer contar
+   esses tambem na previsao de reposicao (mesmo sem pagamento confirmado ainda). */
+async function buscarPedidosComPendentes(accessToken, sellerId, de, ate, log) {
+  const [porFechamento, porCriacao] = await Promise.all([
+    buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed'),
+    buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_created')
+  ]);
+  const vistos = new Set();
+  const pedidos = [];
+  for (const p of porFechamento.concat(porCriacao)) {
+    if (vistos.has(p.id)) continue;
+    vistos.add(p.id);
+    pedidos.push(p);
+  }
+  return pedidos;
+}
 async function buscarVendasPorItem(accessToken, sellerId) {
   const fim = inicioDoDiaBR(Date.now());
   const de = new Date(fim - 31 * 864e5).toISOString();
   const ate = new Date(fim).toISOString();
   const log = { avisos: [] };
-  const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
+  const pedidos = await buscarPedidosComPendentes(accessToken, sellerId, de, ate, log);
   const { porItem, porStatus } = processarVendas(pedidos);
   console.log(`[vendas] pedidos buscados=${pedidos.length} status=${JSON.stringify(porStatus)}${log.avisos.length ? ' avisos=' + JSON.stringify(log.avisos) : ''}`);
   // diagnostico: mostra os 5 itens com mais unidades em 30d e o item_id exato usado - serve pra
@@ -1372,6 +1400,47 @@ app.get('/debug/ads/metrica', async (req, res) => {
       }
     }
     res.json({ ok: true, loja, campanhaId, dias, resultado });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+});
+/* rota de diagnostico - tenta pegar custo/impressoes DIA A DIA (aggregation_type=DAILY, achado
+   via doc) em vez de agregado no periodo inteiro. Nao devolve "perda por orcamento" pronta (isso
+   ja confirmamos que a API nao libera de jeito nenhum), mas se vier o custo de cada dia dá pra
+   comparar com o orcamento da campanha e ver em quantos dias ela bateu no teto (indicio forte de
+   que perdeu leilao por falta de orcamento naquele dia) - um jeito de estimar automaticamente,
+   sem precisar copiar nada na mao do painel.
+   Ex.: /debug/ads/diario?loja=TorvStore&campanhaId=357022681&dias=7 */
+app.get('/debug/ads/diario', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const campanhaId = req.query.campanhaId;
+    const dias = parseInt(req.query.dias || '7', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    const accessToken = await tokenValido(loja);
+    const { primeiro } = await buscarAdvertiserId(loja);
+    const siteId = primeiro && primeiro.site_id;
+    const advertiserId = primeiro && primeiro.advertiser_id;
+    const de = dataYMD(Date.now() - (dias - 1) * 864e5);
+    const ate = dataYMD(Date.now());
+    let metricas = ['cost', 'clicks', 'prints', 'sov'];
+    const removidas = [];
+    for (let tentativa = 0; tentativa < 6; tentativa++) {
+      const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?campaign_ids=${campanhaId}&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}&aggregation_type=DAILY`;
+      try {
+        const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+        return res.json({ ok: true, loja, campanhaId, dias, url, metricas_removidas: removidas, resultado: j });
+      } catch (e) {
+        const desc = (e.corpo && e.corpo.description) || '';
+        const m = desc.match(/Field (\w+) not allowed/i);
+        if (e.http_status === 400 && m) {
+          const campo = m[1].toLowerCase();
+          const idx = metricas.indexOf(campo);
+          if (idx >= 0) { metricas.splice(idx, 1); removidas.push(campo); continue; }
+        }
+        return res.json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, metricas_removidas: removidas });
+      }
+    }
+    res.json({ ok: false, erro: 'Muitas metricas invalidas seguidas.', metricas_removidas: removidas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
