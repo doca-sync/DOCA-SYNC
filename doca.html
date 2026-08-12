@@ -1997,6 +1997,42 @@ function reetiquetarPedidosParcial(p,envioIdOrigem,envioIdDestino,marcaDestino,q
   }
   sincronizarPedidos(p);
 }
+/* move uma quantidade PARCIAL de um item pra outro envio JÁ EXISTENTE (mesma loja) - o resto
+   fica no envio de origem, programado normalmente. Se a quantidade pedida for o item inteiro,
+   cai no mesmo caminho de moverItemEnvio (sem sobrar item vazio no envio de origem). */
+function moverQtdEntreEnvios(envioIdOrigem,itemId,envioIdDestino,qtd){
+  const eo=envioById(envioIdOrigem); if(!eo) return {ok:false,msg:'Envio de origem não encontrado.'};
+  const ed=envioById(envioIdDestino); if(!ed) return {ok:false,msg:'Envio de destino não encontrado.'};
+  if(envioIdOrigem===envioIdDestino) return {ok:false,msg:'Já está neste envio.'};
+  const it=eo.itens.find(i=>i.id===itemId); if(!it) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(it.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  if(ed.loja!==p.loja) return {ok:false,msg:'O envio de destino é de outra loja.'};
+  qtd=Math.max(0,Math.min(Math.round(qtd),it.solicitado||0));
+  if(qtd<=0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  if(qtd>=(it.solicitado||0)) return moverItemEnvio(envioIdOrigem,itemId,envioIdDestino);
+  snapshot('mover '+fmtInt(qtd)+' un. de '+p.sku+' do envio '+eo.nome+' para '+ed.nome);
+  const marcaDestino='FULL '+(ed.nome||'')+(ed.loja?' · '+ed.loja:'');
+  let restante=qtd;
+  const tirarAlocado=Math.min(restante,it.alocado||0); restante-=tirarAlocado;
+  const tirarColeta=Math.min(restante,it.reservadoColeta||0); restante-=tirarColeta;
+  const tirarCompra=Math.min(restante,it.geradoCompra||0); restante-=tirarCompra;
+  if(tirarCompra>0) reetiquetarPedidosParcial(p,envioIdOrigem,envioIdDestino,marcaDestino,tirarCompra);
+  it.alocado=(it.alocado||0)-tirarAlocado;
+  it.reservadoColeta=(it.reservadoColeta||0)-tirarColeta;
+  it.geradoCompra=(it.geradoCompra||0)-tirarCompra;
+  it.solicitado=(it.solicitado||0)-qtd;
+  const existente=ed.itens.find(i=>i.produtoId===it.produtoId);
+  if(existente){
+    existente.solicitado=(existente.solicitado||0)+qtd;
+    existente.alocado=(existente.alocado||0)+tirarAlocado;
+    existente.reservadoColeta=(existente.reservadoColeta||0)+tirarColeta;
+    existente.geradoCompra=(existente.geradoCompra||0)+tirarCompra;
+  } else {
+    ed.itens.push({id:gerarId('it'),produtoId:it.produtoId,solicitado:qtd,alocado:tirarAlocado,reservadoColeta:tirarColeta,geradoCompra:tirarCompra});
+  }
+  persist();
+  return {ok:true};
+}
 /* cria um FULL de emergência com só uma PARTE da quantidade programada no item (o resto
    continua no envio de origem, programado normalmente) - prioriza tirar do que já está mais
    pronto (galpão primeiro, depois a coletar, só por último o que ainda nem foi comprado),
@@ -4235,8 +4271,9 @@ function abrirMoverItemEnvio(envioId,itemId){
     <p class="hint" style="margin:0 0 12px">${fmtInt(it.solicitado)} un. programadas no envio "<b>${esc(e.nome)}</b>" (${esc(e.loja)}). A reserva/compra que já existe não muda — só passa a pertencer ao envio de destino.</p>
     ${outros.length?`<div class="form-grid">
       <label class="span2">Mover para o envio<select id="mvDestino"><option value="">Escolha...</option>${outros.map(x=>`<option value="${x.id}">${esc(x.nome)} — ${esc(x.loja)} (${fmtData(x.data)})</option>`).join('')}</select></label>
+      <label class="span2">Quantidade a mover <small>(pode ser só uma parte — o resto fica neste envio)</small><input id="mvQtd" type="number" min="1" max="${it.solicitado}" value="${it.solicitado}"></label>
     </div>
-    <button class="btn acc" id="mvBtnMover">Mover para este envio (tudo, ${fmtInt(it.solicitado)} un.)</button>
+    <button class="btn acc" id="mvBtnMover">Mover para este envio</button>
     <hr class="modal-sep">`:`<p class="hint muted">Não há outro envio programado nesta loja pra mover.</p>`}
     <h4>Ou criar um FULL de emergência</h4>
     <p class="hint" style="margin-top:-4px">Pra antecipar quando este produto vai zerar antes do envio programado chegar. Não precisa ser tudo — dá pra mandar só o suficiente pra cobrir alguns dias e deixar o resto no envio programado normalmente.</p>
@@ -4261,9 +4298,13 @@ function abrirMoverItemEnvio(envioId,itemId){
     const destino=document.getElementById('mvDestino').value;
     if(!destino){ alert('Escolha o envio de destino.'); return; }
     const ed=envioById(destino);
-    const r=moverItemEnvio(envioId,itemId,destino);
+    const qtd=Math.round(Number(document.getElementById('mvQtd').value)||0);
+    if(qtd<=0){ alert('Informe uma quantidade válida.'); return; }
+    const r=moverQtdEntreEnvios(envioId,itemId,destino,qtd);
     if(!r.ok){ alert(r.msg); return; }
-    closeModal(); toast(`${p.sku} movido para o envio "${ed.nome}".`);
+    closeModal();
+    const restou=it.solicitado-qtd;
+    toast(`${fmtInt(qtd)} un. de ${p.sku} movidas para o envio "${ed.nome}".`+(restou>0?` As outras ${fmtInt(restou)} un. continuam no envio "${e.nome}".`:''));
   };
   document.getElementById('mvBtnEmergencia').onclick=()=>{
     const data=document.getElementById('mvEmData').value;
