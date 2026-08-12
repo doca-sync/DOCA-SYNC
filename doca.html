@@ -362,14 +362,11 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
 .subs{display:flex;flex-direction:column;gap:3px;margin-left:32px;padding-left:12px;
   border-left:2px solid var(--line2)}
 .sub{display:flex;align-items:center;gap:8px;padding:2px 0}
-/* subtarefa não tem grip de arrastar (é uma lista pequena, dentro da tarefa) - por isso as
-   setas ficam sempre visíveis, diferente do .tarefa-ordem (que só aparece em touch, já que no
-   desktop a tarefa tem o grip ⠿ pra arrastar). */
-.sub-ordem{display:flex;flex-direction:column;gap:1px;flex:none}
-.sub-ordem button{border:1px solid var(--line);background:var(--bg2);color:var(--muted);
-  border-radius:5px;font-size:8px;line-height:1;padding:3px 5px}
-.sub-ordem button:hover:not(:disabled){border-color:var(--violet);color:var(--violet-l)}
-.sub-ordem button:disabled{opacity:.25}
+.sub.arrastando{opacity:.4}
+.sub.alvo{border-top:2px solid var(--gold)}
+.sub-grip{cursor:grab;color:var(--muted);font-size:14px;flex:none;user-select:none;line-height:1;opacity:.5}
+.sub-grip:active{cursor:grabbing}
+.sub:hover .sub-grip{opacity:1}
 .sub-check{width:17px;height:17px;flex:none;border-radius:5px;border:2px solid var(--muted);background:none;
   font-size:11px;line-height:1;color:transparent;transition:.15s;display:grid;place-items:center}
 .sub-check:hover{border-color:var(--ok)}
@@ -2056,7 +2053,7 @@ function renderOnboard(){
 }
 
 /* ---------- tarefas (tela) ---------- */
-let arrastando=null,arrastandoLista=null;
+let arrastando=null,arrastandoLista=null,arrastandoSub=null;
 let novoRepetirMensal=false;
 /* avança uma data ISO em 1 mês, ajustando pro último dia quando o mês novo é mais curto */
 function proximoMes(iso){
@@ -2120,8 +2117,8 @@ function renderTarefas(){
           </div>
           <textarea class="tarefa-obs" data-obs="${t.id}" rows="1" placeholder="Observações (Enter pula linha)">${esc(t.obs)}</textarea>
           ${subs.length?`<div class="subs">
-            ${subs.map((s,si)=>`<div class="sub ${s.feito?'feita':''}">
-              <span class="sub-ordem"><button data-subsobe="${t.id}|${s.id}" ${si===0?'disabled':''} title="Subir">▲</button><button data-subdesce="${t.id}|${s.id}" ${si===subs.length-1?'disabled':''} title="Descer">▼</button></span>
+            ${subs.map((s,si)=>`<div class="sub ${s.feito?'feita':''}" draggable="true" data-subid="${t.id}|${s.id}">
+              <span class="sub-grip" title="Arraste para reordenar">⠿</span>
               <button class="sub-check" data-sub="${t.id}|${s.id}" title="${s.feito?'Reabrir':'Concluir'}">${s.feito?'✓':''}</button>
               <input class="sub-tit" type="text" value="${esc(s.titulo)}" data-subtit="${t.id}|${s.id}">
               <button class="sub-x" data-subx="${t.id}|${s.id}" title="Remover">✕</button>
@@ -2220,8 +2217,30 @@ function renderTarefas(){
   el.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.sub.split('|'); alternarSub(tid,sid); });
   el.querySelectorAll('[data-subtit]').forEach(i=>i.onchange=()=>{ const [tid,sid]=i.dataset.subtit.split('|'); editarSub(tid,sid,i.value); });
   el.querySelectorAll('[data-subx]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.subx.split('|'); removerSub(tid,sid); });
-  el.querySelectorAll('[data-subsobe]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.subsobe.split('|'); moverSub(tid,sid,-1); });
-  el.querySelectorAll('[data-subdesce]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.subdesce.split('|'); moverSub(tid,sid,1); });
+  /* arrastar subtarefa pra reordenar (só dentro da mesma tarefa) */
+  el.querySelectorAll('.sub[data-subid]').forEach(c=>{
+    c.ondragstart=ev=>{
+      if(['INPUT','TEXTAREA','BUTTON'].includes(ev.target.tagName)){ ev.preventDefault(); return; }
+      arrastandoSub=c.dataset.subid; ev.stopPropagation(); c.classList.add('arrastando');
+      ev.dataTransfer.effectAllowed='move'; try{ev.dataTransfer.setData('text/plain',c.dataset.subid);}catch(e){}
+    };
+    c.ondragend=()=>{ arrastandoSub=null; el.querySelectorAll('.sub[data-subid]').forEach(x=>x.classList.remove('arrastando','alvo')); };
+    c.ondragover=ev=>{
+      if(!arrastandoSub) return;
+      const [tidA]=arrastandoSub.split('|'), [tidB]=c.dataset.subid.split('|');
+      if(tidA!==tidB) return; /* só reordena dentro da mesma tarefa */
+      ev.preventDefault(); ev.stopPropagation();
+      if(arrastandoSub!==c.dataset.subid) c.classList.add('alvo');
+    };
+    c.ondragleave=()=>c.classList.remove('alvo');
+    c.ondrop=ev=>{
+      ev.preventDefault(); ev.stopPropagation(); c.classList.remove('alvo');
+      if(!arrastandoSub||arrastandoSub===c.dataset.subid) return;
+      const [tidA,sidA]=arrastandoSub.split('|'), [tidB,sidB]=c.dataset.subid.split('|');
+      if(tidA!==tidB) return;
+      moverSubPara(tidA,sidA,sidB);
+    };
+  });
   el.querySelectorAll('[data-data]').forEach(i=>i.onchange=()=>updateTarefa(i.dataset.data,{data:i.value}));
   el.querySelectorAll('[data-repetir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.repetir); if(!t) return;
@@ -3943,13 +3962,15 @@ function removerSub(tid,sid){
   snapshot('remoção de subtarefa');
   t.subs=(t.subs||[]).filter(x=>x.id!==sid); persist();
 }
-function moverSub(tid,sid,direcao){
+/* arrasta a subtarefa sid pra posição da subtarefa paraSid (mesma tarefa) */
+function moverSubPara(tid,sid,paraSid){
+  if(sid===paraSid) return;
   const t=state.tarefas.find(x=>x.id===tid); if(!t||!Array.isArray(t.subs)) return;
-  const i=t.subs.findIndex(x=>x.id===sid); if(i<0) return;
-  const j=i+direcao;
-  if(j<0||j>=t.subs.length) return;
+  const de=t.subs.findIndex(x=>x.id===sid), para=t.subs.findIndex(x=>x.id===paraSid);
+  if(de<0||para<0) return;
   snapshot('reordenação de subtarefas');
-  const [s]=t.subs.splice(i,1); t.subs.splice(j,0,s);
+  const [s]=t.subs.splice(de,1);
+  t.subs.splice(t.subs.findIndex(x=>x.id===paraSid),0,s);
   persist();
 }
 function tarefasAtrasadas(lid){ const h=hoje(); return state.tarefas.filter(t=>(!lid||t.listaId===lid)&&t.data&&t.data<h).length; }
@@ -4906,16 +4927,57 @@ function renderPrevisao(){
 
 /* ---------- Ruptura de estoque: todas as lojas de uma vez, comparando com o envio FULL
    já programado de verdade (Envios programados), não com a data manual da Previsão ---------- */
+/* envios programados (ainda não confirmados como FULL) deste produto, abertos por data - mesmo
+   conjunto que entradaPendenteDe soma num número só, só que aqui cada data fica separada. */
+function pendentesPorData(produtoId){
+  if(!produtoId) return [];
+  const porData={};
+  state.envios.forEach(e=>e.itens.forEach(i=>{
+    if(i.produtoId!==produtoId||!(i.solicitado>0)) return;
+    const d=e.data||'9999-99-99'; /* sem data = não dá pra saber se chega a tempo, trata como "não conta" */
+    porData[d]=(porData[d]||0)+i.solicitado;
+  }));
+  return Object.keys(porData).sort().map(d=>({data:d,qtd:porData[d]}));
+}
+/* recalcula full/cob/diaZero considerando só os envios programados que chegam A TEMPO de evitar
+   a ruptura: aptas + em transferência sempre contam (já são reais/garantidos); dos "próximos
+   programados", só entra quem tem data igual ou antes da projeção de zerar - envio programado
+   pra depois que já zerou não ajuda em nada. Precisa iterar porque incluir um envio empurra a
+   projeção de zerar mais pra frente, o que pode trazer mais um envio pra dentro do prazo. */
+function rupturaCalcComData(i){
+  const k=fullCalc(i);
+  const produtoId=i.produtoId||(fullProduto(i)?fullProduto(i).id:null);
+  const pendentes=pendentesPorData(produtoId);
+  const diaCalc=full=>k.media>0?full/k.media:(full>0?Infinity:0);
+  let full=(i.aptas||0)+(i.transf||0);
+  let cob=diaCalc(full);
+  let diaZero=cob===Infinity?null:new Date(Date.now()+Math.max(0,Math.floor(cob))*864e5).toISOString().slice(0,10);
+  const usados=new Set();
+  let mudou=true;
+  while(mudou){
+    mudou=false;
+    for(const p of pendentes){
+      if(usados.has(p.data)) continue;
+      if(diaZero!=null&&p.data<=diaZero){
+        full+=p.qtd; usados.add(p.data); mudou=true;
+        cob=diaCalc(full);
+        diaZero=cob===Infinity?null:new Date(Date.now()+Math.max(0,Math.floor(cob))*864e5).toISOString().slice(0,10);
+      }
+    }
+  }
+  return {...k,full,cob,diaZero};
+}
 function rupturaLojaLista(loja,diasLimite){
   const prox=proximoEnvioLoja(loja);
   const diasAteEnvio=prox?diasEntre(hoje(),prox.data):null;
   return fullItensLoja(loja).map(i=>({i,k:fullCalc(i),p:fullProduto(i)}))
     .filter(({k})=>k.media>0&&k.cob!==Infinity)
     .map(x=>{
-      const cobDias=Math.floor(x.k.cob);
+      const kr=rupturaCalcComData(x.i);
+      const cobDias=Math.floor(kr.cob);
       const zeraAntesDoEnvio=prox!=null&&cobDias<diasAteEnvio;
-      const diaZero=new Date(Date.now()+Math.max(0,cobDias)*864e5).toISOString().slice(0,10);
-      return {...x,cobDias,zeraAntesDoEnvio,diaZero};
+      const diaZero=kr.diaZero||new Date(Date.now()+Math.max(0,cobDias)*864e5).toISOString().slice(0,10);
+      return {...x,k:kr,cobDias,zeraAntesDoEnvio,diaZero};
     })
     .filter(x=>x.cobDias<=diasLimite||x.zeraAntesDoEnvio)
     .sort((a,b)=>a.cobDias-b.cobDias)
@@ -4937,7 +4999,7 @@ function renderRuptura(){
     <div class="form-grid">
       <label>Avisar ruptura com <small>(dias de antecedência)</small><input id="rDiasAlerta" type="number" min="1" value="${diasLimite}"></label>
     </div>
-    <p class="hint">Mostra, por loja, todo SKU que — no ritmo de venda atual — vai zerar no FULL dentro desse prazo, e destaca em vermelho quem vai zerar <b>antes do próximo envio já programado</b> em Envios programados (não a data manual da Previsão). Esse mesmo campo de dias também controla o alerta da Visão Geral.</p>
+    <p class="hint">Mostra, por loja, todo SKU que — no ritmo de venda atual — vai zerar no FULL dentro desse prazo, e destaca em vermelho quem vai zerar <b>antes do próximo envio já programado</b> em Envios programados (não a data manual da Previsão). O cálculo conta aptas + em transferência sempre, e dos envios programados só entra quem tem data <b>igual ou antes</b> da projeção de zerar — envio programado pra depois que já zerou não evita a ruptura, então não entra na conta. Esse mesmo campo de dias também controla o alerta da Visão Geral.</p>
   </div>
   <div class="cards-linha">
     <div class="card mini ${totalRisco?'alerta':''}"><span class="rot">SKU(s) em risco (todas as lojas)</span><b>${fmtInt(totalRisco)}</b>
