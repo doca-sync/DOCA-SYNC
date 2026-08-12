@@ -975,6 +975,27 @@ function diffDiasCivis(diaA, diaB) {
    antigos ficam de fora silenciosamente. Pra nao perder pedido em lojas com bastante volume,
    se o total bater perto do teto o intervalo e' dividido em dois e cada metade e' buscada
    separado (recursivo) - e a soma das duas metades nunca esbarra no teto de novo. */
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+/* chama o /orders/search com retry+backoff em 429 ("local_rate_limited") - o ML aplica um
+   teto de chamadas por segundo por app/token, e lojas de volume alto (muitas paginas, ainda
+   mais com 2 buscas rodando - ver buscarPedidosComPendentes) estouram esse teto com facilidade.
+   Sem isso, a PRIMEIRA pagina que tomar 429 derrubava a sincronizacao inteira. */
+async function buscarPaginaComRetry(url, accessToken, log, tentativa) {
+  tentativa = tentativa || 0;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const j = await r.json();
+  if (!r.ok) {
+    const rateLimited = r.status === 429 || j.error === 'local_rate_limited' || j.message === 'local_rate_limited';
+    if (rateLimited && tentativa < 5) {
+      const espera = 800 * Math.pow(2, tentativa); // 0.8s, 1.6s, 3.2s, 6.4s, 12.8s
+      if (log) log.avisos.push(`rate limit (429) na busca de pedidos - tentativa ${tentativa + 1}/5, esperando ${espera}ms`);
+      await sleep(espera);
+      return buscarPaginaComRetry(url, accessToken, log, tentativa + 1);
+    }
+    throw new Error('Falha ao buscar pedidos: ' + JSON.stringify(j));
+  }
+  return j;
+}
 async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, log, campoData) {
   campoData = campoData || 'order.date_created';
   const limit = 50;
@@ -983,14 +1004,13 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
   const pedidos = [];
   while (true) {
     const url = `https://api.mercadolibre.com/orders/search?seller=${sellerId}&${campoData}.from=${encodeURIComponent(deIso)}&${campoData}.to=${encodeURIComponent(ateIso)}&offset=${offset}&limit=${limit}`;
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    const j = await r.json();
-    if (!r.ok) throw new Error('Falha ao buscar pedidos: ' + JSON.stringify(j));
+    const j = await buscarPaginaComRetry(url, accessToken, log);
     total = (j.paging && j.paging.total) || 0;
     const pagina = j.results || [];
     pedidos.push(...pagina);
     offset += limit;
     if (pagina.length < limit || offset >= total) break;
+    await sleep(120); // pausa curta entre paginas pra nao rajar chamadas
     if (offset >= 950) {
       // perto do teto de 1000 da API - divide o intervalo restante em duas metades e busca cada uma
       log.avisos.push(`intervalo ${deIso}..${ateIso} tem ${total} pedidos, perto do teto de 1000 - dividindo`);
@@ -1151,10 +1171,12 @@ function processarVendas(pedidos, { itemIdFiltro } = {}) {
    nao devolve pedido nenhum quando o campo do filtro esta vazio nele), e a pessoa quer contar
    esses tambem na previsao de reposicao (mesmo sem pagamento confirmado ainda). */
 async function buscarPedidosComPendentes(accessToken, sellerId, de, ate, log) {
-  const [porFechamento, porCriacao] = await Promise.all([
-    buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed'),
-    buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_created')
-  ]);
+  /* sequencial (nao Promise.all) de proposito - rodar as 2 buscas em paralelo dobra o pico de
+     chamadas por segundo no /orders/search e foi o que estava estourando o rate limit (429
+     local_rate_limited) em lojas de volume alto. Com retry+backoff (buscarPaginaComRetry) e
+     pausa entre paginas, sequencial fica mais lento mas nao quebra mais. */
+  const porFechamento = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
+  const porCriacao = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_created');
   const vistos = new Set();
   const pedidos = [];
   for (const p of porFechamento.concat(porCriacao)) {
