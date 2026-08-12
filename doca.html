@@ -35,7 +35,13 @@ a{color:inherit}
 button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 :focus-visible{outline:2px solid var(--gold);outline-offset:2px;border-radius:4px}
 .mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
-.wrap{max-width:1360px;margin:0 auto;padding:0 var(--pad)}
+/* 1360px deixava a tabela de Produtos (13 colunas, tudo com white-space:nowrap) mais larga
+   que o container em qualquer tela, forçando a barra de rolagem horizontal mesmo em monitor
+   grande com espaço sobrando dos dois lados. 1680px dá espaço suficiente pra tabela inteira
+   caber sem rolagem na maioria dos desktops, mantendo o layout centralizado como antes. No
+   celular a media query de baixo (max-width:720px etc) já cuida do resto - a rolagem
+   horizontal continua normal lá. */
+.wrap{max-width:1680px;margin:0 auto;padding:0 var(--pad)}
 .hidden{display:none !important}
 
 header{background:var(--night);position:sticky;top:0;z-index:60;border-bottom:1px solid rgba(162,119,255,.2)}
@@ -1765,14 +1771,16 @@ function ajustarEstoque(id,novos){
   const nc=parseInt(novos.coletar);
   if(!isNaN(nc)&&nc<rc) return {ok:false,msg:`Coletar não pode ficar abaixo de ${fmtInt(rc)} — essa quantidade já está reservada para envios FULL. Remova do envio antes de reduzir.`};
   /* o número informado é o TOTAL contado no galpão (livre + o que já está etiquetado) */
-  const total=parseInt(novos.local);
+  /* o número informado é só a parte LIVRE (solta no galpão) - o que já está etiquetado/
+     reservado para envios FULL fica de fora dessa contagem e não é alterado aqui. Antes o
+     campo pedia o TOTAL (livre + etiquetado) e travava se desse menos que o etiquetado, o que
+     obrigava a pessoa a somar de cabeça o que já estava separado/embalado pro FULL - na
+     prática, quem faz a contagem física não recontava essas caixas já preparadas. */
+  const livre=parseInt(novos.local);
   const etiquetado=reservadoLocalDe(p);
-  if(!isNaN(total)){
-    if(total<0) return {ok:false,msg:'Informe uma quantidade válida.'};
-    if(total<etiquetado) return {ok:false,msg:`Você contou ${fmtInt(total)} un., mas ${fmtInt(etiquetado)} un. já estão etiquetadas para envios FULL — a contagem não pode ser menor que isso. Remova do envio antes de reduzir.`};
-  }
+  if(!isNaN(livre)&&livre<0) return {ok:false,msg:'Informe uma quantidade válida.'};
   snapshot('ajuste manual de estoque ('+p.sku+')');
-  if(!isNaN(total)) p.qtd.local=total-etiquetado;
+  if(!isNaN(livre)) p.qtd.local=livre;
   const ncp=parseInt(novos.comprar); if(!isNaN(ncp)&&ncp>=0) ajustarComprarPorPedidos(p,ncp);
   if(!isNaN(nc)&&nc>=0) ajustarColetarPorLotes(p,nc);
   p.atualizadoEm=Date.now();
@@ -2669,7 +2677,15 @@ function renderProdutos(){
     </table></div>
     <p class="hint"><b>Coletar</b> e <b>Local</b> mostram o total físico (no fornecedor e no galpão). <b>Reservado</b> é a parte disso que já tem destino num envio — ele não soma, se sobrepõe. *<b>Disponível</b> = o que ainda está livre pra ser reservado num próximo envio.</p>`;
   document.getElementById('filtroLoja').onchange=e=>{ filtro.loja=e.target.value; renderProdutos(); };
-  document.getElementById('filtroBusca').oninput=e=>{ filtro.busca=e.target.value; renderProdutos(); };
+  document.getElementById('filtroBusca').oninput=e=>{
+    filtro.busca=e.target.value;
+    const pos=e.target.selectionStart;
+    renderProdutos();
+    /* renderProdutos recria o <input> do zero (reescreve o innerHTML inteiro) - sem isso o
+       campo perdia o foco a cada letra digitada, deixando so digitar 1 caractere por vez. */
+    const novo=document.getElementById('filtroBusca');
+    if(novo){ novo.focus(); novo.setSelectionRange(pos,pos); }
+  };
   document.getElementById('btnNovoSku').onclick=()=>openProdutoModal(null,filtro.loja!=='todas'?filtro.loja:null);
   document.getElementById('btnConferencia').onclick=imprimirConferenciaEstoque;
   document.getElementById('btnSyncML').onclick=abrirSincronizacaoML;
@@ -2786,12 +2802,12 @@ function openProdutoModal(id,lojaPadrao){
 
       <hr class="modal-sep">
       <h4>Ajuste manual de estoque (contagem física)</h4>
-      ${rl?`<div class="aviso atencao" style="margin-bottom:12px"><span>⚠</span><span>Deste total, <b>${fmtInt(rl)} un.</b> já estão etiquetadas para envios FULL. <b>Conte tudo o que estiver no galpão</b>, inclusive essas — o sistema separa sozinho.</span></div>`:''}
+      ${rl?`<div class="aviso atencao" style="margin-bottom:12px"><span>⚠</span><span>Deste total, <b>${fmtInt(rl)} un.</b> já estão etiquetadas para envios FULL. <b>Não conte essas</b> — informe só o que está solto/livre no galpão, o etiquetado continua do jeito que está.</span></div>`:''}
       <div class="form-grid">
-        <label class="span2">Quantidade contada no galpão <small>(o total físico, incluindo o que já está etiquetado)</small><input id="ajLocal" type="number" min="0" value="${totalNoGalpao(p)}"></label>
+        <label class="span2">Quantidade livre contada no galpão <small>(sem contar o que já está etiquetado pro FULL)</small><input id="ajLocal" type="number" min="0" value="${p.qtd.local}"></label>
       </div>
       <button class="btn acc" id="btnAjustar">Salvar contagem</button>
-      <p class="hint">O valor informado <b>substitui</b> o total do galpão (não soma). Hoje o sistema tem <b>${fmtInt(totalNoGalpao(p))} un.</b>${rl?` (${fmtInt(p.qtd.local)} livres + ${fmtInt(rl)} etiquetadas)`:''}. Para corrigir compras e coletas, use a quantidade do pedido na aba <b>Comprar</b> ou receba o lote na aba <b>Coletar</b>.</p>
+      <p class="hint">O valor informado <b>substitui</b> só a parte livre (não soma, e não mexe no etiquetado). Hoje o sistema tem <b>${fmtInt(p.qtd.local)} un. livres</b>${rl?` + ${fmtInt(rl)} etiquetadas para FULL (total no galpão: ${fmtInt(totalNoGalpao(p))} un.)`:''}. Para corrigir compras e coletas, use a quantidade do pedido na aba <b>Comprar</b> ou receba o lote na aba <b>Coletar</b>.</p>
 
       <hr class="modal-sep">
       <div class="calc-row">
@@ -4596,9 +4612,15 @@ function gerarInboundPrevisao(){
 /* ---------- Previsão FULL: tela ---------- */
 function fLidoTxt(t){
   if(!t) return 'nunca';
-  const d=new Date(t), ha=Math.floor((Date.now()-t)/864e5);
+  const d=new Date(t);
+  /* comparação por DIA CIVIL (data do calendário), não por janela corrida de 24h - antes,
+     uma leitura de ontem às 19:50 ainda aparecia como "hoje" se tivessem se passado menos de
+     24h (ex: eram 15h de hoje), o que é enganoso: a data impressa já mostra 11/08 mas o rótulo
+     dizia "hoje" mesmo sendo 12/08. */
+  const meiaNoite=x=>{ const dt=new Date(x); return new Date(dt.getFullYear(),dt.getMonth(),dt.getDate()).getTime(); };
+  const ha=Math.round((meiaNoite(Date.now())-meiaNoite(t))/864e5);
   const s=d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
-  return s+(ha>0?' · há '+ha+' dia(s)':' · hoje');
+  return s+(ha<=0?' · hoje':ha===1?' · ontem':' · há '+ha+' dia(s)');
 }
 let fFiltro={so:false,ordem:'qtd'};
 function abrirVincular(itemId){
