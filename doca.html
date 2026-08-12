@@ -162,7 +162,7 @@ table.tbl-produtos tbody tr:hover{background:rgba(139,92,246,.07)}
 table.tbl-produtos tr.row-baixo{background:rgba(251,191,36,.07)}
 .loja-tag{font-size:10.5px;font-weight:700;background:rgba(139,92,246,.18);color:var(--violet-l);padding:3px 8px;border-radius:99px;white-space:nowrap;border:1px solid rgba(139,92,246,.3)}
 .qty-acao{font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:88px;background:var(--bg2);color:var(--text)}
-.obs-input{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:100%;min-width:140px;background:var(--bg2);color:var(--text)}
+.obs-input{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:100%;min-width:240px;background:var(--bg2);color:var(--text)}
 input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .pend{color:var(--danger);font-weight:700}
 .okv{color:var(--ok);font-weight:700}
@@ -362,6 +362,14 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
 .subs{display:flex;flex-direction:column;gap:3px;margin-left:32px;padding-left:12px;
   border-left:2px solid var(--line2)}
 .sub{display:flex;align-items:center;gap:8px;padding:2px 0}
+/* subtarefa não tem grip de arrastar (é uma lista pequena, dentro da tarefa) - por isso as
+   setas ficam sempre visíveis, diferente do .tarefa-ordem (que só aparece em touch, já que no
+   desktop a tarefa tem o grip ⠿ pra arrastar). */
+.sub-ordem{display:flex;flex-direction:column;gap:1px;flex:none}
+.sub-ordem button{border:1px solid var(--line);background:var(--bg2);color:var(--muted);
+  border-radius:5px;font-size:8px;line-height:1;padding:3px 5px}
+.sub-ordem button:hover:not(:disabled){border-color:var(--violet);color:var(--violet-l)}
+.sub-ordem button:disabled{opacity:.25}
 .sub-check{width:17px;height:17px;flex:none;border-radius:5px;border:2px solid var(--muted);background:none;
   font-size:11px;line-height:1;color:transparent;transition:.15s;display:grid;place-items:center}
 .sub-check:hover{border-color:var(--ok)}
@@ -2112,7 +2120,8 @@ function renderTarefas(){
           </div>
           <textarea class="tarefa-obs" data-obs="${t.id}" rows="1" placeholder="Observações (Enter pula linha)">${esc(t.obs)}</textarea>
           ${subs.length?`<div class="subs">
-            ${subs.map(s=>`<div class="sub ${s.feito?'feita':''}">
+            ${subs.map((s,si)=>`<div class="sub ${s.feito?'feita':''}">
+              <span class="sub-ordem"><button data-subsobe="${t.id}|${s.id}" ${si===0?'disabled':''} title="Subir">▲</button><button data-subdesce="${t.id}|${s.id}" ${si===subs.length-1?'disabled':''} title="Descer">▼</button></span>
               <button class="sub-check" data-sub="${t.id}|${s.id}" title="${s.feito?'Reabrir':'Concluir'}">${s.feito?'✓':''}</button>
               <input class="sub-tit" type="text" value="${esc(s.titulo)}" data-subtit="${t.id}|${s.id}">
               <button class="sub-x" data-subx="${t.id}|${s.id}" title="Remover">✕</button>
@@ -2211,6 +2220,8 @@ function renderTarefas(){
   el.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.sub.split('|'); alternarSub(tid,sid); });
   el.querySelectorAll('[data-subtit]').forEach(i=>i.onchange=()=>{ const [tid,sid]=i.dataset.subtit.split('|'); editarSub(tid,sid,i.value); });
   el.querySelectorAll('[data-subx]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.subx.split('|'); removerSub(tid,sid); });
+  el.querySelectorAll('[data-subsobe]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.subsobe.split('|'); moverSub(tid,sid,-1); });
+  el.querySelectorAll('[data-subdesce]').forEach(b=>b.onclick=()=>{ const [tid,sid]=b.dataset.subdesce.split('|'); moverSub(tid,sid,1); });
   el.querySelectorAll('[data-data]').forEach(i=>i.onchange=()=>updateTarefa(i.dataset.data,{data:i.value}));
   el.querySelectorAll('[data-repetir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.repetir); if(!t) return;
@@ -2985,7 +2996,7 @@ function tableComprar(list){
       <td><input type="number" min="0" value="${c.qtd}" class="qty-acao" data-qtdped="${p.id}|${c.id}" title="Ajuste aqui se o fornecedor não tiver a quantidade toda"></td>
       <td class="num">${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney((p.custo||0)*c.qtd)}</td>
       <td>${c.origem?`<span class="cam" style="font-size:11.5px">${esc(c.origem)}</span>`:'<span class="muted">—</span>'}</td>
-      <td><input type="text" class="obs-input" placeholder="Observação (opcional)" value="${esc(c.obs||'')}" data-obsped="${p.id}|${c.id}"></td>
+      <td><input type="text" class="obs-input" placeholder="Observação (opcional)" value="${esc(c.obs||'')}" title="${esc(c.obs||'')}" data-obsped="${p.id}|${c.id}"></td>
       <td><button class="btn sm acc" data-comprei="${p.id}|${c.id}">Comprei — vai coletar</button></td>
     </tr>`;}).join('')}
   </tbody></table></div>`;
@@ -3003,6 +3014,7 @@ function renderComprar(){
   el.innerHTML=h;
   wireAcaoButtons(el);
   el.querySelectorAll('[data-obsped]').forEach(i=>{
+    i.oninput=()=>{ i.title=i.value; }; /* pra dar pra ler o texto inteiro passando o mouse, mesmo maior que o campo */
     i.onchange=()=>{ const [pid,cid]=i.dataset.obsped.split('|'); atualizarPedido(pid,cid,{obs:i.value.toUpperCase()}); toast('Observação salva.'); };
   });
   el.querySelectorAll('[data-qtdped]').forEach(i=>{
@@ -3931,6 +3943,15 @@ function removerSub(tid,sid){
   snapshot('remoção de subtarefa');
   t.subs=(t.subs||[]).filter(x=>x.id!==sid); persist();
 }
+function moverSub(tid,sid,direcao){
+  const t=state.tarefas.find(x=>x.id===tid); if(!t||!Array.isArray(t.subs)) return;
+  const i=t.subs.findIndex(x=>x.id===sid); if(i<0) return;
+  const j=i+direcao;
+  if(j<0||j>=t.subs.length) return;
+  snapshot('reordenação de subtarefas');
+  const [s]=t.subs.splice(i,1); t.subs.splice(j,0,s);
+  persist();
+}
 function tarefasAtrasadas(lid){ const h=hoje(); return state.tarefas.filter(t=>(!lid||t.listaId===lid)&&t.data&&t.data<h).length; }
 
 /* ---------- envios FULL ---------- */
@@ -4837,7 +4858,7 @@ function renderPrevisao(){
           <span class="ln"><span>Estoque FULL hoje</span><b>−${fmtInt(k.full)}</b></span>
           <span class="ln"><span>Consumo em ${k.D} d até o envio</span><b>+${Math.round(k.consumo)}</b></span>
           <span class="ln tot"><span>A enviar</span><b>${fmtInt(k.enviar)}</b></span>
-          <span class="obs">O que já está no FULL é descontado; só entra o que falta para fechar ${c.cobertura} dias no dia do envio.${i.ajuste!=null?'<br><b>Você ajustou à mão para '+fmtInt(i.ajuste)+'.</b> Muda a data do envio pra voltar ao cálculo automático.':''}</span></span></span></td>
+          <span class="obs">O que já está no FULL é descontado; só entra o que falta para fechar ${c.cobertura} dias no dia do envio.${i.ajuste!=null?'<br><b>Você ajustou à mão para '+fmtInt(i.ajuste)+'.</b> Mudar a data do envio não mexe nisso — pra voltar este item ao cálculo automático, edite a quantidade dele de volta pra '+fmtInt(fullCalc(i).enviar)+'.':''}</span></span></span></td>
         <td><button class="btn sm danger-outline" data-fdel="${i.id}" title="Remover da lista">✕</button></td></tr>`;}).join('')}
       </tbody></table></div>`
      :(l.length?`<p class="empty-inline">Nenhum produto precisa de envio nesta data.</p>`
@@ -4848,11 +4869,12 @@ function renderPrevisao(){
   document.getElementById('fEnvio').onchange=e=>{
     if(!e.target.value) return;
     snapshot('mudança da data da previsão');
+    /* antes, mudar a data zerava o ajuste manual de TODO produto (de todas as lojas, não só
+       desta) - reescrevendo por cima de quantidade que a pessoa tinha corrigido à mão. Agora
+       mudar a data só muda a data; os ajustes manuais continuam do jeito que estavam. Pra
+       voltar 1 item específico ao cálculo automático, edite a quantidade dele em "A enviar"
+       de volta pro valor sugerido (ver dica no ⓘ da coluna). */
     fullCfg().envio=e.target.value;
-    /* muda a data => a sugestão de todo mundo volta a seguir o cálculo automático,
-       inclusive quem tinha sido ajustado à mão antes (senão o ajuste antigo fica
-       travado com uma data que não é mais a real) */
-    state.full.itens.forEach(i=>{ i.ajuste=null; });
     persist();
   };
   const num=(id,campo,min)=>{ const n=document.getElementById(id); if(!n) return; n.onchange=()=>{
