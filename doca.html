@@ -724,20 +724,37 @@ function itemFullDoProduto(p){
   return state.full.itens.find(i=>i.loja===p.loja&&fullProduto(i)&&fullProduto(i).id===p.id)||null;
 }
 function estoqueMinimoSugerido(p){
-  const it=itemFullDoProduto(p); if(!it) return null;
-  const media=fullCalc(it).media;
-  return media>0?Math.ceil(media*30):null;
+  if(p.vinculadoA) return null; /* mínimo mora no mestre, ver estoqueMinimoEfetivo */
+  const media=mediaVendasDiaria(p);
+  return (media!=null&&media>0)?Math.ceil(media*30):null;
 }
 function estoqueMinimoEfetivo(p){
   const sug=estoqueMinimoSugerido(p);
   return (sug!=null&&sug>0)?sug:(p.estoqueMinimo||0);
 }
-function estoqueBaixo(p){ return estoqueMinimoEfetivo(p)>0 && disponivel(p)<estoqueMinimoEfetivo(p); }
-/* média de vendas/dia do FULL (curva de vendas) — null quando não há leitura para o SKU */
+/* SKUs vinculados a este (mesmo produto físico, estoque compartilhado) - ver p.vinculadoA */
+function membrosVinculados(p){ return state.produtos.filter(x=>x.vinculadoA===p.id); }
+function estoqueBaixo(p){
+  /* um SKU vinculado nunca tem estoque próprio (fica sempre com qtd zerada de propósito) -
+     sem essa checagem ele soaria alarme de "estoque baixo" toda hora, mesmo o produto tendo
+     estoque de sobra no SKU mestre. O alerta de verdade fica só no mestre. */
+  if(p.vinculadoA) return false;
+  return estoqueMinimoEfetivo(p)>0 && disponivel(p)<estoqueMinimoEfetivo(p);
+}
+/* média de vendas/dia do FULL (curva de vendas) — null quando não há leitura para o SKU.
+   Quando o produto tem SKUs vinculados (mesmo estoque físico, ver p.vinculadoA), soma a média
+   de todos eles - a decisão de quanto comprar/repor tem que olhar a demanda total, não só a
+   de 1 dos anúncios. Um SKU vinculado não soma sozinho (retorna 0) - seu volume já entra na
+   conta do mestre. */
 function mediaVendasDiaria(p){
-  const it=itemFullDoProduto(p); if(!it) return null;
-  const m=fullCalc(it).media;
-  return m>0?m:0;
+  if(p.vinculadoA) return 0;
+  const grupo=[p,...membrosVinculados(p)];
+  let total=0, temAlgum=false;
+  grupo.forEach(q=>{
+    const it=itemFullDoProduto(q);
+    if(it){ const m=fullCalc(it).media; if(m>0){ total+=m; temAlgum=true; } }
+  });
+  return temAlgum?total:null;
 }
 /* classifica os produtos de 1 loja em curva A/B/C pela % acumulada da média de vendas/dia
    (Pareto: A até 80% acumulado, B até 95%, C o resto). Produtos sem leitura do FULL ficam sem
@@ -871,6 +888,12 @@ function migrar(){
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
     if(p.mlTransferencia===undefined) p.mlTransferencia=null;
+    /* vinculadoA: id de outro produto (o "mestre") quando este SKU é um segundo anúncio do
+       MESMO produto físico (ex: 1 anúncio de catálogo + 1 anúncio normal, mesmo estoque no
+       galpão). Quando setado, este produto para de contar como estoque/valor próprio (fica
+       com qtd zerada de propósito, ver telas de Produtos) e suas vendas somam na conta do
+       mestre pra decisão de compra/reposição - ver mediaVendasDiaria/estoqueBaixo. */
+    if(p.vinculadoA===undefined) p.vinculadoA=null;
     if(!p.qtd) p.qtd={comprar:0,coletar:0,local:0};
     garantirLotes(p); garantirPedidos(p);
     if(p.qtd.reservado!==undefined){
@@ -1507,6 +1530,9 @@ function deleteProduto(id){
   const p=prodById(id); if(!p) return;
   snapshot('exclusão do SKU '+p.sku);
   state.envios.forEach(e=>e.itens.forEach(i=>{ if(i.produtoId===id&&i.geradoCompra>0) removerCompraDoEnvio(p,e.id,i.geradoCompra); }));
+  /* se este SKU era o "mestre" de algum vínculo de estoque compartilhado, desvincula os outros
+     (senão eles ficam apontando pra um produtoId que não existe mais). */
+  state.produtos.forEach(x=>{ if(x.vinculadoA===id) x.vinculadoA=null; });
   state.produtos=state.produtos.filter(x=>x.id!==id);
   state.envios.forEach(e=> e.itens=e.itens.filter(i=>i.produtoId!==id));
   state.envios=state.envios.filter(e=>e.itens.length>0);
@@ -2654,12 +2680,14 @@ function renderProdutos(){
         const m=mediaVendasDiaria(p);
         const dicaSku=(p.codigo||'')+(p.fornecedor?' · Fornecedor: '+p.fornecedor:'');
         const fi=fullItemDeProduto(p), fk=fi?fullCalc(fi):null;
+        const mestreVinc=p.vinculadoA?prodById(p.vinculadoA):null;
+        const vinculados=membrosVinculados(p);
         return `
         <tr class="${estoqueBaixo(p)?'row-baixo':''}">
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
-          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${estoqueBaixo(p)?' <span title="Estoque abaixo do mínimo">⚠</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}</td>
+          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${estoqueBaixo(p)?' <span title="Estoque abaixo do mínimo">⚠</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
-          <td class="num">${m!=null?m.toFixed(2):'<span class="muted">—</span>'}</td>
+          <td class="num">${mestreVinc?'<span class="muted" title="Vendas somadas no SKU mestre">—</span>':(m!=null?m.toFixed(2):'<span class="muted">—</span>')}</td>
           <td class="num">${fmtInt(p.qtd.comprar)}</td>
           <td class="num">${fmtInt(p.qtd.coletar)}</td>
           <td class="num">${fmtInt(totalNoGalpao(p))}</td>
@@ -2777,6 +2805,11 @@ function openProdutoModal(id,lojaPadrao){
   const body=openModal(false);
   const rl=editing?reservadoLocalDe(p):0, rc=editing?reservadoColetaDe(p):0;
   const sug=editing?estoqueMinimoSugerido(p):null;
+  const mestreVinc=editing&&p.vinculadoA?prodById(p.vinculadoA):null;
+  const vinculadosDeP=editing?membrosVinculados(p):[];
+  /* candidatos pra vincular: mesma loja, não é o próprio, e não está por sua vez vinculado a
+     outro (mantém a cadeia com só 1 nível — o mestre nunca é vinculado de ninguém). */
+  const candidatosVinculo=editing?state.produtos.filter(x=>x.id!==id&&x.loja===p.loja&&!x.vinculadoA):[];
   body.innerHTML=`
     <h3>${editing?'Gerenciar SKU':'Novo SKU'}</h3>
     <div class="form-grid">
@@ -2786,7 +2819,7 @@ function openProdutoModal(id,lojaPadrao){
       <label>Fornecedor<input id="fFornecedor" type="text" value="${p?esc(p.fornecedor):''}" placeholder="Ex: Distribuidora XYZ"></label>
       <label>Custo unitário (R$)<input id="fCusto" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${p&&p.custo?String(p.custo).replace('.',','):''}"></label>
     </div>
-    ${sug!=null?`<p class="hint" style="margin-top:-8px">Estoque mínimo automático pelas vendas do FULL: <b>${fmtInt(sug)} un.</b> (média diária ponderada 7/15/30d × 30 dias de cobertura).</p>`:''}
+    ${sug!=null?`<p class="hint" style="margin-top:-8px">Estoque mínimo automático pelas vendas do FULL: <b>${fmtInt(sug)} un.</b> (média diária ponderada 7/15/30d × 30 dias de cobertura${vinculadosDeP.length?', somando '+vinculadosDeP.map(v=>esc(v.sku)).join(' + '):''}).</p>`:''}
     ${!editing?`<div class="form-grid">
       <label>Quantidade inicial<input id="fQtdInicial" type="number" min="0" value="0"></label>
       <label>Status inicial<select id="fStatusInicial"><option value="comprar">Comprar</option><option value="coletar">Coletar</option><option value="local">Local</option></select></label>
@@ -2794,6 +2827,24 @@ function openProdutoModal(id,lojaPadrao){
     <div class="modal-actions"><button class="btn" id="btnCancelar">Cancelar</button>
       <button class="btn acc" id="btnSalvarProduto">${editing?'Salvar alterações':'Cadastrar SKU'}</button></div>
     ${editing?`
+      <hr class="modal-sep">
+      <h4>Estoque físico compartilhado</h4>
+      ${mestreVinc?`
+        <div class="aviso atencao"><span>🔗</span><span>Este SKU está vinculado ao estoque do SKU <b>${esc(mestreVinc.sku)}</b> (${esc(mestreVinc.loja)}) — compra, coleta e ajuste de estoque são feitos por lá. As vendas deste anúncio já entram na conta de reposição do mestre.</span></div>
+        <div class="modal-actions" style="margin-top:10px">
+          <button class="btn" id="btnAbrirMestre">Abrir SKU mestre (${esc(mestreVinc.sku)})</button>
+          <button class="btn danger-outline" id="btnDesvincular">Desvincular</button>
+        </div>
+      `:`
+        <p class="hint" style="margin-top:-4px">Use isso quando este SKU for o <b>mesmo produto físico</b> de outro anúncio (ex: 1 anúncio de catálogo + 1 normal) — as vendas dos dois somam pra decidir quanto comprar, e o estoque/compra passam a ser controlados só no SKU mestre escolhido.</p>
+        ${vinculadosDeP.length?`<p class="hint">Este é o <b>SKU mestre</b> de: ${vinculadosDeP.map(v=>esc(v.sku)).join(', ')}.</p>`:''}
+        ${candidatosVinculo.length?`<div class="envio-full-row">
+          <select id="fVincularA"><option value="">Vincular ao estoque de...</option>${candidatosVinculo.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
+          <button class="btn" id="btnVincular">Vincular</button>
+        </div>`:`<p class="hint muted">Não há outro SKU nessa loja disponível pra vincular.</p>`}
+      `}
+
+      ${mestreVinc?'':`
       <hr class="modal-sep">
       <h4>Adicionar compra (nova entrada em Comprar)</h4>
       <div class="envio-full-row"><input id="fQtdAdicionar" type="number" min="1" placeholder="Quantidade">
@@ -2817,7 +2868,7 @@ function openProdutoModal(id,lojaPadrao){
         <span>Reservado: <b>${fmtInt(rl+rc)}</b> <span class="muted">(${fmtInt(rl)} no galpão + ${fmtInt(rc)} a coletar)</span></span>
         <span>Disponível: <b>${fmtInt(disponivel(p))}</b></span>
         <span>Valor: <b>${fmtMoney(valorEstoque(p))}</b></span>
-      </div>
+      </div>`}
 
       <hr class="modal-sep">
       <button class="btn danger-outline" id="btnExcluirProduto">Excluir este SKU do sistema</button>`:''}`;
@@ -2847,17 +2898,48 @@ function openProdutoModal(id,lojaPadrao){
     } else { updateProduto(id,{loja,sku,codigo,fornecedor,custo}); closeModal(); toast('Alterações salvas.'); }
   };
   if(editing){
-    document.getElementById('btnAdicionarComprar').onclick=()=>{
+    /* seções de compra/ajuste só existem no DOM quando este SKU NÃO está vinculado (ver
+       innerHTML acima) - por isso os wirings abaixo checam o elemento antes de usar. */
+    const btnAddComprar=document.getElementById('btnAdicionarComprar');
+    if(btnAddComprar) btnAddComprar.onclick=()=>{
       const r=adicionarQtd(id,'comprar',document.getElementById('fQtdAdicionar').value);
       if(!r.ok){ alert(r.msg); return; }
       openProdutoModal(id); toast('Quantidade adicionada ao Comprar.');
     };
-    document.getElementById('btnAjustar').onclick=()=>{
+    const btnAjustar=document.getElementById('btnAjustar');
+    if(btnAjustar) btnAjustar.onclick=()=>{
       const r=ajustarEstoque(id,{local:document.getElementById('ajLocal').value});
       if(!r.ok){ alert(r.msg); return; }
       openProdutoModal(id);
       const pp=prodById(id);
       toast(`Contagem salva: ${fmtInt(totalNoGalpao(pp))} un. no galpão.`+(r.reconciliado?` ${fmtInt(r.reconciliado)} un. foram destinadas a envios pendentes.`:''));
+    };
+    const btnAbrirMestre=document.getElementById('btnAbrirMestre');
+    if(btnAbrirMestre) btnAbrirMestre.onclick=()=>openProdutoModal(mestreVinc.id);
+    const btnDesvincular=document.getElementById('btnDesvincular');
+    if(btnDesvincular) btnDesvincular.onclick=()=>{
+      confirmAction(`Desvincular ${p.sku} do estoque de ${mestreVinc.sku}? Ele volta a ter compra/coleta/estoque próprios (hoje zerados — ajuste na aba Comprar/Coletar depois de desvincular).`,()=>{
+        updateProduto(id,{vinculadoA:null}); openProdutoModal(id); toast('SKU desvinculado.');
+      });
+    };
+    const btnVincular=document.getElementById('btnVincular');
+    if(btnVincular) btnVincular.onclick=()=>{
+      const alvoId=document.getElementById('fVincularA').value;
+      if(!alvoId){ alert('Escolha um SKU pra vincular.'); return; }
+      const alvo=prodById(alvoId);
+      /* trava de segurança: depois de vinculado, este SKU some das contas de Valor em
+         estoque/Patrimônio (pra não contar o mesmo estoque físico 2x, uma vez em cada SKU) -
+         então só deixa vincular se ele já estiver zerado. Sem isso, estoque real registrado
+         aqui desapareceria silenciosamente das somas gerais. */
+      const temEstoqueProprio=(p.qtd.comprar||0)+(p.qtd.coletar||0)+(p.qtd.local||0)>0;
+      const temReserva=reservadoDe(p)>0;
+      if(temEstoqueProprio||temReserva){
+        alert(`${p.sku} ainda tem estoque próprio registrado (Comprar/Coletar/Local ou reservado em envio). Zere isso primeiro — mova pro SKU ${alvo.sku} manualmente (Ajuste manual de estoque, aba Comprar/Coletar) — senão esse estoque some das somas de valor/patrimônio ao vincular.`);
+        return;
+      }
+      confirmAction(`Vincular ${p.sku} ao estoque de ${alvo.sku}? Este SKU passa a não ter mais compra/coleta/ajuste próprios — tudo isso passa a ser feito no SKU ${alvo.sku}.`,()=>{
+        updateProduto(id,{vinculadoA:alvoId}); openProdutoModal(id); toast(`Vinculado ao estoque de ${alvo.sku}.`);
+      });
     };
     document.getElementById('btnExcluirProduto').onclick=()=>{
       confirmAction(`Excluir o SKU ${p.sku} (${p.loja})? Ele sai também dos envios FULL em que estiver. Dá pra reverter no botão Desfazer.`,()=>{
