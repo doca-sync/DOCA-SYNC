@@ -605,9 +605,19 @@ async function passoSaldoMp(loja, row) {
      mais recente que a conta tiver (a listagem e' sempre so' dos relatorios dessa loja/token).
      Isso funciona porque o saldo e' um razao sequencial UNICO da conta inteira - qualquer
      relatorio processado e recente da o saldo atual correto, nao importa qual pedido exato
-     o gerou. So' aceita relatorio com ate 2h de idade (senao fica mostrando saldo velho pra
-     sempre se por algum motivo nenhum relatorio novo terminar de processar). */
-  const JANELA_FRESCOR_MS = 2 * 60 * 60 * 1000;
+     o gerou.
+     v37: dado real (GET /release_report/list de 13/08) mostrou que o relatorio em si fica
+     pronto ("enabled") quase na hora - o que varia MUITO (de 14min a mais de 6h, no mesmo dia)
+     e' QUANDO o Doca teve a chance de ir la' buscar ele, porque o Doca so' sincroniza quando a
+     aba esta aberta (sem sincronizacao periodica em segundo plano). Com janela de frescor de
+     so' 2h, um relatorio que ficou pronto mas so' foi "visto" pelo Doca 3h depois (pq ninguem
+     abriu o app nesse meio tempo) era descartado como "velho demais" e o saldo ficava preso no
+     valor anterior ate' o PROXIMO relatorio por sorte cair dentro da janela de 2h de alguma
+     abertura do app - explicando os saltos longos e aparentemente aleatorios que a pessoa via.
+     Aumentado pra 8h (o saldo de ate' 8h atras ainda e' bem mais util que nenhuma atualizacao) -
+     ver tambem o re-sync periodico em segundo plano no front-end, que ataca a causa raiz
+     (poucas chances de sincronizar) em vez de so' alargar a janela. */
+  const JANELA_FRESCOR_MS = 8 * 60 * 60 * 1000;
   try {
     const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
