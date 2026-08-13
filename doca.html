@@ -2484,7 +2484,7 @@ function renderDashboard(){
       });
     return {loja,itens};
   }).filter(g=>g.itens.length);
-  const prox=enviosOrdenados().filter(e=>e.data).slice(0,5);
+  const prox=enviosOrdenados().filter(e=>e.data); /* mostra TODOS os envios programados com data, sem cortar em 5 */
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
     <div class="cards-lojas">
@@ -5335,6 +5335,21 @@ tentarReconectar();
     }
   }
 })();
+
+/* re-sync periódico só do financeiro (Mercado Pago), enquanto a aba do Doca fica aberta.
+   Motivo (descoberto com dado real em 13/08): o relatório do Mercado Pago fica pronto rápido,
+   mas o Doca só ia buscar ele quando a aba era aberta/recarregada - sem isso, um relatório que
+   ficasse pronto enquanto ninguém tinha o Doca aberto só era "visto" horas depois, na próxima
+   vez que alguém abrisse o app, dentro da janela de frescor. Rodando esse re-sync sozinho a
+   cada 20min, a aba aberta vai catando o relatório pronto sem precisar recarregar a página. */
+async function sincronizarFinanceiroPeriodico(){
+  if(!backendUrl()) return;
+  for(const loja of STORES){
+    try{ aplicarSincronizacaoFinanceira(loja,await mpSincronizarFinanceiro(loja)); }
+    catch(e){ console.error(`Re-sync periódico do financeiro (Mercado Pago) falhou (loja ${loja}):`,e.message); }
+  }
+}
+setInterval(sincronizarFinanceiroPeriodico,20*60*1000);
 </script>
 </body>
 </html>
