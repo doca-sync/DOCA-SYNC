@@ -1557,11 +1557,37 @@ async function buscarFaturaMl(loja) {
         ...charges.map(c => ({ label: c.label, valor: c.amount })),
         ...bonuses.map(b => ({ label: `Bonificação: ${b.label}`, valor: -Math.abs(b.amount) }))
       ];
-    } catch (e) {
-      // segue sem o detalhamento se o resumo falhar - o valor total sozinho ja' e' util. Mas
-      // guarda o motivo (em vez de engolir silencioso) pra dar pra ver na propria tela de
-      // Financas PORQUE o botao "detalhar" nao apareceu, sem precisar abrir o console do servidor
-      itensAviso = `Detalhamento indisponível: ${e.message}${e.http_status ? ' (status ' + e.http_status + ')' : ''}`;
+    } catch (eResumo) {
+      // /summary deu 404 ao vivo (testado em 15/08) - a documentacao e' de 2023 e esse projeto ja'
+      // achou OUTRO endpoint de Ads desativado em 2026, entao e' bem provavel que /summary tambem
+      // tenha saido do ar. Cai pro /group/ML/details, que e' linha-a-linha (cada cobranca
+      // individual) em vez de ja' vir agrupado - agrega por transaction_detail aqui mesmo pra
+      // chegar no mesmo formato {label, valor}. So' registra o aviso se essa 2a tentativa TAMBEM
+      // falhar (nao quer dizer "sem detalhamento" so' porque o 1o formato caiu).
+      try {
+        const porLabel = new Map();
+        let offset = 0;
+        const limite = 150;
+        let total = null;
+        do {
+          const urlDetalhes = `https://api.mercadolibre.com/billing/integration/periods/key/${p.key}/group/ML/details?document_type=BILL&limit=${limite}&offset=${offset}`;
+          const jDetalhes = await fetchMLDebug(urlDetalhes, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const linhas = jDetalhes.results || [];
+          total = typeof jDetalhes.total === 'number' ? jDetalhes.total : linhas.length;
+          linhas.forEach(r => {
+            const info = r.charge_info || {};
+            const label = info.transaction_detail || 'Outras cobranças';
+            const valor = Number(info.detail_amount) || 0;
+            porLabel.set(label, (porLabel.get(label) || 0) + valor);
+          });
+          offset += limite;
+        } while (offset < total && offset < 2000); // teto de seguranca pra nao paginar pra sempre numa loja gigante
+        itens = [...porLabel.entries()].map(([label, valor]) => ({ label, valor }));
+      } catch (eDetalhes) {
+        // as duas tentativas falharam - guarda o motivo (em vez de engolir silencioso) pra dar pra
+        // ver na propria tela de Financas PORQUE o botao "detalhar" nao apareceu
+        itensAviso = `Detalhamento indisponível: /summary respondeu ${eResumo.http_status || '?'}, /details respondeu ${eDetalhes.http_status || '?'} (${eDetalhes.message})`;
+      }
     }
   }
 
@@ -1750,7 +1776,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
 
   // vendas de hoje - sempre calculado, independente do periodo escolhido acima
-  const vendasHoje = { pedidos: 0, faturamento: 0 };
+  const vendasHoje = { pedidos: 0, faturamento: 0, unidades: 0 };
   try {
     const hojeStr = diaBR(new Date().toISOString());
     const deHoje = `${hojeStr}T00:00:00-03:00`;
@@ -1760,15 +1786,32 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       if (p.status !== 'cancelled' && p.status !== 'invalid') {
         vendasHoje.pedidos++;
         vendasHoje.faturamento += Number(p.total_amount) || 0;
+        for (const oi of (p.order_items || [])) vendasHoje.unidades += oi.quantity || 0;
       }
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar as vendas de hoje: ' + e.message); }
+
+  // titulo de cada item vendido (pro ranking de produtos mostrar o nome, nao so' o item_id cru) -
+  // em lotes de 20 (teto da API pra /items?ids=), tolerante a item que nao respondeu (ex.: anuncio
+  // ja' apagado) - nesse caso o Doca mostra so' o item_id no lugar do titulo
+  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, qtd]) => ({ itemId, qtd, titulo: null }));
+  try {
+    const idsUnicos = itensVendidosArr.map(x => x.itemId);
+    const titulos = {};
+    for (let i = 0; i < idsUnicos.length; i += 20) {
+      const lote = idsUnicos.slice(i, i + 20).join(',');
+      const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,title`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const j2 = await r.json();
+      (j2 || []).forEach(entry => { if (entry.code === 200) titulos[entry.body.id] = entry.body.title; });
+    }
+    itensVendidosArr.forEach(x => { x.titulo = titulos[x.itemId] || null; });
+  } catch (e) { log.avisos.push('Nao foi possivel buscar o titulo dos itens vendidos (ranking vai mostrar so o item_id): ' + e.message); }
 
   return {
     periodo: { de, ate },
     faturamento, tarifas, cancelamentosValor, reembolsosValor,
     pedidosValidos, pedidosCancelados,
-    itensVendidos: [...itensVendidos.entries()].map(([itemId, qtd]) => ({ itemId, qtd })),
+    itensVendidos: itensVendidosArr,
     frete: { comprador: freteComprador, vendedor: freteVendedor },
     ads: { custo: adsCusto },
     vendasHoje,
