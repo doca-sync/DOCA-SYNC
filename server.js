@@ -1631,6 +1631,41 @@ app.get('/pesquisa/avaliacao', async (req, res) => {
     });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* rota de diagnostico temporaria - varios sellers relataram (abril/2026 em diante, reclamacoes
+   publicas confirmadas) que o /sites/MLB/search comecou a devolver 403 pra apps de terceiro, sem
+   aviso oficial - parece restricao ampla da plataforma, nao bug especifico do Doca. Essa rota
+   testa 3 jeitos diferentes de buscar (com token, sem token/anonimo, e o "buscador de produtos"
+   /products/search que e' um endpoint separado, pra catalogo) pra descobrir qual (se algum) ainda
+   esta liberado pra este app - e opcionalmente testa /reviews/item tambem, se vier um itemId.
+   Ex.: /debug/pesquisa/testar?q=fone bluetooth&loja=TorvStore&itemId=MLB123456789 */
+app.get('/debug/pesquisa/testar', async (req, res) => {
+  const q = req.query.q || 'fone bluetooth';
+  const loja = req.query.loja;
+  const resultado = {};
+  let accessToken = null;
+  try { const t = await tokenDeQualquerLoja(loja); accessToken = t.accessToken; resultado.lojaUsada = t.loja; }
+  catch (e) { resultado.erroToken = e.message; }
+  try {
+    const j = await fetchMLDebug(`https://api.mercadolibre.com/sites/MLB/search?q=${encodeURIComponent(q)}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
+    resultado.sitesSearchComToken = { ok: true, total: j.paging && j.paging.total, exemplo: (j.results || [])[0] && j.results[0].title };
+  } catch (e) { resultado.sitesSearchComToken = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
+  try {
+    const j = await fetchMLDebug(`https://api.mercadolibre.com/sites/MLB/search?q=${encodeURIComponent(q)}`, {});
+    resultado.sitesSearchAnonimo = { ok: true, total: j.paging && j.paging.total, exemplo: (j.results || [])[0] && j.results[0].title };
+  } catch (e) { resultado.sitesSearchAnonimo = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
+  try {
+    const j = await fetchMLDebug(`https://api.mercadolibre.com/products/search?site_id=MLB&q=${encodeURIComponent(q)}&status=active`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
+    resultado.productsSearch = { ok: true, total: j.paging && j.paging.total, exemplo: (j.results || [])[0] };
+  } catch (e) { resultado.productsSearch = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
+  const itemTeste = req.query.itemId;
+  if (itemTeste) {
+    try {
+      const j = await fetchMLDebug(`https://api.mercadolibre.com/reviews/item/${itemTeste}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
+      resultado.reviewsItem = { ok: true, mediaAvaliacao: j.rating_average, total: j.paging && j.paging.total };
+    } catch (e) { resultado.reviewsItem = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
+  }
+  res.json({ ok: true, q, resultado });
+});
 
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
