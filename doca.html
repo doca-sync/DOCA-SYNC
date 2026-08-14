@@ -486,6 +486,7 @@ tr.l-env{background:rgba(139,92,246,.07)}
       <button data-tab="comprar" aria-selected="false">Comprar</button>
       <button data-tab="coletar" aria-selected="false">Coletar</button>
       <button data-tab="notasfiscais" aria-selected="false">Notas Fiscais</button>
+      <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
       <button data-tab="full" aria-selected="false">FULL</button>
     </nav>
@@ -511,6 +512,7 @@ tr.l-env{background:rgba(139,92,246,.07)}
   <section id="tab-comprar" class="tabpanel hidden"></section>
   <section id="tab-coletar" class="tabpanel hidden"></section>
   <section id="tab-notasfiscais" class="tabpanel hidden"></section>
+  <section id="tab-financas" class="tabpanel hidden"></section>
   <section id="tab-ads" class="tabpanel hidden"></section>
   <section id="tab-full" class="tabpanel hidden">
     <div class="subnav" id="subFull">
@@ -545,7 +547,7 @@ const STORES=["TorvStore","Dor Block","Orbix Brasil","TorvShop"];
 const LOCAIS_COLETA=["Felipe","Thiago"];
 const STATUS_LABEL={comprar:"Comprar",coletar:"Coletar",local:"Local"};
 
-let state={produtos:[],envios:[],tarefas:[],listas:[],full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:[],financeiro:{},ads:{cfg:{},campanhas:[],hist:[]},mlSync:{cfg:{}},avisosFornecedor:[]};
+let state={produtos:[],envios:[],tarefas:[],listas:[],full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:[],financeiro:{},ads:{cfg:{},campanhas:[],hist:[]},mlSync:{cfg:{}},avisosFornecedor:[],despesas:[]};
 /* produtoId -> timestamp: usado só pra piscar a linha na Previsão quando um envio é
    confirmado como FULL (o total normalmente não muda, então sem isso pode parecer que a
    ação não fez nada). Não faz parte do state salvo — é só efeito visual passageiro. */
@@ -3974,7 +3976,7 @@ function renderAds(){
             <option value="tacos_asc" ${adsFiltro==='tacos_asc'?'selected':''}>Menor TACOS</option>
             <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
             <option value="roas_score" ${adsFiltro==='roas_score'?'selected':''}>Subir ROAS</option>
-            <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos (média de vendas/dia)</option>
+            <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos</option>
           </select>
         </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
@@ -4047,6 +4049,184 @@ function renderAds(){
   });
 }
 
+
+/* ================= Finanças (despesas + histórico mensal, base pra DRE) =================
+   Guarda as despesas do negócio (manuais ou puxadas automaticamente do Mercado Livre) com data de
+   pagamento, se já foi pago, e se é recorrente (repete todo mês). Despesa recorrente marcada como
+   paga não "some" nem "vira" o mês que vem — ela fica registrada naquele mês (pro histórico) e uma
+   NOVA ocorrência é criada pro mês seguinte, ligada pelo campo origemRecorrenciaId. Ainda não inclui
+   receita/faturamento automaticamente — só o lado das despesas, que é o que foi pedido por ora. */
+function despesasArr(){ if(!Array.isArray(state.despesas)) state.despesas=[]; return state.despesas; }
+function addDespesa({descricao,valor,dataPagamento,recorrente,loja,origem,faturaKey}){
+  snapshot('nova despesa'+(descricao?' ("'+descricao.slice(0,30)+'")':''));
+  const arr=despesasArr();
+  const d={id:gerarId('desp'),descricao:(descricao||'').trim(),valor:Number(valor)||0,dataPagamento:dataPagamento||hoje(),
+    pago:false,recorrente:!!recorrente,loja:loja||null,origem:origem||'manual',faturaKey:faturaKey||null,
+    origemRecorrenciaId:null,criadoEm:Date.now()};
+  arr.push(d);
+  persist();
+  return d;
+}
+function excluirDespesa(id){
+  const arr=despesasArr();
+  const d=arr.find(x=>x.id===id); if(!d) return;
+  snapshot('exclusão de despesa ("'+(d.descricao||'').slice(0,30)+'")');
+  state.despesas=arr.filter(x=>x.id!==id);
+  persist();
+}
+/* marca pago/pendente; se for recorrente e estiver marcando como PAGO, gera a proxima ocorrência
+   (mês seguinte) automaticamente, se ainda não existir - assim o histórico do mês atual fica
+   preservado e a despesa continua "viva" pro mês que vem */
+function marcarDespesaPaga(id,pago){
+  const arr=despesasArr();
+  const d=arr.find(x=>x.id===id); if(!d) return;
+  snapshot((pago?'despesa paga: ':'despesa marcada como pendente: ')+(d.descricao||''));
+  d.pago=!!pago;
+  if(pago&&d.recorrente){
+    const serieId=d.origemRecorrenciaId||d.id;
+    const proxData=proximoMes(d.dataPagamento);
+    const jaExiste=arr.some(x=>(x.origemRecorrenciaId||x.id)===serieId&&x.dataPagamento===proxData);
+    if(!jaExiste){
+      arr.push({id:gerarId('desp'),descricao:d.descricao,valor:d.valor,dataPagamento:proxData,
+        pago:false,recorrente:true,loja:d.loja,origem:d.origem,faturaKey:null,origemRecorrenciaId:serieId,criadoEm:Date.now()});
+    }
+  }
+  persist();
+}
+/* busca a fatura mais recente do Mercado Livre (taxas de venda/anúncio/Full - não é o saldo do
+   Mercado Pago) e cadastra/atualiza como despesa recorrente automaticamente, evitando duplicar
+   pelo par loja+faturaKey (a "key" que o próprio ML usa pra identificar o período de cobrança) */
+async function puxarFaturaMl(loja){
+  const base=backendUrl();
+  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  const r=await fetch(`${base}/financas/fatura-ml?loja=${encodeURIComponent(loja)}`);
+  let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+  if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar a fatura do Mercado Livre (status '+r.status+').'));
+  if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
+  const f=j.fatura;
+  const arr=despesasArr();
+  const dataPagamento=f.vencimento||f.dataFim||hoje();
+  let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
+  if(d){
+    snapshot('atualização da fatura do Mercado Livre ('+loja+')');
+    d.valor=f.valor; d.dataPagamento=dataPagamento; if(f.valorPendente===0) d.pago=true;
+  }else{
+    snapshot('fatura do Mercado Livre importada ('+loja+')');
+    arr.push({id:gerarId('desp'),descricao:'Fatura Mercado Livre — '+loja,valor:f.valor,dataPagamento,
+      pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,criadoEm:Date.now()});
+  }
+  persist();
+  return f;
+}
+function mesLabel(m){
+  if(!m) return '—';
+  const [a,mm]=m.split('-');
+  const nomes=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+  return `${nomes[Number(mm)-1]||mm}/${a}`;
+}
+let financasFiltroMes=hoje().slice(0,7);
+let financasPuxandoFatura=null;
+function renderFinancas(){
+  const el=document.getElementById('tab-financas'); if(!el) return;
+  const arr=despesasArr();
+  const meses=[...new Set(arr.map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean))].sort().reverse();
+  if(!meses.includes(financasFiltroMes)) meses.unshift(financasFiltroMes);
+  const doMes=arr.filter(d=>(d.dataPagamento||'').slice(0,7)===financasFiltroMes).sort((a,b)=>(a.dataPagamento||'').localeCompare(b.dataPagamento||''));
+  const totalMes=doMes.reduce((s,d)=>s+(Number(d.valor)||0),0);
+  const totalPago=doMes.filter(d=>d.pago).reduce((s,d)=>s+(Number(d.valor)||0),0);
+  const totalPendente=totalMes-totalPago;
+  const porMes={};
+  arr.forEach(d=>{ const m=(d.dataPagamento||'').slice(0,7); if(!m) return; porMes[m]=(porMes[m]||0)+(Number(d.valor)||0); });
+  const historico=Object.keys(porMes).sort().reverse();
+  el.innerHTML=`
+    <h1 class="page-title">Finanças</h1>
+    <p class="hint" style="margin:0 0 16px">Cadastre as despesas do negócio (fixas ou recorrentes) pra ter o total gasto por mês — base pra montar a DRE. Por enquanto é só o lado das despesas, sem receita/faturamento automático.</p>
+    <div class="card">
+      <h3 style="margin-top:0">Nova despesa</h3>
+      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
+        <label>Descrição<input id="fnDescricao" type="text" placeholder="Ex: Aluguel do galpão"></label>
+        <label>Valor (R$)<input id="fnValor" type="number" min="0" step="0.01"></label>
+        <label>Data de pagamento<input id="fnData" type="date" value="${esc(hoje())}"></label>
+        <label>Loja<select id="fnLoja"><option value="">Geral (todas)</option>${optsLojas(null)}</select></label>
+      </div>
+      <div class="acoes-linha" style="margin-top:10px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="fnRecorrente" style="width:auto"> Despesa recorrente (repete todo mês)</label>
+        <span style="flex:1"></span>
+        <button class="btn gold" id="btnAddDespesa">+ Adicionar despesa</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">📄 Puxar fatura do Mercado Livre</h3>
+      <p class="hint" style="margin:0 0 10px">Busca o valor da última cobrança do Mercado Livre (comissão de venda, anúncio, Full etc — não é o saldo do Mercado Pago) direto na API oficial, e cadastra/atualiza como despesa recorrente automaticamente.</p>
+      <div class="acoes-linha" style="flex-wrap:wrap">
+        ${STORES.map(l=>`<button class="btn sm" data-puxarfatura="${esc(l)}" ${financasPuxandoFatura===l?'disabled':''}>${financasPuxandoFatura===l?'Buscando...':'🔄 '+esc(l)}</button>`).join('')}
+      </div>
+    </div>
+    <div class="toolbar-produtos">
+      <select id="fnFiltroMes">${meses.map(m=>`<option value="${m}" ${m===financasFiltroMes?'selected':''}>${mesLabel(m)}</option>`).join('')}</select>
+      <span class="cont muted" style="font-size:12.5px">${doMes.length} despesa(s) no mês</span>
+    </div>
+    <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th>Descrição</th><th>Loja</th><th class="num">Valor</th><th>Pagamento</th><th>Recorrente</th><th style="text-align:center">Pago</th><th></th>
+    </tr></thead><tbody>
+      ${doMes.length?doMes.map(d=>`<tr class="${d.pago?'':'row-baixo'}">
+        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}</td>
+        <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
+        <td class="num">${fmtMoney(d.valor)}</td>
+        <td>${fmtData(d.dataPagamento)}</td>
+        <td>${d.recorrente?'<span class="badge okv">🔁 Mensal</span>':'<span class="muted">—</span>'}</td>
+        <td style="text-align:center"><input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}></td>
+        <td><button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
+      </tr>`).join(''):`<tr><td colspan="7" class="empty">Nenhuma despesa cadastrada nesse mês.</td></tr>`}
+    </tbody></table></div>
+    <div class="card" style="margin-top:16px">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+        <div><span class="muted" style="font-size:11px">TOTAL DO MÊS</span><br><b style="font-size:18px">${fmtMoney(totalMes)}</b></div>
+        <div><span class="muted" style="font-size:11px">JÁ PAGO</span><br><b style="font-size:18px" class="okv">${fmtMoney(totalPago)}</b></div>
+        <div><span class="muted" style="font-size:11px">PENDENTE</span><br><b style="font-size:18px" class="pend">${fmtMoney(totalPendente)}</b></div>
+      </div>
+    </div>
+    <h3>Histórico por mês</h3>
+    ${historico.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">Total de despesas</th></tr></thead><tbody>
+      ${historico.map(m=>`<tr><td>${mesLabel(m)}</td><td class="num">${fmtMoney(porMes[m])}</td></tr>`).join('')}
+    </tbody></table></div>`:`<p class="empty-inline">Sem histórico ainda.</p>`}
+  `;
+  document.getElementById('btnAddDespesa').onclick=()=>{
+    const descricao=document.getElementById('fnDescricao').value.trim();
+    const valor=Number(document.getElementById('fnValor').value);
+    const dataPagamento=document.getElementById('fnData').value;
+    const loja=document.getElementById('fnLoja').value||null;
+    const recorrente=document.getElementById('fnRecorrente').checked;
+    if(!descricao){ alert('Informe uma descrição.'); return; }
+    if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+    if(!dataPagamento){ alert('Informe a data de pagamento.'); return; }
+    addDespesa({descricao,valor,dataPagamento,recorrente,loja,origem:'manual'});
+    toast('Despesa cadastrada.');
+    financasFiltroMes=dataPagamento.slice(0,7);
+    renderFinancas();
+  };
+  document.getElementById('fnFiltroMes').onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
+  el.querySelectorAll('[data-fnpago]').forEach(c=>c.onchange=()=>{
+    marcarDespesaPaga(c.dataset.fnpago,c.checked);
+    toast(c.checked?'Despesa marcada como paga.':'Despesa marcada como pendente.');
+    renderFinancas();
+  });
+  el.querySelectorAll('[data-fnexcluir]').forEach(b=>b.onclick=()=>{
+    const d=despesasArr().find(x=>x.id===b.dataset.fnexcluir); if(!d) return;
+    confirmAction(`Excluir a despesa "${d.descricao}" (${fmtMoney(d.valor)})?`,()=>{
+      excluirDespesa(b.dataset.fnexcluir); toast('Despesa excluída.'); renderFinancas();
+    });
+  });
+  el.querySelectorAll('[data-puxarfatura]').forEach(b=>b.onclick=async()=>{
+    const loja=b.dataset.puxarfatura;
+    financasPuxandoFatura=loja; renderFinancas();
+    try{
+      const f=await puxarFaturaMl(loja);
+      toast(`Fatura de ${loja} importada: ${fmtMoney(f.valor)}${f.vencimento?', vencimento '+fmtData(f.vencimento):''}.`);
+    }catch(e){ alert('Não foi possível puxar a fatura: '+e.message); }
+    finally{ financasPuxandoFatura=null; renderFinancas(); }
+  });
+}
 
 /* ---------- listas de tarefas ---------- */
 function addLista(nome){
@@ -5275,7 +5455,7 @@ function renderRuptura(){
 function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
-   ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['ads',renderAds],
+   ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],
    ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
