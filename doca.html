@@ -487,6 +487,7 @@ tr.l-env{background:rgba(139,92,246,.07)}
       <button data-tab="coletar" aria-selected="false">Coletar</button>
       <button data-tab="notasfiscais" aria-selected="false">Notas Fiscais</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
+      <button data-tab="pesquisa" aria-selected="false">Pesquisa de Mercado</button>
       <button data-tab="full" aria-selected="false">FULL</button>
     </nav>
   </div>
@@ -512,6 +513,7 @@ tr.l-env{background:rgba(139,92,246,.07)}
   <section id="tab-coletar" class="tabpanel hidden"></section>
   <section id="tab-notasfiscais" class="tabpanel hidden"></section>
   <section id="tab-ads" class="tabpanel hidden"></section>
+  <section id="tab-pesquisa" class="tabpanel hidden"></section>
   <section id="tab-full" class="tabpanel hidden">
     <div class="subnav" id="subFull">
       <button data-sub="previsao" aria-selected="true">Previsão de reposição</button>
@@ -4040,6 +4042,149 @@ function renderAds(){
 }
 
 
+/* ================= Pesquisa de Mercado (busca de anúncios no Mercado Livre) =================
+   Serve pra duas coisas: (1) achar produto novo pra vender, com busca livre por filtro (tipo Joom
+   Pulse); e (2) monitorar a concorrência de um produto que já está cadastrado no Doca, escolhendo
+   ele no seletor "Analisar concorrência de" (preenche a palavra-chave com o SKU e já busca).
+   Preço, catálogo x tradicional, envio Full, condição e reputação do vendedor vêm direto da API
+   do Mercado Livre. Vendas/faturamento mensal NÃO existe na API oficial (é o que a Joom Pulse e
+   concorrentes tiram de raspagem própria, sem garantia de acerto) — aqui a "estimativa de vendas/
+   semana" é calculada por fora, sob pedido (botão "Ver avaliação" em cada linha, pra não pesar a
+   busca inteira de uma vez): conta quantas avaliações o anúncio recebeu nos últimos 7 dias e
+   multiplica por 10, pela regra combinada com o usuário (em média, 1 em cada 10 compradores
+   avalia). É uma aproximação, não um número oficial — e pode não vir pra anúncios de outros
+   vendedores, se a API de avaliações do Mercado Livre recusar (nesse caso mostra "indisponível"). */
+let pesquisaFiltros={q:'',categoria:'',categoriaLabel:'',precoMin:'',precoMax:'',condicao:'todos',catalogo:'todos',envio:'todos'};
+let pesquisaResultado=null;
+let pesquisaCarregando=false;
+let pesquisaErro=null;
+let pesquisaAvaliacoes={};
+let pesquisaProdutoRefId='';
+async function pesquisaExecutar(){
+  pesquisaCarregando=true; pesquisaErro=null; renderPesquisa();
+  try{
+    const f=pesquisaFiltros;
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const params=new URLSearchParams();
+    if(f.q) params.set('q',f.q);
+    if(f.categoria) params.set('categoria',f.categoria);
+    if(f.precoMin) params.set('precoMin',f.precoMin);
+    if(f.precoMax) params.set('precoMax',f.precoMax);
+    if(f.condicao&&f.condicao!=='todos') params.set('condicao',f.condicao);
+    if(f.catalogo&&f.catalogo!=='todos') params.set('catalogo',f.catalogo);
+    if(f.envio&&f.envio!=='todos') params.set('envio',f.envio);
+    const r=await fetch(`${base}/pesquisa/buscar?${params.toString()}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar no Mercado Livre (status '+r.status+').'));
+    pesquisaResultado=j;
+    pesquisaAvaliacoes={};
+  }catch(e){ pesquisaErro=e.message; pesquisaResultado=null; }
+  finally{ pesquisaCarregando=false; renderPesquisa(); }
+}
+async function pesquisaBuscarAvaliacao(itemId){
+  pesquisaAvaliacoes[itemId]={carregando:true}; renderPesquisa();
+  try{
+    const base=backendUrl();
+    const r=await fetch(`${base}/pesquisa/avaliacao?itemId=${encodeURIComponent(itemId)}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao buscar avaliação (esse vendedor pode não liberar consulta de terceiros).');
+    pesquisaAvaliacoes[itemId]={dados:j};
+  }catch(e){ pesquisaAvaliacoes[itemId]={erro:e.message}; }
+  renderPesquisa();
+}
+function renderPesquisa(){
+  const el=document.getElementById('tab-pesquisa'); if(!el) return;
+  const f=pesquisaFiltros;
+  const produtosOpts=state.produtos.slice().sort((a,b)=>a.sku.localeCompare(b.sku))
+    .map(p=>`<option value="${p.id}" ${pesquisaProdutoRefId===p.id?'selected':''}>${esc(p.sku)} — ${esc(p.loja)}</option>`).join('');
+  el.innerHTML=`
+    <h1 class="page-title">Pesquisa de Mercado</h1>
+    <p class="hint" style="margin:0 0 16px">Busca anúncios no Mercado Livre inteiro (não só nas suas lojas) — pra achar produto novo pra vender ou acompanhar a concorrência de um produto que você já vende. Categoria, preço, catálogo, envio Full, condição e reputação do vendedor vêm direto da API do Mercado Livre. A "estimativa de vendas/semana" (botão Ver avaliação, em cada linha) é calculada por fora contando avaliações dos últimos 7 dias × 10 — é uma aproximação, não um número oficial do Mercado Livre.</p>
+    <div class="card">
+      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr">
+        <label>Palavra-chave<input id="pqQ" type="text" placeholder="Ex: fone bluetooth" value="${esc(f.q)}"></label>
+        <label>Preço mín. (R$)<input id="pqMin" type="number" min="0" value="${esc(f.precoMin)}"></label>
+        <label>Preço máx. (R$)<input id="pqMax" type="number" min="0" value="${esc(f.precoMax)}"></label>
+      </div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:10px">
+        <label>Condição<select id="pqCondicao">
+          <option value="todos" ${f.condicao==='todos'?'selected':''}>Todas</option>
+          <option value="new" ${f.condicao==='new'?'selected':''}>Novo</option>
+          <option value="used" ${f.condicao==='used'?'selected':''}>Usado</option>
+        </select></label>
+        <label>Catálogo<select id="pqCatalogo">
+          <option value="todos" ${f.catalogo==='todos'?'selected':''}>Todos</option>
+          <option value="sim" ${f.catalogo==='sim'?'selected':''}>Só catálogo</option>
+          <option value="nao" ${f.catalogo==='nao'?'selected':''}>Só tradicional</option>
+        </select></label>
+        <label>Envio<select id="pqEnvio">
+          <option value="todos" ${f.envio==='todos'?'selected':''}>Qualquer</option>
+          <option value="full" ${f.envio==='full'?'selected':''}>Só Full</option>
+        </select></label>
+        <label>Categoria${f.categoriaLabel?` <span class="muted" style="font-weight:400">— ${esc(f.categoriaLabel)} (<a href="#" id="pqLimparCat">limpar</a>)</span>`:''}
+          <span class="hint" style="display:block;margin-top:6px;font-size:11.5px">Escolha nos botões que aparecem embaixo dos resultados, depois de buscar.</span>
+        </label>
+      </div>
+      <div class="form-grid" style="grid-template-columns:2fr auto;margin-top:10px;align-items:end">
+        <label>Analisar concorrência de um produto já cadastrado<select id="pqProduto">
+          <option value="">— nenhum, busca livre —</option>
+          ${produtosOpts}
+        </select></label>
+        <button class="btn gold" id="pqBuscar" ${pesquisaCarregando?'disabled':''}>${pesquisaCarregando?'Buscando...':'🔍 Buscar'}</button>
+      </div>
+    </div>
+    ${pesquisaErro?`<div class="aviso risco" style="margin:12px 0"><span>⚠</span><span>${esc(pesquisaErro)}</span></div>`:''}
+    ${pesquisaResultado&&pesquisaResultado.categoriasDisponiveis&&pesquisaResultado.categoriasDisponiveis.length?`
+      <div class="card" style="margin-top:12px"><b style="font-size:12.5px">Refinar por categoria:</b>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          ${pesquisaResultado.categoriasDisponiveis.map(c=>`<button class="btn sm" data-pqcat="${esc(c.id)}" data-pqcatnome="${esc(c.name)}">${esc(c.name)} (${fmtInt(c.results||0)})</button>`).join('')}
+        </div>
+      </div>`:''}
+    ${pesquisaResultado?`<p class="hint" style="margin:12px 0 8px">${fmtInt(pesquisaResultado.total||0)} anúncio(s) no Mercado Livre inteiro · mostrando ${pesquisaResultado.resultados.length} · consulta feita com o token da loja ${esc(pesquisaResultado.lojaUsada||'')}</p>
+    <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th>Anúncio</th><th class="num">Preço</th><th>Catálogo</th><th>Envio</th><th>Vendedor</th><th>Avaliação / estimativa</th>
+    </tr></thead><tbody>
+      ${pesquisaResultado.resultados.length?pesquisaResultado.resultados.map(it=>{
+        const av=pesquisaAvaliacoes[it.id];
+        const rep=it.vendedor;
+        return `<tr>
+          <td><a href="${esc(it.link)}" target="_blank" rel="noopener">${esc(it.titulo)}</a></td>
+          <td class="num">${fmtMoney(it.preco)}</td>
+          <td>${it.catalogo?'<span class="badge okv">Catálogo</span>':'<span class="muted">Tradicional</span>'}</td>
+          <td>${it.envioFull?'<span class="badge okv">Full</span>':'<span class="muted">—</span>'}</td>
+          <td>${rep?`${esc(rep.nickname||'—')}<br><span class="muted" style="font-size:11px">${esc(rep.nivelLabel||'')}${rep.powerSeller&&rep.powerSeller!=='null'?' · '+esc(rep.powerSeller):''}</span>`:'<span class="muted">—</span>'}</td>
+          <td>
+            ${av&&av.dados?`<div style="font-size:12px">${av.dados.mediaAvaliacao!=null?'⭐ '+av.dados.mediaAvaliacao.toFixed(1)+' ('+fmtInt(av.dados.totalAvaliacoes||0)+')':'sem avaliações'}<br>~${fmtInt(av.dados.estimativaVendasSemana||0)} vendas/semana (estim.)</div>`
+              :av&&av.erro?`<span class="muted" style="font-size:11px" title="${esc(av.erro)}">Avaliação indisponível</span>`
+              :`<button class="btn sm" data-pqaval="${esc(it.id)}" ${av&&av.carregando?'disabled':''}>${av&&av.carregando?'Buscando...':'Ver avaliação'}</button>`}
+          </td>
+        </tr>`;
+      }).join(''):`<tr><td colspan="6" class="empty">Nenhum anúncio encontrado com esses filtros.</td></tr>`}
+    </tbody></table></div>`:(pesquisaCarregando?'':'<p class="empty-inline">Faça uma busca pra ver os anúncios.</p>')}
+  `;
+  document.getElementById('pqProduto').onchange=e=>{
+    pesquisaProdutoRefId=e.target.value;
+    if(pesquisaProdutoRefId){ const p=prodById(pesquisaProdutoRefId); if(p) pesquisaFiltros.q=p.sku||p.codigo||''; renderPesquisa(); }
+  };
+  document.getElementById('pqBuscar').onclick=()=>{
+    pesquisaFiltros.q=document.getElementById('pqQ').value.trim();
+    pesquisaFiltros.precoMin=document.getElementById('pqMin').value;
+    pesquisaFiltros.precoMax=document.getElementById('pqMax').value;
+    pesquisaFiltros.condicao=document.getElementById('pqCondicao').value;
+    pesquisaFiltros.catalogo=document.getElementById('pqCatalogo').value;
+    pesquisaFiltros.envio=document.getElementById('pqEnvio').value;
+    if(!pesquisaFiltros.q&&!pesquisaFiltros.categoria){ alert('Digite uma palavra-chave (ou refine por categoria depois de uma primeira busca).'); return; }
+    pesquisaExecutar();
+  };
+  const limpar=document.getElementById('pqLimparCat');
+  if(limpar) limpar.onclick=e=>{ e.preventDefault(); pesquisaFiltros.categoria=''; pesquisaFiltros.categoriaLabel=''; pesquisaExecutar(); };
+  el.querySelectorAll('[data-pqcat]').forEach(b=>b.onclick=()=>{
+    pesquisaFiltros.categoria=b.dataset.pqcat; pesquisaFiltros.categoriaLabel=b.dataset.pqcatnome; pesquisaExecutar();
+  });
+  el.querySelectorAll('[data-pqaval]').forEach(b=>b.onclick=()=>pesquisaBuscarAvaliacao(b.dataset.pqaval));
+}
+
 /* ---------- listas de tarefas ---------- */
 function addLista(nome){
   snapshot('nova lista de tarefas');
@@ -5268,6 +5413,7 @@ function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['ads',renderAds],
+   ['pesquisa de mercado',renderPesquisa],
    ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
