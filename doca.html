@@ -2545,15 +2545,18 @@ function renderDashboard(){
     return {loja,itens};
   }).filter(g=>g.itens.length);
   const diasAlertaRuptura=fullCfg().diasAlertaRuptura||10;
-  /* ruptura no FULL: mesma agrupação, curva A primeiro, empate resolvido pelo mais urgente
-     (menos dias) */
+  /* ruptura no FULL: mesma lógica da aba Ruptura de estoque (rupturaLojaLista) — considera
+     aptas + em transferência + envios já programados que chegam a tempo, e sinaliza quando
+     já existe envio programado mas ele chega DEPOIS da data projetada de ruptura (precisa
+     antecipar). Curva A primeiro, empate resolvido pelo mais urgente (menos dias). */
   const rupturasPorLoja=STORES.map(loja=>{
-    const itens=rupturaProximaLista(diasAlertaRuptura).filter(r=>r.produto.loja===loja)
-      .map(r=>({...r,curva:curvasPorLoja[loja].get(r.produto.id)||null}))
+    const itens=rupturaLojaLista(loja,diasAlertaRuptura)
+      .filter(r=>r.p)
+      .map(r=>({...r,curva:curvasPorLoja[loja].get(r.p.id)||null}))
       .sort((a,b)=>{
         const ord={A:0,B:1,C:2,null:3};
         const ca=ord[a.curva??'null'], cb=ord[b.curva??'null'];
-        return ca!==cb?ca-cb:a.dias-b.dias;
+        return ca!==cb?ca-cb:a.cobDias-b.cobDias;
       });
     return {loja,itens};
   }).filter(g=>g.itens.length);
@@ -2661,8 +2664,15 @@ function renderDashboard(){
       </tbody></table></div>`:''}
     ${rupturasPorLoja.length?`<div class="alert-baixo risco"><div class="alert-head">🚨 Risco de ruptura no FULL em até ${diasAlertaRuptura} dia(s)</div>
       ${rupturasPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
-        <div class="alert-list">${g.itens.map(r=>{const st=statusAcaoFull(r.produto); return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`} (${fmtData(r.diaZero)}) — média: ${(mediaVendasDiaria(r.produto)||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span></span>`;}).join('')}</div></div>`).join('')}
-      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL).</p></div>`:''}
+        <div class="alert-list">${g.itens.map(r=>{
+          const st=statusAcaoFull(r.p);
+          const zeraTxt=r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`;
+          const envioTxt=r.zeraAntesDoEnvio
+            ?` — <b class="pend">🚨 já tem FULL programado pra ${fmtData(r.prox.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
+            :(r.prox?` — próximo FULL programado pra ${fmtData(r.prox.data)} (chega a tempo)`:' — nenhum FULL programado ainda');
+          return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt}</span>`;
+        }).join('')}</div></div>`).join('')}
+      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL). A data de ruptura já desconta aptas + em transferência + envios programados que chegam a tempo — quando aparece o aviso de FULL programado tardio, o envio existente não evita a parada, é preciso antecipá-lo ou criar um FULL de emergência.</p></div>`:''}
     ${baixosPorLoja.length?`<div class="alert-baixo"><div class="alert-head">⚠ Estoque disponível abaixo do mínimo definido</div>
       ${baixosPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
         <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${r.dias==null?'sem venda registrada':(r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`)}${r.diaZero?` (${fmtData(r.diaZero)})`:''} — média: ${r.media!=null?r.media.toFixed(2):'—'}/dia</span>`).join('')}</div></div>`).join('')}</div>`:''}
@@ -4873,9 +4883,9 @@ function openAddSkuEnvioModal(envioId){
   body.innerHTML=`<h3>Adicionar SKUs ao envio "${esc(e.nome)}"</h3>
     <p class="hint" style="margin:0 0 14px">Digite a quantidade e a coluna <b>De onde sai</b> mostra na hora o que vem do galpão, o que vem do que já foi comprado e o que vai virar ordem de compra.</p>
     ${disp.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-      <th>SKU</th><th>Código</th><th>Local</th><th>Coletar</th><th>Qtd nesse envio</th><th>De onde sai</th>
+      <th>SKU</th><th>Local</th><th>Coletar</th><th>Qtd nesse envio</th><th>De onde sai</th>
     </tr></thead><tbody>
-      ${disp.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
+      ${disp.map(p=>`<tr><td class="mono">${esc(p.sku)}</td>
         <td class="num">${fmtInt(p.qtd.local)}</td><td class="num">${fmtInt(coletarLivre(p))}</td>
         <td><input type="number" min="0" value="0" class="qty-acao" id="add_${p.id}" data-prev="${p.id}"></td>
         <td id="prev_${p.id}" style="font-size:12.5px"><span class="muted">—</span></td></tr>`).join('')}
