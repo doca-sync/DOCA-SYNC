@@ -4360,7 +4360,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
     </div>
     <div class="card" style="margin-top:12px">
       <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
-      ${itensOrdenados.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unidades vendidas</th></tr></thead><tbody>
+      ${itensOrdenados.length?`<div class="table-wrap" style="max-width:420px"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unidades vendidas</th></tr></thead><tbody>
         ${itensOrdenados.map((it,i)=>{
           const p=state.produtos.find(x=>x.mlItemId===it.itemId);
           const nome=p&&p.sku?esc(p.sku):`<span class="muted">${esc(it.itemId)} (sem SKU vinculado)</span>`;
@@ -4527,7 +4527,15 @@ function renderFinancas(){
   });
   const frLoja=document.getElementById('frLoja'), frPeriodo=document.getElementById('frPeriodo');
   if(frLoja) frLoja.onchange=e=>{ financasResumoLoja=e.target.value; financasResumoResultado=null; renderFinancas(); };
-  if(frPeriodo) frPeriodo.onchange=e=>{ financasResumoPeriodo=e.target.value; renderFinancas(); };
+  /* trocar o período (exceto "personalizado", que precisa das duas datas primeiro) já pesquisa
+     de novo sozinho — sem isso, o resumo (incluindo o ranking de produtos) ficava mostrando os
+     dados do período anterior até clicar em Pesquisar de novo. */
+  if(frPeriodo) frPeriodo.onchange=e=>{
+    financasResumoPeriodo=e.target.value;
+    financasResumoResultado=null;
+    if(financasResumoPeriodo==='personalizado'){ renderFinancas(); return; }
+    pesquisarResumoFinanceiro();
+  };
   const frDe=document.getElementById('frDe'), frAte=document.getElementById('frAte');
   if(frDe) frDe.onchange=e=>{ financasResumoDe=e.target.value; };
   if(frAte) frAte.onchange=e=>{ financasResumoAte=e.target.value; };
