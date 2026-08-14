@@ -1653,22 +1653,24 @@ app.get('/debug/pesquisa/testar', async (req, res) => {
     const j = await fetchMLDebug(`https://api.mercadolibre.com/sites/MLB/search?q=${encodeURIComponent(q)}`, {});
     resultado.sitesSearchAnonimo = { ok: true, total: j.paging && j.paging.total, exemplo: (j.results || [])[0] && j.results[0].title };
   } catch (e) { resultado.sitesSearchAnonimo = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
-  let primeiroProdutoId = null;
+  let idsParaTestar = [];
   try {
     const j = await fetchMLDebug(`https://api.mercadolibre.com/products/search?site_id=MLB&q=${encodeURIComponent(q)}&status=active`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
-    resultado.productsSearch = { ok: true, total: j.paging && j.paging.total, exemplo: (j.results || [])[0] };
-    primeiroProdutoId = (j.results || [])[0] && (j.results[0].id || j.results[0].catalog_product_id);
+    resultado.productsSearch = { ok: true, total: j.paging && j.paging.total, exemplo: (j.results || []).slice(0, 6).map(r => ({ id: r.id, name: r.name, domain_id: r.domain_id })) };
+    idsParaTestar = (j.results || []).slice(0, 6).map(r => r.id || r.catalog_product_id).filter(Boolean);
   } catch (e) { resultado.productsSearch = { ok: false, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
-  /* detalhe de UM produto do catalogo - pra ver se vem buy_box_winner/preco/sold_quantity que a
-     busca em lista nao mostrou */
-  if (primeiroProdutoId) {
+  /* detalhe dos primeiros produtos do catalogo - pra ver quantos vem com buy_box_winner
+     preenchido (o primeiro resultado sozinho pode nao ter anuncio ativo disputando o buy box) */
+  resultado.produtosDetalhe = [];
+  let primeiroItemId = null;
+  for (const pid of idsParaTestar) {
     try {
-      const j = await fetchMLDebug(`https://api.mercadolibre.com/products/${primeiroProdutoId}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
-      resultado.produtoDetalhe = { ok: true, id: primeiroProdutoId, buy_box_winner: j.buy_box_winner, sold_quantity: j.sold_quantity, dados: j };
-    } catch (e) { resultado.produtoDetalhe = { ok: false, id: primeiroProdutoId, http_status: e.http_status, erro: e.message, corpo: e.corpo }; }
+      const j = await fetchMLDebug(`https://api.mercadolibre.com/products/${pid}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
+      resultado.produtosDetalhe.push({ ok: true, id: pid, buy_box_winner: j.buy_box_winner, sold_quantity: j.sold_quantity });
+      if (!primeiroItemId && j.buy_box_winner && j.buy_box_winner.item_id) primeiroItemId = j.buy_box_winner.item_id;
+    } catch (e) { resultado.produtosDetalhe.push({ ok: false, id: pid, http_status: e.http_status, erro: e.message }); }
   }
-  const itemTeste = req.query.itemId ||
-    (resultado.produtoDetalhe && resultado.produtoDetalhe.ok && resultado.produtoDetalhe.buy_box_winner && resultado.produtoDetalhe.buy_box_winner.item_id);
+  const itemTeste = req.query.itemId || primeiroItemId;
   if (itemTeste) {
     try {
       const j = await fetchMLDebug(`https://api.mercadolibre.com/items/${itemTeste}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} });
