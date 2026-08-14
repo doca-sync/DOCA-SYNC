@@ -1523,6 +1523,109 @@ app.get('/ads/data', async (req, res) => {
     res.json({ ok: true, loja, periodos, atualizadoEm });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+
+/* ================= Finanças: fatura (cobrança mensal) do Mercado Livre =================
+   Usa a API oficial de Billing Reports do ML (nao tem bloqueio, diferente do /sites/search que
+   foi testado e recusado em 2026 - essa e' documentada e liberada normalmente). group=ML traz o
+   que o Mercado Livre cobra do vendedor (comissao de venda, anuncio, Full etc) - e' DIFERENTE do
+   saldo do Mercado Pago que ja e' sincronizado em outro lugar (aquele e' quanto dinheiro voce TEM
+   la', isso aqui e' quanto voce DEVE de taxa no periodo). Só pega o periodo mais recente. */
+async function buscarFaturaMl(loja) {
+  const accessToken = await tokenValido(loja);
+  const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=1';
+  const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const p = (j.results || [])[0];
+  if (!p) return null;
+  return {
+    key: p.key || null,
+    valor: typeof p.amount === 'number' ? p.amount : null,
+    valorPendente: typeof p.unpaid_amount === 'number' ? p.unpaid_amount : null,
+    dataInicio: (p.period && p.period.date_from) || null,
+    dataFim: (p.period && p.period.date_to) || null,
+    vencimento: p.expiration_date || null,
+    status: p.period_status || null
+  };
+}
+app.get('/financas/fatura-ml', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const fatura = await buscarFaturaMl(loja);
+    res.json({ ok: true, loja, fatura });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+
+/* ================= Perguntas sem resposta (completas, pra ler e responder) =================
+   O /sync ja guarda so' a CONTAGEM de perguntas sem resposta por item (perguntas_sem_resposta,
+   usado no card da Visao Geral). Essas rotas aqui buscam o TEXTO de cada pergunta (sob demanda,
+   so' quando a pessoa abre o card - nao roda em todo sync porque e' mais pesado) e permitem
+   responder direto, usando a API oficial de perguntas e respostas do ML. */
+async function buscarPerguntasCompletas(accessToken, sellerId) {
+  const perguntas = [];
+  let offset = 0;
+  const limit = 50;
+  while (true) {
+    const url = `https://api.mercadolibre.com/questions/search?seller_id=${sellerId}&status=UNANSWERED&api_version=4&limit=${limit}&offset=${offset}&sort_fields=date_created&sort_types=DESC`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (r.status === 404) break;
+    const j = await r.json();
+    if (!r.ok) throw new Error('Falha ao buscar perguntas: ' + JSON.stringify(j));
+    const questions = j.questions || [];
+    perguntas.push(...questions);
+    offset += limit;
+    if (questions.length < limit || offset >= (j.total || 0)) break;
+  }
+  return perguntas;
+}
+app.get('/perguntas', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const perguntas = await buscarPerguntasCompletas(accessToken, conta.ml_user_id);
+    const itemIds = [...new Set(perguntas.map(q => q.item_id).filter(Boolean))];
+    const itens = {};
+    for (let i = 0; i < itemIds.length; i += 20) {
+      const lote = itemIds.slice(i, i + 20).join(',');
+      const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,title,thumbnail,permalink`, {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      const j = await r.json();
+      (j || []).forEach(entry => { if (entry.code === 200) itens[entry.body.id] = entry.body; });
+    }
+    const resultado = perguntas.map(q => ({
+      id: q.id,
+      itemId: q.item_id,
+      texto: q.text,
+      dataCriada: q.date_created,
+      titulo: (itens[q.item_id] && itens[q.item_id].title) || null,
+      thumbnail: (itens[q.item_id] && itens[q.item_id].thumbnail) || null,
+      permalink: (itens[q.item_id] && itens[q.item_id].permalink) || null
+    }));
+    res.json({ ok: true, loja, perguntas: resultado });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+app.post('/perguntas/responder', async (req, res) => {
+  try {
+    const loja = req.query.loja || req.body?.loja;
+    const questionId = req.body?.questionId;
+    const texto = req.body?.texto;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!questionId || !texto) return res.status(400).json({ ok: false, erro: 'Informe questionId e texto.' });
+    if (String(texto).length > 2000) return res.status(400).json({ ok: false, erro: 'Resposta com mais de 2000 caracteres (limite do Mercado Livre).' });
+    const accessToken = await tokenValido(loja);
+    const r = await fetch('https://api.mercadolibre.com/answers', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ question_id: questionId, text: texto })
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(200).json({ ok: false, erro: j.message || 'Falha ao responder a pergunta.', corpo: j });
+    res.json({ ok: true, resposta: j });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
