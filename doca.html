@@ -4324,8 +4324,10 @@ function renderResumoFinanceiroResultado(resumo,loja){
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
+  const itensOrdenados=(resumo.itensVendidos||[]).slice().sort((a,b)=>b.qtd-a.qtd);
+  const unidadesVendidas=itensOrdenados.reduce((s,it)=>s+it.qtd,0);
   return `
-    <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)} · ${fmtInt(resumo.pedidosValidos)} pedido(s) válido(s)${resumo.pedidosCancelados?' · '+fmtInt(resumo.pedidosCancelados)+' cancelado(s)':''}</p>
+    <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)} · ${fmtInt(resumo.pedidosValidos)} pedido(s) válido(s) · ${fmtInt(unidadesVendidas)} unidade(s) vendida(s)${resumo.pedidosCancelados?' · '+fmtInt(resumo.pedidosCancelados)+' cancelado(s)':''}</p>
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
       ${cartao('FATURAMENTO',resumo.faturamento)}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
@@ -4344,7 +4346,18 @@ function renderResumoFinanceiroResultado(resumo,loja){
     </div>
     <div class="card" style="margin-top:12px">
       <div class="muted" style="font-size:11px">VENDAS DE HOJE</div>
-      <b style="font-size:18px">${fmtInt(resumo.vendasHoje.pedidos)} pedido(s) · ${fmtMoney(resumo.vendasHoje.faturamento)}</b>
+      <b style="font-size:18px">${fmtInt(resumo.vendasHoje.pedidos)} pedido(s) · ${fmtInt(resumo.vendasHoje.unidades||0)} unidade(s) · ${fmtMoney(resumo.vendasHoje.faturamento)}</b>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
+      ${itensOrdenados.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unidades vendidas</th></tr></thead><tbody>
+        ${itensOrdenados.map((it,i)=>{
+          const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+          const descricao=it.titulo||(p&&p.codigo)||'';
+          const nome=p?`${esc(p.sku||'')}${descricao?' — '+esc(descricao):''}`:(descricao?esc(descricao):`<span class="muted">${esc(it.itemId)}</span>`);
+          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td></tr>`;
+        }).join('')}
+      </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
     </div>
     ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
   `;
@@ -4375,7 +4388,6 @@ function renderFinancas(){
           <option value="15d" ${financasResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
           <option value="30d" ${financasResumoPeriodo==='30d'?'selected':''}>Últimos 30 dias</option>
           <option value="mes_corrente" ${financasResumoPeriodo==='mes_corrente'?'selected':''}>Mês corrente</option>
-          <option value="mes_fechado" ${financasResumoPeriodo==='mes_fechado'?'selected':''}>Período fechado (mês)</option>
           <option value="personalizado" ${financasResumoPeriodo==='personalizado'?'selected':''}>Personalizado</option>
         </select></label>
         ${financasResumoPeriodo==='personalizado'?`
