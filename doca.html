@@ -4220,6 +4220,7 @@ function marcarDespesaPaga(id,pago){
    Mercado Pago) e cadastra/atualiza como despesa recorrente automaticamente, evitando duplicar
    pelo par loja+faturaKey (a "key" que o próprio ML usa pra identificar o período de cobrança) */
 let financasUltimoErroAuto={}; // loja -> mensagem do último erro da tentativa AUTOMÁTICA de puxar a fatura (não persistido — só pra visibilidade nesta sessão, sem precisar abrir o console do navegador)
+function sleep(ms){ return new Promise(res=>setTimeout(res,ms)); }
 async function puxarFaturaMl(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -4246,6 +4247,22 @@ async function puxarFaturaMl(loja){
   delete financasUltimoErroAuto[loja];
   persist();
   return f;
+}
+/* tenta de novo com espera crescente quando o Mercado Livre responde 429 (limite de chamadas por
+   segundo) — descoberto ao puxar a fatura das 4 lojas em paralelo assim que o Doca abre, que às
+   vezes estourava o limite. Erros de outro tipo (sem fatura, backend fora do ar etc.) não têm
+   novo motivo pra dar certo numa tentativa a mais, então sobem direto. */
+async function puxarFaturaMlComRetry(loja,tentativa){
+  tentativa=tentativa||0;
+  try{
+    return await puxarFaturaMl(loja);
+  }catch(e){
+    if(/\b429\b/.test(e.message)&&tentativa<3){
+      await sleep(1200*Math.pow(2,tentativa));
+      return puxarFaturaMlComRetry(loja,tentativa+1);
+    }
+    throw e;
+  }
 }
 /* explica em português simples cada categoria de cobrança que vem no detalhamento da fatura do
    ML (vindo do /summary da API de Billing) - os rótulos que o próprio ML manda variam um pouco
@@ -6014,15 +6031,23 @@ tentarReconectar();
    funcionou por último. */
 (async function sincronizarMlAoAbrir(){
   if(!backendUrl()) return;
-  /* fatura do Mercado Livre primeiro e em PARALELO (uma chamada rápida por loja) — antes ela
-     ficava no fim de uma fila sequencial (produtos → Mercado Pago → Ads → fatura → imposto,
-     loja por loja), então se qualquer passo mais lento travasse ou o backend gratuito estivesse
-     "dormindo", a fatura só aparecia depois de clicar manualmente em "🔄" na aba Finanças. Agora
-     ela dispara pras 4 lojas de uma vez, sem esperar o resto. */
-  await Promise.allSettled(STORES.map(loja=>puxarFaturaMl(loja).catch(e=>{
-    console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
-    financasUltimoErroAuto[loja]=e.message;
-  })));
+  /* fatura do Mercado Livre primeiro (uma chamada rápida por loja) — antes ela ficava no fim de
+     uma fila sequencial (produtos → Mercado Pago → Ads → fatura → imposto, loja por loja), então
+     se qualquer passo mais lento travasse ou o backend gratuito estivesse "dormindo", a fatura só
+     aparecia depois de clicar manualmente em "🔄" na aba Finanças. Disparar as 4 lojas exatamente
+     ao mesmo tempo esbarrava no limite de chamadas por segundo do Mercado Livre (429), então agora
+     começa uma loja a cada 500ms (ainda bem mais rápido que a fila antiga) e cada uma tenta de
+     novo sozinha se cair num 429 (ver puxarFaturaMlComRetry). */
+  const promessasFatura=[];
+  for(let i=0;i<STORES.length;i++){
+    const loja=STORES[i];
+    promessasFatura.push(puxarFaturaMlComRetry(loja).catch(e=>{
+      console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
+      financasUltimoErroAuto[loja]=e.message;
+    }));
+    if(i<STORES.length-1) await sleep(500);
+  }
+  await Promise.allSettled(promessasFatura);
   renderFinancas();
   for(const loja of STORES){
     try{
