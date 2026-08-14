@@ -1524,63 +1524,6 @@ app.get('/ads/data', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
-/* muda o ROAS objetivo (bidding automatico por ROAS) de uma campanha DIRETO no Mercado Livre, sem
-   precisar abrir o painel de anuncios la'. IMPORTANTE: essa e' a primeira rota de ESCRITA na API
-   de Product Ads desse projeto - ate agora so' tinha leitura (campaigns/search, ja confirmado
-   funcionando). O 1o formato testado (PUT no recurso singular sob /marketplace/advertising/.../
-   campaigns/{id}) deu 404 ao vivo (testado em 15/08) - API de escrita provavelmente vive num
-   recurso diferente do de leitura, igual ja' vimos acontecer com a leitura de campanha unica (ver
-   /debug/ads/leiloes). Por isso tenta VARIOS formatos em sequencia (mesmo espirito daquele debug)
-   ate' um dar certo, guardando os erros de cada tentativa pra devolver tudo junto se nenhum
-   funcionar - assim da' pra ver o status/corpo exato de cada um sem precisar de outra rodada. */
-async function atualizarRoasCampanha(loja, siteId, advertiserId, campanhaId, roasTarget) {
-  const accessToken = await tokenValido(loja);
-  const headers = { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2', 'Content-Type': 'application/json' };
-  const candidatos = [
-    { nome: 'singular, novo prefixo, PUT body {roas_target}', method: 'PUT',
-      url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}`,
-      body: { roas_target: roasTarget } },
-    { nome: 'singular, prefixo antigo (sem site_id), PUT body {roas_target}', method: 'PUT',
-      url: `https://api.mercadolibre.com/advertising/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}`,
-      body: { roas_target: roasTarget } },
-    { nome: 'singular, novo prefixo, PATCH body {roas_target}', method: 'PATCH',
-      url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}`,
-      body: { roas_target: roasTarget } },
-    { nome: 'lote (campaigns, sem id na URL), PUT body [{id, roas_target}]', method: 'PUT',
-      url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns`,
-      body: [{ id: Number(campanhaId) || campanhaId, roas_target: roasTarget }] },
-    { nome: 'singular, sem prefixo marketplace, PUT body {roas_target}', method: 'PUT',
-      url: `https://api.mercadolibre.com/advertising/campaigns/${campanhaId}?site_id=${siteId}`,
-      body: { roas_target: roasTarget } }
-  ];
-  const tentativas = [];
-  for (const cand of candidatos) {
-    try {
-      const j = await fetchMLDebug(cand.url, { method: cand.method, headers, body: JSON.stringify(cand.body) });
-      return { funcionou: cand.nome, resultado: j, tentativas_anteriores: tentativas };
-    } catch (e) {
-      tentativas.push({ nome: cand.nome, method: cand.method, url: cand.url, http_status: e.http_status, erro: e.message, corpo: e.corpo });
-    }
-  }
-  const erro = new Error('Nenhum formato de endpoint de escrita funcionou pra atualizar o ROAS objetivo.');
-  erro.tentativas = tentativas;
-  throw erro;
-}
-app.put('/ads/campanha/roas', async (req, res) => {
-  try {
-    const loja = req.body?.loja || req.query.loja;
-    const campanhaId = req.body?.campanhaId;
-    const roasTarget = Number(req.body?.roasTarget);
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio.' });
-    if (!roasTarget || roasTarget < 1 || roasTarget > 35) return res.status(400).json({ ok: false, erro: 'roasTarget precisa ser um numero entre 1 e 35 (x) - e o limite que o proprio Mercado Livre aplica.' });
-    const { primeiro } = await buscarAdvertiserId(loja);
-    if (!primeiro) return res.status(200).json({ ok: false, erro: 'Nenhum advertiser_id encontrado pra essa loja.' });
-    const resultado = await atualizarRoasCampanha(loja, primeiro.site_id, primeiro.advertiser_id, campanhaId, roasTarget);
-    res.json({ ok: true, loja, campanhaId, roasTarget, resultado });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto, tentativas: e.tentativas }); }
-});
-
 /* ================= Finanças: fatura (cobrança mensal) do Mercado Livre =================
    Usa a API oficial de Billing Reports do ML (nao tem bloqueio, diferente do /sites/search que
    foi testado e recusado em 2026 - essa e' documentada e liberada normalmente). group=ML traz o
@@ -1670,8 +1613,31 @@ function calcularPeriodoResumo(periodo, deQuery, ateQuery) {
     const primeiroDiaMesAnterior = new Date(Date.UTC(ultimoDiaMesAnterior.getUTCFullYear(), ultimoDiaMesAnterior.getUTCMonth(), 1));
     return { de: dataYMD(primeiroDiaMesAnterior), ate: dataYMD(ultimoDiaMesAnterior) };
   }
+  if (periodo === 'mes_corrente') {
+    const hoje = new Date();
+    const primeiroDiaMesAtual = new Date(Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), 1));
+    return { de: dataYMD(primeiroDiaMesAtual), ate: hojeStr };
+  }
   const dias = { '7d': 7, '15d': 15, '30d': 30 }[periodo] || 30;
   return { de: diasAtras(dias - 1), ate: hojeStr };
+}
+/* versao "leve" do resumo - so' soma o faturamento (pedidos validos no periodo), sem chamar
+   /shipments/.../costs nem a API de Ads (que sao os dois passos lentos do resumo completo). Usada
+   pra atualizar o campo "Imposto" da Visao Geral automaticamente toda vez que o Doca abre, sem
+   pesar a sincronizacao com dezenas de chamadas extras so' pra isso. */
+async function buscarFaturamentoRapido(loja, de, ate) {
+  const accessToken = await tokenValido(loja);
+  const conta = await pegarConta(loja);
+  const log = { avisos: [] };
+  const deIso = `${de}T00:00:00-03:00`;
+  const ateIso = `${ate}T23:59:59-03:00`;
+  const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+  let faturamento = 0;
+  for (const pedido of pedidos) {
+    if (pedido.status === 'cancelled' || pedido.status === 'invalid') continue;
+    faturamento += Number(pedido.total_amount) || 0;
+  }
+  return faturamento;
 }
 async function buscarResumoFinanceiro(loja, de, ate) {
   const accessToken = await tokenValido(loja);
@@ -1702,38 +1668,65 @@ async function buscarResumoFinanceiro(loja, de, ate) {
         if (itemId) itensVendidos.set(itemId, (itensVendidos.get(itemId) || 0) + (oi.quantity || 0));
       }
       if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
-    }
-    // reembolso parcial/total detectado via status do pagamento - conta separado de "cancelado"
-    // (uma venda pode ser reembolsada sem o PEDIDO virar "cancelled" formalmente)
-    for (const pg of (pedido.payments || [])) {
-      if (pg.status === 'refunded' || pg.status === 'partially_refunded') {
-        reembolsosValor += Number(pg.transaction_amount) || 0;
+      // reembolso parcial/total detectado via status do pagamento - conta separado de "cancelado".
+      // IMPORTANTE: so' verifica isso pra pedido NAO cancelado - um pedido cancelado quase sempre
+      // tem o pagamento com status "refunded" tambem (o cancelamento em si dispara o estorno), e
+      // esse valor ja' foi contado em cancelamentosValor acima. Sem esse cuidado, todo pedido
+      // cancelado era contado 2x (uma vez como cancelamento, outra como reembolso) - bug real
+      // encontrado comparando com o Metrify em 15/08 (reembolsos aparecia ~140x maior que o valor
+      // real, quase identico ao total de cancelamentos - sinal claro de duplicacao).
+      for (const pg of (pedido.payments || [])) {
+        if (pg.status === 'refunded' || pg.status === 'partially_refunded') {
+          reembolsosValor += Number(pg.transaction_amount) || 0;
+        }
       }
     }
   }
 
   // frete: comprador (o que o cliente pagou) vs vendedor (o que saiu do seu bolso) - via
-  // /shipments/{id}/costs, que da' exatamente essa separacao. Sequencial com pausa curta (mesmo
-  // cuidado do buscarPedidosNoIntervalo) pra nao estourar rate limit; se UM shipment falhar so'
-  // pula ele (registra o aviso), nao aborta o resto.
+  // /shipments/{id}/costs, que da' exatamente essa separacao. ANTES rodava sequencial com um
+  // limite de seguranca de so' 400 envios - numa loja de volume real (ex: 2786 envios em 15 dias)
+  // isso truncava o calculo em ~14% do total, deixando o frete (e a margem) BEM errados (achado
+  // comparando com o Metrify em 15/08 - frete vendedor apareceu 7x menor que o real). Trocado por
+  // um pool de chamadas em paralelo (concorrencia limitada, nao tudo de uma vez) com retry+backoff
+  // em 429 igual buscarPaginaComRetry, e o limite de seguranca subiu bem mais alto - agora e' so'
+  // uma protecao contra loja com volume absurdo, nao o caminho normal.
   let freteComprador = 0, freteVendedor = 0, freteFalhas = 0;
   const idsArray = [...shippingIds];
-  const LIMITE_SHIPMENTS = 400;
+  const LIMITE_SHIPMENTS = 6000;
   const idsParaBuscar = idsArray.slice(0, LIMITE_SHIPMENTS);
   if (idsArray.length > LIMITE_SHIPMENTS) log.avisos.push(`${idsArray.length} envios no periodo, so' os primeiros ${LIMITE_SHIPMENTS} entraram no calculo de frete (limite de seguranca).`);
-  for (const shippingId of idsParaBuscar) {
+  async function buscarCustoShipmentComRetry(shippingId, tentativa) {
+    tentativa = tentativa || 0;
     try {
-      const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${shippingId}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      const receivers = j.receivers || [];
-      const senders = j.senders || [];
-      freteComprador += receivers.reduce((s, r) => s + (Number(r.cost) || 0), 0);
-      freteVendedor += senders.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+      return await fetchMLDebug(`https://api.mercadolibre.com/shipments/${shippingId}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
     } catch (e) {
-      freteFalhas++;
+      const rateLimited = e.http_status === 429 || (e.corpo && (e.corpo.error === 'local_rate_limited' || e.corpo.message === 'local_rate_limited'));
+      if (rateLimited && tentativa < 4) {
+        await sleep(500 * Math.pow(2, tentativa));
+        return buscarCustoShipmentComRetry(shippingId, tentativa + 1);
+      }
+      throw e;
     }
-    await sleep(60);
   }
-  if (freteFalhas) log.avisos.push(`${freteFalhas} envio(s) nao respondeu(ram) o custo de frete (ignorados no total).`);
+  const CONCORRENCIA_FRETE = 10;
+  let cursorFrete = 0;
+  async function workerFrete() {
+    while (cursorFrete < idsParaBuscar.length) {
+      const shippingId = idsParaBuscar[cursorFrete++];
+      try {
+        const j = await buscarCustoShipmentComRetry(shippingId);
+        const receivers = j.receivers || [];
+        const senders = j.senders || [];
+        freteComprador += receivers.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        freteVendedor += senders.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+      } catch (e) {
+        freteFalhas++;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
+  if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
 
   // Ads: reusa o mesmo endpoint de campanhas ja' confirmado funcionando, so' com o intervalo
   // personalizado no lugar do preset de 7/15/30 dias
@@ -1780,6 +1773,15 @@ app.get('/financas/resumo', async (req, res) => {
     const { de, ate } = calcularPeriodoResumo(periodo, req.query.de, req.query.ate);
     const resumo = await buscarResumoFinanceiro(loja, de, ate);
     res.json({ ok: true, loja, periodo, resumo });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+app.get('/financas/faturamento-mes', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const { de, ate } = calcularPeriodoResumo('mes_corrente');
+    const faturamento = await buscarFaturamentoRapido(loja, de, ate);
+    res.json({ ok: true, loja, periodo: { de, ate }, faturamento });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 
