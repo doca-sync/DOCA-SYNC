@@ -1546,6 +1546,7 @@ async function buscarFaturaMl(loja) {
   // o mesmo resumo que aparece na tela "Resumo da fatura" do Mercado Livre, pra poder discriminar
   // no corpo da DRE de onde vem o valor, e nao so' mostrar um numero unico
   let itens = [];
+  let itensAviso = null;
   if (p.key) {
     try {
       const urlResumo = `https://api.mercadolibre.com/billing/integration/periods/key/${p.key}/summary?group=ML&document_type=BILL`;
@@ -1556,7 +1557,12 @@ async function buscarFaturaMl(loja) {
         ...charges.map(c => ({ label: c.label, valor: c.amount })),
         ...bonuses.map(b => ({ label: `Bonificação: ${b.label}`, valor: -Math.abs(b.amount) }))
       ];
-    } catch (e) { /* segue sem o detalhamento se o resumo falhar - o valor total sozinho ja' e' util */ }
+    } catch (e) {
+      // segue sem o detalhamento se o resumo falhar - o valor total sozinho ja' e' util. Mas
+      // guarda o motivo (em vez de engolir silencioso) pra dar pra ver na propria tela de
+      // Financas PORQUE o botao "detalhar" nao apareceu, sem precisar abrir o console do servidor
+      itensAviso = `Detalhamento indisponível: ${e.message}${e.http_status ? ' (status ' + e.http_status + ')' : ''}`;
+    }
   }
 
   // vencimento: o ML so' preenche expiration_date quando o periodo ja' fechou. Enquanto esta'
@@ -1579,7 +1585,8 @@ async function buscarFaturaMl(loja) {
     dataFim: (p.period && p.period.date_to && anoRazoavel(p.period.date_to)) ? p.period.date_to : null,
     vencimento,
     status: p.period_status || null,
-    itens
+    itens,
+    itensAviso
   };
 }
 app.get('/financas/fatura-ml', async (req, res) => {
@@ -1602,6 +1609,9 @@ app.get('/financas/fatura-ml', async (req, res) => {
 function calcularPeriodoResumo(periodo, deQuery, ateQuery) {
   const hojeStr = diaBR(new Date().toISOString());
   const diasAtras = n => diaBR(new Date(Date.now() - n * 864e5).toISOString());
+  if (periodo === 'hoje') {
+    return { de: hojeStr, ate: hojeStr };
+  }
   if (periodo === 'personalizado') {
     if (!deQuery || !ateQuery) throw new Error('Informe "de" e "ate" (AAAA-MM-DD) pro periodo personalizado.');
     return { de: deQuery, ate: ateQuery };
