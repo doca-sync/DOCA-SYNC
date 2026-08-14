@@ -2453,6 +2453,24 @@ function atualizarFinanceiro(loja,patch){
 function faturaMlPendenteLoja(loja){
   return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&!d.pago).reduce((s,d)=>s+(Number(d.valor)||0),0);
 }
+/* recalcula o campo "Imposto" da Visão Geral automaticamente: faturamento do mês corrente × a
+   alíquota configurada em Finanças → Resumo Financeiro pra essa loja. Se a alíquota ainda não foi
+   configurada (0%), o imposto fica em R$0,00 mesmo (não é um erro, só falta configurar). */
+function aplicarImpostoAutomatico(loja,faturamentoMes){
+  const f=finLoja(loja);
+  f.imposto=faturamentoMes*((f.aliquotaImposto||0)/100);
+  f.impostoFaturamentoBase=faturamentoMes;
+  f.impostoAtualizadoEm=Date.now();
+  persist();
+}
+async function sincronizarImpostoAutomatico(loja){
+  const base=backendUrl();
+  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  const r=await fetch(`${base}/financas/faturamento-mes?loja=${encodeURIComponent(loja)}`);
+  let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+  if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o faturamento do mês (status '+r.status+').'));
+  aplicarImpostoAutomatico(loja,j.faturamento||0);
+}
 /* ---------- perguntas sem resposta (card na Visão Geral) ----------
    A CONTAGEM (p.mlPerguntas) já vem de graça no "Atualizar" normal de Produtos. O TEXTO de cada
    pergunta só é buscado sob demanda (quando a pessoa clica pra ver aquela loja), pra não pesar
@@ -2576,7 +2594,13 @@ function renderDashboard(){
                 <span class="ln"><span>Atualizado</span><b>${t.fin.aReceberAtualizadoEm?esc(fLidoTxt(new Date(t.fin.aReceberAtualizadoEm).getTime())):'aguardando 1ª leitura'}</b></span>
                 <span class="obs">Valor ainda não liberado, puxado direto do Mercado Pago.</span></span></span></span></div>`
             :`<div class="valor-manual-row"><span class="muted">A receber:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-areceber="${esc(t.loja)}" value="${t.fin.aReceber?String(t.fin.aReceber).replace('.',','):''}"></div>`}
-          <div class="valor-manual-row"><span class="muted">Imposto:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-imposto="${esc(t.loja)}" value="${t.fin.imposto?String(t.fin.imposto).replace('.',','):''}"></div>
+          <div><span class="muted">Imposto:</span> <span class="valor-info"><b>${fmtMoney(t.fin.imposto||0)}</b>
+              <span class="det"><span class="i">i</span><span class="pop">
+                <span class="ln"><span>Origem</span><b>automático</b></span>
+                <span class="ln"><span>Alíquota</span><b>${t.fin.aliquotaImposto||0}%</b></span>
+                <span class="ln"><span>Faturamento do mês (base)</span><b>${fmtMoney(t.fin.impostoFaturamentoBase||0)}</b></span>
+                <span class="ln"><span>Atualizado</span><b>${t.fin.impostoAtualizadoEm?esc(fLidoTxt(t.fin.impostoAtualizadoEm)):'aguardando 1ª leitura'}</b></span>
+                <span class="obs">Faturamento do mês corrente × alíquota configurada em Finanças → Resumo Financeiro.</span></span></span></span></div>
           <div><span class="muted">Fatura Mercado Livre:</span> <span class="valor-info"><b>${fmtMoney(t.faturaMl)}</b>
               <span class="det"><span class="i">i</span><span class="pop">
                 <span class="ln"><span>Origem</span><b>automático</b></span>
@@ -2650,11 +2674,6 @@ function renderDashboard(){
   });
   el.querySelectorAll('[data-areceber]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.areceber,{aReceber:i.value});
-    i.onchange=commit;
-    i.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); i.blur(); } };
-  });
-  el.querySelectorAll('[data-imposto]').forEach(i=>{
-    const commit=()=>atualizarFinanceiro(i.dataset.imposto,{imposto:i.value});
     i.onchange=commit;
     i.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); i.blur(); } };
   });
@@ -3925,39 +3944,6 @@ function adsApiLoja(loja){
   if(!state.adsApi[loja].tagMaisVendido) state.adsApi[loja].tagMaisVendido={};
   return state.adsApi[loja];
 }
-let adsEditandoRoas={}; // campanhaId -> true enquanto o campo de edição do ROAS objetivo está aberto
-let adsSalvandoRoas={}; // campanhaId -> true enquanto salva no Mercado Livre
-/* muda o ROAS objetivo (bidding) da campanha DIRETO no Mercado Livre via API (PUT), sem precisar
-   abrir o painel de anúncios lá. Depois de salvar com sucesso, atualiza o valor local em todos os
-   períodos já cacheados (d7/d15/d30 têm cada um sua própria cópia dos metadados da campanha,
-   inclusive roas_target) pra não mostrar um valor desatualizado se a pessoa trocar de período sem
-   dar Atualizar de novo. */
-async function salvarRoasObjetivo(loja,campanhaId,novoValor){
-  const v=Number(String(novoValor).replace(',','.'));
-  if(!v||isNaN(v)||v<1||v>35){ alert('O ROAS objetivo precisa ser um número entre 1x e 35x (limite do próprio Mercado Livre).'); return; }
-  adsSalvandoRoas[campanhaId]=true; renderAds();
-  try{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-    const r=await fetch(`${base}/ads/campanha/roas`,{method:'PUT',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({loja,campanhaId,roasTarget:v})});
-    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-    if(!r.ok||!j.ok){
-      let msg=j.erro||('Falha ao atualizar o ROAS objetivo (status '+r.status+').');
-      if(Array.isArray(j.tentativas)&&j.tentativas.length) msg+='\n\nFormatos testados:\n'+j.tentativas.map(t=>`- ${t.nome}: status ${t.http_status||'?'}`).join('\n');
-      throw new Error(msg);
-    }
-    const dados=adsApiLoja(loja);
-    Object.values(dados.periodos||{}).forEach(periodo=>{
-      const camp=(periodo.results||[]).find(x=>String(x.id)===String(campanhaId));
-      if(camp) camp.roas_target=v;
-    });
-    delete adsEditandoRoas[campanhaId];
-    persist();
-    toast('ROAS objetivo atualizado no Mercado Livre.');
-  }catch(e){ alert('Não foi possível atualizar o ROAS objetivo: '+e.message); }
-  finally{ delete adsSalvandoRoas[campanhaId]; renderAds(); }
-}
 async function adsSincronizarLoja(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -4137,12 +4123,7 @@ function renderAds(){
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
-            <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${adsEditandoRoas[camp.id]?`
-              <span style="display:flex;align-items:center;gap:4px">
-                <input type="number" min="1" max="35" step="0.1" value="${camp.roas_target||''}" data-roasinput="${camp.id}" style="width:64px;padding:3px 6px" ${adsSalvandoRoas[camp.id]?'disabled':''}>x
-                <button class="btn sm acc" data-roassalvar="${camp.id}" ${adsSalvandoRoas[camp.id]?'disabled':''}>${adsSalvandoRoas[camp.id]?'...':'Salvar'}</button>
-                <button class="btn sm" data-roascancelar="${camp.id}" ${adsSalvandoRoas[camp.id]?'disabled':''}>Cancelar</button>
-              </span>`:`${camp.roas_target||0}x <button class="btn sm" data-roaseditar="${camp.id}" title="Mudar o ROAS objetivo direto no Mercado Livre">✎</button>`}</div>
+            <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
@@ -4178,13 +4159,6 @@ function renderAds(){
     persist();
     toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
     renderAds();
-  });
-  el.querySelectorAll('[data-roaseditar]').forEach(b=>b.onclick=()=>{ adsEditandoRoas[b.dataset.roaseditar]=true; renderAds(); });
-  el.querySelectorAll('[data-roascancelar]').forEach(b=>b.onclick=()=>{ delete adsEditandoRoas[b.dataset.roascancelar]; renderAds(); });
-  el.querySelectorAll('[data-roassalvar]').forEach(b=>b.onclick=()=>{
-    const id=b.dataset.roassalvar;
-    const input=el.querySelector(`[data-roasinput="${id}"]`);
-    salvarRoasObjetivo(c.loja,id,input?input.value:'');
   });
 }
 
@@ -4399,6 +4373,7 @@ function renderFinancas(){
           <option value="7d" ${financasResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
           <option value="15d" ${financasResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
           <option value="30d" ${financasResumoPeriodo==='30d'?'selected':''}>Últimos 30 dias</option>
+          <option value="mes_corrente" ${financasResumoPeriodo==='mes_corrente'?'selected':''}>Mês corrente</option>
           <option value="mes_fechado" ${financasResumoPeriodo==='mes_fechado'?'selected':''}>Período fechado (mês)</option>
           <option value="personalizado" ${financasResumoPeriodo==='personalizado'?'selected':''}>Personalizado</option>
         </select></label>
@@ -5868,6 +5843,12 @@ tentarReconectar();
       console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
       financasUltimoErroAuto[loja]=e.message;
       renderFinancas();
+    }
+    try{
+      await sincronizarImpostoAutomatico(loja);
+      renderDashboard();
+    }catch(e){
+      console.error(`Sincronização automática do imposto (Visão Geral) falhou ao abrir o Doca (loja ${loja}):`,e.message);
     }
   }
 })();
