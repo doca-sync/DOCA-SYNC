@@ -1524,6 +1524,37 @@ app.get('/ads/data', async (req, res) => {
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
 
+/* muda o ROAS objetivo (bidding automatico por ROAS) de uma campanha DIRETO no Mercado Livre, sem
+   precisar abrir o painel de anuncios la'. IMPORTANTE: essa e' a primeira rota de ESCRITA na API
+   de Product Ads desse projeto - ate agora so' tinha leitura (campaigns/search, ja confirmado
+   funcionando). O endpoint de escrita abaixo (PUT no recurso singular da campanha) e' o mais
+   provavel dado o padrao dos outros formatos ja testados (ver /debug/ads/leiloes, que tentou
+   varias variantes pra LEITURA), mas nao foi confirmado ao vivo ainda - se der 404/405/403, o
+   corpo do erro (e.corpo) vai mostrar exatamente o motivo, igual todo outro debug desse arquivo. */
+async function atualizarRoasCampanha(loja, siteId, advertiserId, campanhaId, roasTarget) {
+  const accessToken = await tokenValido(loja);
+  const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}`;
+  return fetchMLDebug(url, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roas_target: roasTarget })
+  });
+}
+app.put('/ads/campanha/roas', async (req, res) => {
+  try {
+    const loja = req.body?.loja || req.query.loja;
+    const campanhaId = req.body?.campanhaId;
+    const roasTarget = Number(req.body?.roasTarget);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio.' });
+    if (!roasTarget || roasTarget < 1 || roasTarget > 35) return res.status(400).json({ ok: false, erro: 'roasTarget precisa ser um numero entre 1 e 35 (x) - e o limite que o proprio Mercado Livre aplica.' });
+    const { primeiro } = await buscarAdvertiserId(loja);
+    if (!primeiro) return res.status(200).json({ ok: false, erro: 'Nenhum advertiser_id encontrado pra essa loja.' });
+    const resultado = await atualizarRoasCampanha(loja, primeiro.site_id, primeiro.advertiser_id, campanhaId, roasTarget);
+    res.json({ ok: true, loja, campanhaId, roasTarget, resultado });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+});
+
 /* ================= Finanças: fatura (cobrança mensal) do Mercado Livre =================
    Usa a API oficial de Billing Reports do ML (nao tem bloqueio, diferente do /sites/search que
    foi testado e recusado em 2026 - essa e' documentada e liberada normalmente). group=ML traz o
