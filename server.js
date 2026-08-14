@@ -1692,31 +1692,53 @@ app.get('/debug/pesquisa/testar', async (req, res) => {
    escrever o parser de verdade - assim ele e' escrito em cima do que a pagina REALMENTE devolve
    pro nosso servidor, e nao em cima de um chute.
    Ex.: /debug/pesquisa/scrape?q=fone bluetooth */
+async function tentarScrapeML(url, extraHeaders) {
+  const r = await fetch(url, {
+    headers: Object.assign({
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      Referer: 'https://www.google.com/',
+      'sec-ch-ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Windows"',
+      'sec-fetch-dest': 'document',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-user': '?1',
+      'upgrade-insecure-requests': '1'
+    }, extraHeaders || {})
+  });
+  const html = await r.text();
+  const idxResult = html.indexOf('ui-search-result');
+  return {
+    url, status: r.status, tamanhoHtml: html.length,
+    titulo: (html.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || null,
+    temPreloadedState: /__PRELOADED_STATE__/.test(html),
+    temLdJson: /application\/ld\+json/.test(html),
+    temResultCard: /ui-search-result/.test(html),
+    trechoInicio: html.slice(0, 1500),
+    trechoResult: idxResult >= 0 ? html.slice(Math.max(0, idxResult - 500), idxResult + 2500) : null
+  };
+}
+/* rota de diagnostico temporaria - o usuario topou capturar direto do SITE publico do Mercado
+   Livre (nao a API), ja que /sites/search e buy_box_winner estao bloqueados pra apps de terceiro
+   em 2026 (confirmado com dado real acima). A primeira tentativa (lista.mercadolivre.com.br, com
+   poucos headers) caiu numa pagina de captcha/seguranca - essa versao tenta 2 variacoes de graca
+   antes de desistir: 1) www.mercadolivre.com.br/search (caminho alternativo) e 2) a mesma URL da
+   lista, mas com headers bem mais completos de navegador real (sec-ch-ua, sec-fetch-*, referer do
+   Google) - sinais que bots simples costumam nao mandar.
+   Ex.: /debug/pesquisa/scrape?q=fone bluetooth */
 app.get('/debug/pesquisa/scrape', async (req, res) => {
-  try {
-    const q = req.query.q || 'fone bluetooth';
-    const slug = q.trim().replace(/\s+/g, '-');
-    const url = `https://lista.mercadolivre.com.br/${encodeURIComponent(slug)}`;
-    const r = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-      }
-    });
-    const html = await r.text();
-    const temPreloadedState = /__PRELOADED_STATE__/.test(html);
-    const temLdJson = /application\/ld\+json/.test(html);
-    const temResultCard = /ui-search-result/.test(html);
-    const trechoInicio = html.slice(0, 3000);
-    const idxResult = html.indexOf('ui-search-result');
-    const trechoResult = idxResult >= 0 ? html.slice(Math.max(0, idxResult - 500), idxResult + 2500) : null;
-    res.json({
-      ok: true, url, status: r.status, tamanhoHtml: html.length,
-      temPreloadedState, temLdJson, temResultCard,
-      trechoInicio, trechoResult
-    });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+  const q = req.query.q || 'fone bluetooth';
+  const slug = q.trim().replace(/\s+/g, '-');
+  const resultado = {};
+  try { resultado.wwwSearch = await tentarScrapeML(`https://www.mercadolivre.com.br/search?q=${encodeURIComponent(q)}`); }
+  catch (e) { resultado.wwwSearch = { ok: false, erro: e.message }; }
+  try { resultado.listaComHeadersCompletos = await tentarScrapeML(`https://lista.mercadolivre.com.br/${encodeURIComponent(slug)}`); }
+  catch (e) { resultado.listaComHeadersCompletos = { ok: false, erro: e.message }; }
+  res.json({ ok: true, q, resultado });
 });
 
 app.post('/sync', async (req, res) => {
