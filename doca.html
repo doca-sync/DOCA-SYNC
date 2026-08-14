@@ -863,10 +863,11 @@ function migrar(){
   });
   if(!state.financeiro||typeof state.financeiro!=='object') state.financeiro={};
   STORES.forEach(l=>{
-    if(!state.financeiro[l]||typeof state.financeiro[l]!=='object') state.financeiro[l]={mercadoPago:0,aReceber:0,imposto:0};
+    if(!state.financeiro[l]||typeof state.financeiro[l]!=='object') state.financeiro[l]={mercadoPago:0,aReceber:0,imposto:0,aliquotaImposto:0};
     else{ if(typeof state.financeiro[l].mercadoPago!=='number') state.financeiro[l].mercadoPago=Number(state.financeiro[l].mercadoPago)||0;
       if(typeof state.financeiro[l].aReceber!=='number') state.financeiro[l].aReceber=Number(state.financeiro[l].aReceber)||0;
-      if(typeof state.financeiro[l].imposto!=='number') state.financeiro[l].imposto=Number(state.financeiro[l].imposto)||0; }
+      if(typeof state.financeiro[l].imposto!=='number') state.financeiro[l].imposto=Number(state.financeiro[l].imposto)||0;
+      if(typeof state.financeiro[l].aliquotaImposto!=='number') state.financeiro[l].aliquotaImposto=Number(state.financeiro[l].aliquotaImposto)||0; }
   });
   if(!state.listas.length) state.listas=[{id:'lista_geral',nome:'GERAL'}];
   state.tarefas.forEach(t=>{
@@ -2430,8 +2431,11 @@ function renderTarefas(){
 /* ---------- visão geral ---------- */
 function finLoja(loja){
   if(!state.financeiro) state.financeiro={};
-  if(!state.financeiro[loja]) state.financeiro[loja]={mercadoPago:0,aReceber:0,imposto:0};
-  else if(typeof state.financeiro[loja].imposto!=='number') state.financeiro[loja].imposto=Number(state.financeiro[loja].imposto)||0;
+  if(!state.financeiro[loja]) state.financeiro[loja]={mercadoPago:0,aReceber:0,imposto:0,aliquotaImposto:0};
+  else{
+    if(typeof state.financeiro[loja].imposto!=='number') state.financeiro[loja].imposto=Number(state.financeiro[loja].imposto)||0;
+    if(typeof state.financeiro[loja].aliquotaImposto!=='number') state.financeiro[loja].aliquotaImposto=Number(state.financeiro[loja].aliquotaImposto)||0;
+  }
   return state.financeiro[loja];
 }
 function atualizarFinanceiro(loja,patch){
@@ -2440,6 +2444,7 @@ function atualizarFinanceiro(loja,patch){
   if(patch.mercadoPago!==undefined){ f.mercadoPago=Math.max(0,parseMoeda(patch.mercadoPago)); }
   if(patch.aReceber!==undefined){ f.aReceber=Math.max(0,parseMoeda(patch.aReceber)); }
   if(patch.imposto!==undefined){ f.imposto=Math.max(0,parseMoeda(patch.imposto)); }
+  if(patch.aliquotaImposto!==undefined){ const v=Number(String(patch.aliquotaImposto).replace(',','.')); f.aliquotaImposto=isNaN(v)?0:Math.min(100,Math.max(0,v)); }
   persist();
 }
 /* soma das faturas do Mercado Livre ainda não pagas dessa loja (cadastradas em Finanças, origem
@@ -3937,7 +3942,11 @@ async function salvarRoasObjetivo(loja,campanhaId,novoValor){
     const r=await fetch(`${base}/ads/campanha/roas`,{method:'PUT',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({loja,campanhaId,roasTarget:v})});
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao atualizar o ROAS objetivo (status '+r.status+').'));
+    if(!r.ok||!j.ok){
+      let msg=j.erro||('Falha ao atualizar o ROAS objetivo (status '+r.status+').');
+      if(Array.isArray(j.tentativas)&&j.tentativas.length) msg+='\n\nFormatos testados:\n'+j.tentativas.map(t=>`- ${t.nome}: status ${t.http_status||'?'}`).join('\n');
+      throw new Error(msg);
+    }
     const dados=adsApiLoja(loja);
     Object.values(dados.periodos||{}).forEach(periodo=>{
       const camp=(periodo.results||[]).find(x=>String(x.id)===String(campanhaId));
@@ -4226,6 +4235,7 @@ function marcarDespesaPaga(id,pago){
 /* busca a fatura mais recente do Mercado Livre (taxas de venda/anúncio/Full - não é o saldo do
    Mercado Pago) e cadastra/atualiza como despesa recorrente automaticamente, evitando duplicar
    pelo par loja+faturaKey (a "key" que o próprio ML usa pra identificar o período de cobrança) */
+let financasUltimoErroAuto={}; // loja -> mensagem do último erro da tentativa AUTOMÁTICA de puxar a fatura (não persistido — só pra visibilidade nesta sessão, sem precisar abrir o console do navegador)
 async function puxarFaturaMl(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -4249,6 +4259,7 @@ async function puxarFaturaMl(loja){
       pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,
       itens:f.itens||[],valorTotal:f.valorTotal,criadoEm:Date.now()});
   }
+  delete financasUltimoErroAuto[loja];
   persist();
   return f;
 }
@@ -4286,6 +4297,84 @@ function despesaBateFiltroLoja(d){
   if(financasFiltroLoja==='__geral__') return !d.loja;
   return d.loja===financasFiltroLoja;
 }
+
+/* ================= Resumo Financeiro (faturamento, margem de contribuição, deduções) =================
+   Puxa direto da API de pedidos/ads/frete do Mercado Livre (não usa as despesas cadastradas à mão
+   acima) - período flexível igual ferramenta tipo Metrify: 7/15/30 dias, mês fechado ou intervalo
+   personalizado. O CMV é calculado AQUI no navegador (backend só manda item_id+qtd vendida),
+   porque o custo unitário de cada produto só existe no state local (aba Produtos). */
+let financasResumoLoja=STORES[0];
+let financasResumoPeriodo='30d';
+let financasResumoDe='', financasResumoAte='';
+let financasResumoResultado=null; // último resumo buscado (guarda o objeto inteiro devolvido pelo backend)
+let financasResumoCarregando=false;
+let financasResumoErro=null;
+async function pesquisarResumoFinanceiro(){
+  financasResumoCarregando=true; financasResumoErro=null; renderFinancas();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const params=new URLSearchParams({loja:financasResumoLoja,periodo:financasResumoPeriodo});
+    if(financasResumoPeriodo==='personalizado'){
+      if(!financasResumoDe||!financasResumoAte) throw new Error('Informe as duas datas do período personalizado.');
+      params.set('de',financasResumoDe); params.set('ate',financasResumoAte);
+    }
+    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo financeiro (status '+r.status+').'));
+    financasResumoResultado=j.resumo;
+  }catch(e){ financasResumoErro=e.message; }
+  finally{ financasResumoCarregando=false; renderFinancas(); }
+}
+/* CMV = soma de (custo cadastrado do produto × quantidade vendida no período), casando pelo
+   mlItemId salvo em cada produto. Item vendido sem produto vinculado (ou sem custo cadastrado)
+   entra em "semCusto" pra avisar que o CMV está subestimado, em vez de fingir que é zero. */
+function calcularCmvResumo(resumo){
+  let cmv=0,unidSemCusto=0;
+  (resumo.itensVendidos||[]).forEach(it=>{
+    const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+    if(p&&p.custo>0) cmv+=p.custo*it.qtd; else unidSemCusto+=it.qtd;
+  });
+  return {cmv,unidSemCusto};
+}
+/* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
+   Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
+   (o que você paga quando o anúncio tem frete grátis) é deduzido, igual o print de referência
+   (Metrify) mostrava. Cancelamentos e reembolsos também são deduzidos - são vendas que geraram
+   custo/trabalho mas não viraram receita de verdade. */
+function renderResumoFinanceiroResultado(resumo,loja){
+  const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
+  const aliquota=finLoja(loja).aliquotaImposto||0;
+  const impostoCalc=resumo.faturamento*(aliquota/100);
+  const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.ads.custo||0)-(resumo.frete.vendedor||0)-resumo.cancelamentosValor-resumo.reembolsosValor;
+  const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
+  const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
+  const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
+  return `
+    <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)} · ${fmtInt(resumo.pedidosValidos)} pedido(s) válido(s)${resumo.pedidosCancelados?' · '+fmtInt(resumo.pedidosCancelados)+' cancelado(s)':''}</p>
+    <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
+      ${cartao('FATURAMENTO',resumo.faturamento)}
+      ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
+      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,pct(resumo.tarifas))}
+      ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
+      ${cartao('ADS',resumo.ads.custo,pct(resumo.ads.custo))}
+      ${cartao('FRETE (VENDEDOR)',resumo.frete.vendedor,pct(resumo.frete.vendedor))}
+      ${cartao('FRETE (COMPRADOR)',resumo.frete.comprador,'pago pelo cliente, não entra na margem')}
+      ${cartao('CANCELAMENTOS',resumo.cancelamentosValor,pct(resumo.cancelamentosValor))}
+      ${cartao('REEMBOLSOS',resumo.reembolsosValor,pct(resumo.reembolsosValor))}
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
+      <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
+      <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento</div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="muted" style="font-size:11px">VENDAS DE HOJE</div>
+      <b style="font-size:18px">${fmtInt(resumo.vendasHoje.pedidos)} pedido(s) · ${fmtMoney(resumo.vendasHoje.faturamento)}</b>
+    </div>
+    ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
+  `;
+}
 function renderFinancas(){
   const el=document.getElementById('tab-financas'); if(!el) return;
   const arr=despesasArr().filter(despesaBateFiltroLoja);
@@ -4301,6 +4390,32 @@ function renderFinancas(){
   el.innerHTML=`
     <h1 class="page-title">Finanças</h1>
     <p class="hint" style="margin:0 0 16px">Cadastre as despesas do negócio (fixas ou recorrentes) pra ter o total gasto por mês — base pra montar a DRE. Por enquanto é só o lado das despesas, sem receita/faturamento automático.</p>
+    <div class="card">
+      <h3 style="margin-top:0">📊 Resumo Financeiro</h3>
+      <p class="hint" style="margin:0 0 10px">Faturamento, custos e margem de contribuição puxados direto da API do Mercado Livre pro período escolhido — não usa as despesas cadastradas abaixo, é um cálculo à parte.</p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
+        <label>Loja<select id="frLoja">${optsLojas(financasResumoLoja)}</select></label>
+        <label>Período<select id="frPeriodo">
+          <option value="7d" ${financasResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
+          <option value="15d" ${financasResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
+          <option value="30d" ${financasResumoPeriodo==='30d'?'selected':''}>Últimos 30 dias</option>
+          <option value="mes_fechado" ${financasResumoPeriodo==='mes_fechado'?'selected':''}>Período fechado (mês)</option>
+          <option value="personalizado" ${financasResumoPeriodo==='personalizado'?'selected':''}>Personalizado</option>
+        </select></label>
+        ${financasResumoPeriodo==='personalizado'?`
+          <label>De<input type="date" id="frDe" value="${esc(financasResumoDe)}"></label>
+          <label>Até<input type="date" id="frAte" value="${esc(financasResumoAte)}"></label>`:'<span></span><span></span>'}
+      </div>
+      <div class="acoes-linha" style="margin-top:10px;flex-wrap:wrap">
+        <button class="btn gold" id="frPesquisar" ${financasResumoCarregando?'disabled':''}>${financasResumoCarregando?'Buscando... (pode levar um tempo em períodos grandes)':'🔍 Pesquisar'}</button>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Alíquota de imposto dessa loja (%)
+          <input type="text" inputmode="decimal" style="width:60px" id="frAliquota" value="${finLoja(financasResumoLoja).aliquotaImposto?String(finLoja(financasResumoLoja).aliquotaImposto).replace('.',','):''}" placeholder="0,0">
+        </label>
+        <span class="hint" style="margin:0">O Mercado Livre não informa isso — é o seu regime tributário (ex: Simples Nacional), digite manualmente.</span>
+      </div>
+      ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
+      ${financasResumoResultado?renderResumoFinanceiroResultado(financasResumoResultado,financasResumoLoja):''}
+    </div>
     <div class="card">
       <h3 style="margin-top:0">Nova despesa</h3>
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
@@ -4321,6 +4436,8 @@ function renderFinancas(){
       <div class="acoes-linha" style="flex-wrap:wrap">
         ${STORES.map(l=>`<button class="btn sm" data-puxarfatura="${esc(l)}" ${financasPuxandoFatura===l?'disabled':''}>${financasPuxandoFatura===l?'Buscando...':'🔄 '+esc(l)}</button>`).join('')}
       </div>
+      <p class="hint" style="margin:8px 0 0">Isso também roda sozinho pra todas as lojas quando o Doca abre — os botões acima são só pra forçar uma atualização na hora.</p>
+      ${STORES.filter(l=>financasUltimoErroAuto[l]).map(l=>`<p class="hint" style="color:#e66;margin:6px 0 0">⚠ ${esc(l)}: a última tentativa automática falhou — ${esc(financasUltimoErroAuto[l])}</p>`).join('')}
     </div>
     <div class="toolbar-produtos">
       <select id="fnFiltroLoja">
@@ -4410,6 +4527,16 @@ function renderFinancas(){
     }catch(e){ alert('Não foi possível puxar a fatura: '+e.message); }
     finally{ financasPuxandoFatura=null; renderFinancas(); }
   });
+  const frLoja=document.getElementById('frLoja'), frPeriodo=document.getElementById('frPeriodo');
+  if(frLoja) frLoja.onchange=e=>{ financasResumoLoja=e.target.value; financasResumoResultado=null; renderFinancas(); };
+  if(frPeriodo) frPeriodo.onchange=e=>{ financasResumoPeriodo=e.target.value; renderFinancas(); };
+  const frDe=document.getElementById('frDe'), frAte=document.getElementById('frAte');
+  if(frDe) frDe.onchange=e=>{ financasResumoDe=e.target.value; };
+  if(frAte) frAte.onchange=e=>{ financasResumoAte=e.target.value; };
+  const frPesquisar=document.getElementById('frPesquisar');
+  if(frPesquisar) frPesquisar.onclick=pesquisarResumoFinanceiro;
+  const frAliquota=document.getElementById('frAliquota');
+  if(frAliquota) frAliquota.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{aliquotaImposto:e.target.value}); renderFinancas(); };
 }
 
 /* ---------- listas de tarefas ---------- */
@@ -5739,6 +5866,8 @@ tentarReconectar();
       await puxarFaturaMl(loja);
     }catch(e){
       console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
+      financasUltimoErroAuto[loja]=e.message;
+      renderFinancas();
     }
   }
 })();
