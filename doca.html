@@ -2439,6 +2439,44 @@ function atualizarFinanceiro(loja,patch){
   if(patch.aReceber!==undefined){ f.aReceber=Math.max(0,parseMoeda(patch.aReceber)); }
   persist();
 }
+/* ---------- perguntas sem resposta (card na Visão Geral) ----------
+   A CONTAGEM (p.mlPerguntas) já vem de graça no "Atualizar" normal de Produtos. O TEXTO de cada
+   pergunta só é buscado sob demanda (quando a pessoa clica pra ver aquela loja), pra não pesar
+   toda sincronização - e responder aqui já usa a API oficial de perguntas e respostas do ML. */
+let perguntasCarregadas={}; // loja -> array de perguntas já buscadas (undefined = ainda não pediu)
+let perguntasCarregando=null; // loja sendo buscada agora
+let perguntasEnviando={}; // questionId -> true enquanto envia a resposta
+async function carregarPerguntas(loja){
+  perguntasCarregando=loja; renderDashboard();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/perguntas?loja=${encodeURIComponent(loja)}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar perguntas (status '+r.status+').'));
+    perguntasCarregadas[loja]=j.perguntas||[];
+  }catch(e){ alert('Não foi possível buscar as perguntas: '+e.message); }
+  finally{ perguntasCarregando=null; renderDashboard(); }
+}
+async function responderPergunta(loja,questionId,itemId,texto){
+  if(!texto||!texto.trim()){ alert('Escreva uma resposta antes de enviar.'); return; }
+  perguntasEnviando[questionId]=true; renderDashboard();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/perguntas/responder?loja=${encodeURIComponent(loja)}`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({questionId,texto:texto.trim()})
+    });
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao responder (status '+r.status+').'));
+    if(perguntasCarregadas[loja]) perguntasCarregadas[loja]=perguntasCarregadas[loja].filter(q=>q.id!==questionId);
+    const p=state.produtos.find(x=>x.mlItemId===itemId);
+    if(p&&p.mlPerguntas>0){ p.mlPerguntas--; persist(); }
+    toast('Resposta enviada pro Mercado Livre.');
+  }catch(e){ alert('Não foi possível responder: '+e.message); }
+  finally{ delete perguntasEnviando[questionId]; renderDashboard(); }
+}
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
   const totals=STORES.map(loja=>{
@@ -2487,6 +2525,7 @@ function renderDashboard(){
     return {loja,itens};
   }).filter(g=>g.itens.length);
   const prox=enviosOrdenados().filter(e=>e.data); /* mostra TODOS os envios programados com data, sem cortar em 5 */
+  const perguntasPorLoja=STORES.map(loja=>({loja,total:state.produtos.filter(p=>p.loja===loja).reduce((s,p)=>s+(p.mlPerguntas||0),0)}));
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
     <div class="cards-lojas">
@@ -2538,6 +2577,30 @@ function renderDashboard(){
       <div class="linha2"><span>Total a receber:</span> <b>${fmtMoney(trec)}</b></div>
       <div class="linha2 destaque"><span>Patrimônio total (estoque + FULL + contas + a receber):</span> <b>${fmtMoney(tv+fullValorTodasLojas()+tmp+trec)}</b></div>
     </div>
+    <div class="card" style="margin:20px 0">
+      <h3 style="margin-top:0">❓ Perguntas sem resposta no Mercado Livre</h3>
+      <p class="hint" style="margin:0 0 10px">A contagem já vem do "Atualizar" normal da aba Produtos. Clique numa loja com pendência pra ler e responder direto aqui.</p>
+      <div class="acoes-linha" style="flex-wrap:wrap">
+        ${perguntasPorLoja.map(g=>g.total>0
+          ?`<button class="btn sm" data-verperguntas="${esc(g.loja)}">${esc(g.loja)}: <span class="pend">${g.total} sem resposta</span>${perguntasCarregando===g.loja?' (carregando...)':''}</button>`
+          :`<span class="badge okv" style="padding:6px 10px">${esc(g.loja)}: em dia</span>`
+        ).join('')}
+      </div>
+      ${STORES.filter(l=>perguntasCarregadas[l]).map(l=>{
+        const lista=perguntasCarregadas[l];
+        return `<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px">
+          <b style="font-size:12.5px">${esc(l)}</b>
+          ${lista.length?lista.map(q=>`<div class="envio-card" style="margin-top:8px">
+            <div style="font-size:12px;color:var(--muted)">${q.titulo?esc(q.titulo):esc(q.itemId||'')}${q.permalink?` · <a href="${esc(q.permalink)}" target="_blank" rel="noopener">ver anúncio</a>`:''}${q.dataCriada?' · '+new Date(q.dataCriada).toLocaleString('pt-BR'):''}</div>
+            <div style="margin:6px 0"><b>${esc(q.texto||'')}</b></div>
+            <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
+              <label style="font-size:11.5px">Resposta<textarea data-respostatexto="${esc(q.id)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${perguntasEnviando[q.id]?'disabled':''}></textarea></label>
+              <button class="btn sm acc" data-responder="${esc(q.id)}|${esc(l)}|${esc(q.itemId||'')}" ${perguntasEnviando[q.id]?'disabled':''}>${perguntasEnviando[q.id]?'Enviando...':'Responder'}</button>
+            </div>
+          </div>`).join(''):'<p class="empty-inline">Nenhuma pergunta sem resposta agora.</p>'}
+        </div>`;
+      }).join('')}
+    </div>
     ${prox.length?`<h3>Próximos envios FULL</h3>
       <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
         <th>Data</th><th>Loja</th><th>Coleta em</th><th>SKUs</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th>
@@ -2569,6 +2632,12 @@ function renderDashboard(){
     const commit=()=>atualizarFinanceiro(i.dataset.areceber,{aReceber:i.value});
     i.onchange=commit;
     i.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); i.blur(); } };
+  });
+  el.querySelectorAll('[data-verperguntas]').forEach(b=>b.onclick=()=>carregarPerguntas(b.dataset.verperguntas));
+  el.querySelectorAll('[data-responder]').forEach(b=>b.onclick=()=>{
+    const [qid,loja,itemId]=b.dataset.responder.split('|');
+    const ta=el.querySelector(`[data-respostatexto="${qid}"]`);
+    responderPergunta(loja,qid,itemId,ta?ta.value:'');
   });
 }
 
