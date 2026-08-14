@@ -4174,15 +4174,19 @@ async function puxarFaturaMl(loja){
   if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
   const f=j.fatura;
   const arr=despesasArr();
-  const dataPagamento=f.vencimento||f.dataFim||hoje();
+  // sem data de vencimento confiável (período ainda em aberto, ML não fechou a conta) usa hoje
+  // só pra a despesa aparecer no mês certo — não inventa uma data de vencimento que não existe
+  const dataPagamento=f.vencimento||hoje();
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
-    d.valor=f.valor; d.dataPagamento=dataPagamento; if(f.valorPendente===0) d.pago=true;
+    d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal;
+    if(f.valorPendente===0) d.pago=true;
   }else{
     snapshot('fatura do Mercado Livre importada ('+loja+')');
     arr.push({id:gerarId('desp'),descricao:'Fatura Mercado Livre — '+loja,valor:f.valor,dataPagamento,
-      pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,criadoEm:Date.now()});
+      pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,
+      itens:f.itens||[],valorTotal:f.valorTotal,criadoEm:Date.now()});
   }
   persist();
   return f;
@@ -4195,6 +4199,7 @@ function mesLabel(m){
 }
 let financasFiltroMes=hoje().slice(0,7);
 let financasPuxandoFatura=null;
+let financasExpandido={}; // id da despesa -> true enquanto mostra o detalhamento (ex: fatura do ML por categoria)
 function renderFinancas(){
   const el=document.getElementById('tab-financas'); if(!el) return;
   const arr=despesasArr();
@@ -4238,15 +4243,26 @@ function renderFinancas(){
     <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Descrição</th><th>Loja</th><th class="num">Valor</th><th>Pagamento</th><th>Recorrente</th><th style="text-align:center">Pago</th><th></th>
     </tr></thead><tbody>
-      ${doMes.length?doMes.map(d=>`<tr class="${d.pago?'':'row-baixo'}">
-        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}</td>
+      ${doMes.length?doMes.map(d=>{
+        const temItens=Array.isArray(d.itens)&&d.itens.length>0;
+        const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
+        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${temItens?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px">${financasExpandido[d.id]?'▾ ocultar':'▸ detalhar'}</button>`:''}
+          ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
+        </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
         <td>${fmtData(d.dataPagamento)}</td>
         <td>${d.recorrente?'<span class="badge okv">🔁 Mensal</span>':'<span class="muted">—</span>'}</td>
         <td style="text-align:center"><input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}></td>
         <td><button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
-      </tr>`).join(''):`<tr><td colspan="7" class="empty">Nenhuma despesa cadastrada nesse mês.</td></tr>`}
+      </tr>`;
+        const linhaDetalhe=(temItens&&financasExpandido[d.id])?`<tr><td colspan="7" style="background:var(--panel2,rgba(255,255,255,.02))">
+          <table class="tbl-produtos" style="margin:4px 0"><tbody>
+            ${d.itens.map(it=>`<tr><td style="border:none;padding:3px 8px" class="muted">${esc(it.label||'')}</td><td style="border:none;padding:3px 8px;text-align:right" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}
+          </tbody></table>
+        </td></tr>`:'';
+        return linhaPrincipal+linhaDetalhe;
+      }).join(''):`<tr><td colspan="7" class="empty">Nenhuma despesa cadastrada nesse mês.</td></tr>`}
     </tbody></table></div>
     <div class="card" style="margin-top:16px">
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
@@ -4286,12 +4302,16 @@ function renderFinancas(){
       excluirDespesa(b.dataset.fnexcluir); toast('Despesa excluída.'); renderFinancas();
     });
   });
+  el.querySelectorAll('[data-fndetalhar]').forEach(b=>b.onclick=()=>{
+    financasExpandido[b.dataset.fndetalhar]=!financasExpandido[b.dataset.fndetalhar];
+    renderFinancas();
+  });
   el.querySelectorAll('[data-puxarfatura]').forEach(b=>b.onclick=async()=>{
     const loja=b.dataset.puxarfatura;
     financasPuxandoFatura=loja; renderFinancas();
     try{
       const f=await puxarFaturaMl(loja);
-      toast(`Fatura de ${loja} importada: ${fmtMoney(f.valor)}${f.vencimento?', vencimento '+fmtData(f.vencimento):''}.`);
+      toast(`Fatura de ${loja} importada: falta pagar ${fmtMoney(f.valor)}${f.vencimento?', vencimento '+fmtData(f.vencimento):''}.`);
     }catch(e){ alert('Não foi possível puxar a fatura: '+e.message); }
     finally{ financasPuxandoFatura=null; renderFinancas(); }
   });
