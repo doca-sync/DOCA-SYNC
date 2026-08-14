@@ -1530,20 +1530,56 @@ app.get('/ads/data', async (req, res) => {
    que o Mercado Livre cobra do vendedor (comissao de venda, anuncio, Full etc) - e' DIFERENTE do
    saldo do Mercado Pago que ja e' sincronizado em outro lugar (aquele e' quanto dinheiro voce TEM
    la', isso aqui e' quanto voce DEVE de taxa no periodo). Só pega o periodo mais recente. */
+function anoRazoavel(dataIso) {
+  // descarta datas-sentinela tipo "9999-12-31" que o ML usa pra período ainda em aberto
+  const ano = Number(String(dataIso || '').slice(0, 4));
+  return ano && ano <= 2100 ? true : false;
+}
 async function buscarFaturaMl(loja) {
   const accessToken = await tokenValido(loja);
   const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=1';
   const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   const p = (j.results || [])[0];
   if (!p) return null;
+
+  // detalhamento por categoria (tarifas de envio, publicidade, venda, parcelamento, Full etc) -
+  // o mesmo resumo que aparece na tela "Resumo da fatura" do Mercado Livre, pra poder discriminar
+  // no corpo da DRE de onde vem o valor, e nao so' mostrar um numero unico
+  let itens = [];
+  if (p.key) {
+    try {
+      const urlResumo = `https://api.mercadolibre.com/billing/integration/periods/key/${p.key}/summary?group=ML&document_type=BILL`;
+      const jResumo = await fetchMLDebug(urlResumo, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const charges = (jResumo.summary && jResumo.summary.charges) || [];
+      const bonuses = (jResumo.summary && jResumo.summary.bonuses) || [];
+      itens = [
+        ...charges.map(c => ({ label: c.label, valor: c.amount })),
+        ...bonuses.map(b => ({ label: `Bonificação: ${b.label}`, valor: -Math.abs(b.amount) }))
+      ];
+    } catch (e) { /* segue sem o detalhamento se o resumo falhar - o valor total sozinho ja' e' util */ }
+  }
+
+  // vencimento: o ML so' preenche expiration_date quando o periodo ja' fechou. Enquanto esta'
+  // em andamento, usa a data de vencimento da divida projetada; se nada disso vier com uma data
+  // real (a API manda sentinela tipo 9999 pra periodo ainda aberto), fica sem data em vez de
+  // mostrar uma data absurda
+  let vencimento = p.debt_expiration_date || p.expiration_date || null;
+  if (vencimento && !anoRazoavel(vencimento)) vencimento = null;
+  if (!vencimento && p.period && p.period.date_to && anoRazoavel(p.period.date_to)) vencimento = p.period.date_to;
+
   return {
     key: p.key || null,
-    valor: typeof p.amount === 'number' ? p.amount : null,
+    // valor = o que realmente falta pagar (unpaid_amount), nao o total bruto do periodo -
+    // parte do total ja' pode ter sido descontada automaticamente (do saldo do Mercado Pago, por
+    // exemplo), entao o "total da fatura" e o "quanto eu ainda devo" sao numeros diferentes
+    valor: typeof p.unpaid_amount === 'number' ? p.unpaid_amount : (typeof p.amount === 'number' ? p.amount : null),
+    valorTotal: typeof p.amount === 'number' ? p.amount : null,
     valorPendente: typeof p.unpaid_amount === 'number' ? p.unpaid_amount : null,
     dataInicio: (p.period && p.period.date_from) || null,
-    dataFim: (p.period && p.period.date_to) || null,
-    vencimento: p.expiration_date || null,
-    status: p.period_status || null
+    dataFim: (p.period && p.period.date_to && anoRazoavel(p.period.date_to)) ? p.period.date_to : null,
+    vencimento,
+    status: p.period_status || null,
+    itens
   };
 }
 app.get('/financas/fatura-ml', async (req, res) => {
