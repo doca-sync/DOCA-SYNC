@@ -863,9 +863,10 @@ function migrar(){
   });
   if(!state.financeiro||typeof state.financeiro!=='object') state.financeiro={};
   STORES.forEach(l=>{
-    if(!state.financeiro[l]||typeof state.financeiro[l]!=='object') state.financeiro[l]={mercadoPago:0,aReceber:0};
+    if(!state.financeiro[l]||typeof state.financeiro[l]!=='object') state.financeiro[l]={mercadoPago:0,aReceber:0,imposto:0};
     else{ if(typeof state.financeiro[l].mercadoPago!=='number') state.financeiro[l].mercadoPago=Number(state.financeiro[l].mercadoPago)||0;
-      if(typeof state.financeiro[l].aReceber!=='number') state.financeiro[l].aReceber=Number(state.financeiro[l].aReceber)||0; }
+      if(typeof state.financeiro[l].aReceber!=='number') state.financeiro[l].aReceber=Number(state.financeiro[l].aReceber)||0;
+      if(typeof state.financeiro[l].imposto!=='number') state.financeiro[l].imposto=Number(state.financeiro[l].imposto)||0; }
   });
   if(!state.listas.length) state.listas=[{id:'lista_geral',nome:'GERAL'}];
   state.tarefas.forEach(t=>{
@@ -2429,7 +2430,8 @@ function renderTarefas(){
 /* ---------- visão geral ---------- */
 function finLoja(loja){
   if(!state.financeiro) state.financeiro={};
-  if(!state.financeiro[loja]) state.financeiro[loja]={mercadoPago:0,aReceber:0};
+  if(!state.financeiro[loja]) state.financeiro[loja]={mercadoPago:0,aReceber:0,imposto:0};
+  else if(typeof state.financeiro[loja].imposto!=='number') state.financeiro[loja].imposto=Number(state.financeiro[loja].imposto)||0;
   return state.financeiro[loja];
 }
 function atualizarFinanceiro(loja,patch){
@@ -2437,7 +2439,14 @@ function atualizarFinanceiro(loja,patch){
   snapshot('ajuste financeiro de '+loja);
   if(patch.mercadoPago!==undefined){ f.mercadoPago=Math.max(0,parseMoeda(patch.mercadoPago)); }
   if(patch.aReceber!==undefined){ f.aReceber=Math.max(0,parseMoeda(patch.aReceber)); }
+  if(patch.imposto!==undefined){ f.imposto=Math.max(0,parseMoeda(patch.imposto)); }
   persist();
+}
+/* soma das faturas do Mercado Livre ainda não pagas dessa loja (cadastradas em Finanças, origem
+   "ml_fatura") - usada aqui só pra descontar do patrimônio da Visão Geral, sem duplicar a lógica
+   de cálculo que já existe na aba Finanças */
+function faturaMlPendenteLoja(loja){
+  return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&!d.pago).reduce((s,d)=>s+(Number(d.valor)||0),0);
 }
 /* ---------- perguntas sem resposta (card na Visão Geral) ----------
    A CONTAGEM (p.mlPerguntas) já vem de graça no "Atualizar" normal de Produtos. O TEXTO de cada
@@ -2482,14 +2491,15 @@ function renderDashboard(){
   const totals=STORES.map(loja=>{
     const ps=state.produtos.filter(p=>p.loja===loja);
     const sum=f=>ps.reduce((a,p)=>a+(typeof f==='function'?f(p):p.qtd[f]),0);
-    const fin=finLoja(loja), full=fullResumo(loja);
+    const fin=finLoja(loja), full=fullResumo(loja), faturaMl=faturaMlPendenteLoja(loja);
     return {loja,count:ps.length,comprar:sum('comprar'),coletar:sum('coletar'),local:sum(totalNoGalpao),
       reservado:sum(reservadoDe),valor:sum(valorEstoque),valorColetar:sum(p=>(p.custo||0)*p.qtd.coletar),
-      capitalGiro:sum(capitalGiroComprar),fin,full,
-      patrimonio:sum(valorEstoque)+full.valor+(fin.mercadoPago||0)+(fin.aReceber||0)};
+      capitalGiro:sum(capitalGiroComprar),fin,full,faturaMl,
+      patrimonio:sum(valorEstoque)+full.valor+(fin.mercadoPago||0)+(fin.aReceber||0)-(fin.imposto||0)-faturaMl};
   });
   const tv=totals.reduce((a,t)=>a+t.valor,0), tc=totals.reduce((a,t)=>a+t.capitalGiro,0), tvc=totals.reduce((a,t)=>a+t.valorColetar,0);
   const tmp=totals.reduce((a,t)=>a+(t.fin.mercadoPago||0),0), trec=totals.reduce((a,t)=>a+(t.fin.aReceber||0),0);
+  const timp=totals.reduce((a,t)=>a+(t.fin.imposto||0),0), tfat=totals.reduce((a,t)=>a+(t.faturaMl||0),0);
   /* classificação de curva A/B/C por loja, usada tanto no alerta de ruptura quanto no de
      estoque mínimo logo abaixo — precisa vir antes dos dois */
   const curvasPorLoja={}; STORES.forEach(l=>curvasPorLoja[l]=classificarCurvaLoja(l));
@@ -2561,6 +2571,11 @@ function renderDashboard(){
                 <span class="ln"><span>Atualizado</span><b>${t.fin.aReceberAtualizadoEm?esc(fLidoTxt(new Date(t.fin.aReceberAtualizadoEm).getTime())):'aguardando 1ª leitura'}</b></span>
                 <span class="obs">Valor ainda não liberado, puxado direto do Mercado Pago.</span></span></span></span></div>`
             :`<div class="valor-manual-row"><span class="muted">A receber:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-areceber="${esc(t.loja)}" value="${t.fin.aReceber?String(t.fin.aReceber).replace('.',','):''}"></div>`}
+          <div class="valor-manual-row"><span class="muted">Imposto:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-imposto="${esc(t.loja)}" value="${t.fin.imposto?String(t.fin.imposto).replace('.',','):''}"></div>
+          <div><span class="muted">Fatura Mercado Livre:</span> <span class="valor-info"><b>${fmtMoney(t.faturaMl)}</b>
+              <span class="det"><span class="i">i</span><span class="pop">
+                <span class="ln"><span>Origem</span><b>automático</b></span>
+                <span class="obs">Soma das faturas do Mercado Livre ainda não pagas dessa loja (aba Finanças). Já descontada do patrimônio abaixo.</span></span></span></span></div>
           <div><span class="muted">Patrimônio da loja:</span> <b>${fmtMoney(t.patrimonio)}</b></div>
         </div></div>`).join('')}
     </div>
@@ -2575,7 +2590,7 @@ function renderDashboard(){
       <div class="linha2 destaque"><span>Valor total do estoque (galpão + FULL):</span> <b>${fmtMoney(tv+fullValorTodasLojas())}</b></div>
       <div class="linha2"><span>Total em conta (Mercado Pago):</span> <b>${fmtMoney(tmp)}</b></div>
       <div class="linha2"><span>Total a receber:</span> <b>${fmtMoney(trec)}</b></div>
-      <div class="linha2 destaque"><span>Patrimônio total (estoque + FULL + contas + a receber):</span> <b>${fmtMoney(tv+fullValorTodasLojas()+tmp+trec)}</b></div>
+      <div class="linha2 destaque"><span>Patrimônio total (estoque + FULL + contas + a receber − imposto − fatura ML):</span> <b>${fmtMoney(tv+fullValorTodasLojas()+tmp+trec-timp-tfat)}</b></div>
     </div>
     <div class="card" style="margin:20px 0">
       <h3 style="margin-top:0">❓ Perguntas sem resposta no Mercado Livre</h3>
@@ -2630,6 +2645,11 @@ function renderDashboard(){
   });
   el.querySelectorAll('[data-areceber]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.areceber,{aReceber:i.value});
+    i.onchange=commit;
+    i.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); i.blur(); } };
+  });
+  el.querySelectorAll('[data-imposto]').forEach(i=>{
+    const commit=()=>atualizarFinanceiro(i.dataset.imposto,{imposto:i.value});
     i.onchange=commit;
     i.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); i.blur(); } };
   });
@@ -3900,6 +3920,35 @@ function adsApiLoja(loja){
   if(!state.adsApi[loja].tagMaisVendido) state.adsApi[loja].tagMaisVendido={};
   return state.adsApi[loja];
 }
+let adsEditandoRoas={}; // campanhaId -> true enquanto o campo de edição do ROAS objetivo está aberto
+let adsSalvandoRoas={}; // campanhaId -> true enquanto salva no Mercado Livre
+/* muda o ROAS objetivo (bidding) da campanha DIRETO no Mercado Livre via API (PUT), sem precisar
+   abrir o painel de anúncios lá. Depois de salvar com sucesso, atualiza o valor local em todos os
+   períodos já cacheados (d7/d15/d30 têm cada um sua própria cópia dos metadados da campanha,
+   inclusive roas_target) pra não mostrar um valor desatualizado se a pessoa trocar de período sem
+   dar Atualizar de novo. */
+async function salvarRoasObjetivo(loja,campanhaId,novoValor){
+  const v=Number(String(novoValor).replace(',','.'));
+  if(!v||isNaN(v)||v<1||v>35){ alert('O ROAS objetivo precisa ser um número entre 1x e 35x (limite do próprio Mercado Livre).'); return; }
+  adsSalvandoRoas[campanhaId]=true; renderAds();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/ads/campanha/roas`,{method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({loja,campanhaId,roasTarget:v})});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao atualizar o ROAS objetivo (status '+r.status+').'));
+    const dados=adsApiLoja(loja);
+    Object.values(dados.periodos||{}).forEach(periodo=>{
+      const camp=(periodo.results||[]).find(x=>String(x.id)===String(campanhaId));
+      if(camp) camp.roas_target=v;
+    });
+    delete adsEditandoRoas[campanhaId];
+    persist();
+    toast('ROAS objetivo atualizado no Mercado Livre.');
+  }catch(e){ alert('Não foi possível atualizar o ROAS objetivo: '+e.message); }
+  finally{ delete adsSalvandoRoas[campanhaId]; renderAds(); }
+}
 async function adsSincronizarLoja(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -4079,7 +4128,12 @@ function renderAds(){
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
-            <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
+            <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${adsEditandoRoas[camp.id]?`
+              <span style="display:flex;align-items:center;gap:4px">
+                <input type="number" min="1" max="35" step="0.1" value="${camp.roas_target||''}" data-roasinput="${camp.id}" style="width:64px;padding:3px 6px" ${adsSalvandoRoas[camp.id]?'disabled':''}>x
+                <button class="btn sm acc" data-roassalvar="${camp.id}" ${adsSalvandoRoas[camp.id]?'disabled':''}>${adsSalvandoRoas[camp.id]?'...':'Salvar'}</button>
+                <button class="btn sm" data-roascancelar="${camp.id}" ${adsSalvandoRoas[camp.id]?'disabled':''}>Cancelar</button>
+              </span>`:`${camp.roas_target||0}x <button class="btn sm" data-roaseditar="${camp.id}" title="Mudar o ROAS objetivo direto no Mercado Livre">✎</button>`}</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
@@ -4115,6 +4169,13 @@ function renderAds(){
     persist();
     toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
     renderAds();
+  });
+  el.querySelectorAll('[data-roaseditar]').forEach(b=>b.onclick=()=>{ adsEditandoRoas[b.dataset.roaseditar]=true; renderAds(); });
+  el.querySelectorAll('[data-roascancelar]').forEach(b=>b.onclick=()=>{ delete adsEditandoRoas[b.dataset.roascancelar]; renderAds(); });
+  el.querySelectorAll('[data-roassalvar]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.roassalvar;
+    const input=el.querySelector(`[data-roasinput="${id}"]`);
+    salvarRoasObjetivo(c.loja,id,input?input.value:'');
   });
 }
 
@@ -4190,6 +4251,25 @@ async function puxarFaturaMl(loja){
   }
   persist();
   return f;
+}
+/* explica em português simples cada categoria de cobrança que vem no detalhamento da fatura do
+   ML (vindo do /summary da API de Billing) - os rótulos que o próprio ML manda variam um pouco
+   de conta pra conta, então casa por palavra-chave (sem acento, minúsculo) em vez de comparar o
+   texto inteiro. Cobre publicidade/Ads, comissão de venda, envio/frete, parcelamento, Full
+   (armazenagem/coleta), devolução, reembolso/estorno e bonificação - o resto cai num texto
+   genérico em vez de ficar mudo. */
+function normalizarTexto(s){ return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase(); }
+function explicarCobrancaML(label){
+  const t=normalizarTexto(label);
+  if(t.includes('bonific')) return 'Valor que o próprio Mercado Livre devolveu pra você (ex: comissão ou taxa estornada).';
+  if(t.includes('devolu')) return 'Ajuste referente a um produto devolvido pelo comprador.';
+  if(t.includes('reembols')||t.includes('estorno')) return 'Valor reembolsado por cancelamento ou estorno de uma venda.';
+  if(t.includes('public')||t.includes('campanha')||t.includes('ads')) return 'Custo dos anúncios patrocinados (Ads) contratados pra aparecer em destaque nas buscas.';
+  if(t.includes('full')||t.includes('armazen')||t.includes('coleta')||t.includes('fulfillment')) return 'Custo de armazenar, coletar ou movimentar produtos no centro de distribuição Full.';
+  if(t.includes('parcel')) return 'Taxa cobrada quando o comprador parcela o pagamento no cartão.';
+  if(t.includes('envio')||t.includes('frete')||t.includes('shipping')) return 'Custo do frete das vendas enviadas pelo Mercado Envios (repassado a você quando o anúncio tem frete grátis).';
+  if(t.includes('venda')||t.includes('comiss')) return 'Comissão que o Mercado Livre cobra por cada venda concluída.';
+  return 'Cobrança do Mercado Livre referente a essa categoria (detalhe direto da fatura oficial).';
 }
 function mesLabel(m){
   if(!m) return '—';
@@ -4269,7 +4349,10 @@ function renderFinancas(){
       </tr>`;
         const linhaDetalhe=(temItens&&financasExpandido[d.id])?`<tr><td colspan="7" style="background:var(--panel2,rgba(255,255,255,.02))">
           <table class="tbl-produtos" style="margin:4px 0"><tbody>
-            ${d.itens.map(it=>`<tr><td style="border:none;padding:3px 8px" class="muted">${esc(it.label||'')}</td><td style="border:none;padding:3px 8px;text-align:right" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}
+            ${d.itens.map(it=>`<tr><td style="border:none;padding:6px 8px;vertical-align:top">
+                <div class="muted">${esc(it.label||'')}</div>
+                <div class="hint" style="margin:2px 0 0;font-size:11px">${esc(explicarCobrancaML(it.label))}</div>
+              </td><td style="border:none;padding:6px 8px;text-align:right;vertical-align:top" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}
           </tbody></table>
         </td></tr>`:'';
         return linhaPrincipal+linhaDetalhe;
