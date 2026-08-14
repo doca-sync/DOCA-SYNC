@@ -4225,13 +4225,13 @@ async function puxarFaturaMl(loja){
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
-    d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal;
+    d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
     if(f.valorPendente===0) d.pago=true;
   }else{
     snapshot('fatura do Mercado Livre importada ('+loja+')');
     arr.push({id:gerarId('desp'),descricao:'Fatura Mercado Livre — '+loja,valor:f.valor,dataPagamento,
       pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,
-      itens:f.itens||[],valorTotal:f.valorTotal,criadoEm:Date.now()});
+      itens:f.itens||[],valorTotal:f.valorTotal,itensAviso:f.itensAviso||null,criadoEm:Date.now()});
   }
   delete financasUltimoErroAuto[loja];
   persist();
@@ -4329,7 +4329,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
       ${cartao('FATURAMENTO',resumo.faturamento)}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
-      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,pct(resumo.tarifas))}
+      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'só comissão de venda (sale_fee) — pode não incluir juro de parcelamento')}
       ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
       ${cartao('ADS',resumo.ads.custo,pct(resumo.ads.custo))}
       ${cartao('FRETE (VENDEDOR)',resumo.frete.vendedor,pct(resumo.frete.vendedor))}
@@ -4370,6 +4370,7 @@ function renderFinancas(){
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
         <label>Loja<select id="frLoja">${optsLojas(financasResumoLoja)}</select></label>
         <label>Período<select id="frPeriodo">
+          <option value="hoje" ${financasResumoPeriodo==='hoje'?'selected':''}>Hoje</option>
           <option value="7d" ${financasResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
           <option value="15d" ${financasResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
           <option value="30d" ${financasResumoPeriodo==='30d'?'selected':''}>Últimos 30 dias</option>
@@ -4431,6 +4432,7 @@ function renderFinancas(){
         const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
         <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${temItens?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px">${financasExpandido[d.id]?'▾ ocultar':'▸ detalhar'}</button>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
+          ${d.origem==='ml_fatura'&&d.itensAviso?`<div class="hint" style="margin:2px 0 0;color:#e66">⚠ ${esc(d.itensAviso)}</div>`:''}
         </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
