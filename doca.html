@@ -3945,7 +3945,13 @@ function renderAds(){
     const nota=x=>{ const av=avalAtual.get(x.camp.id); return av?av.score:-1; };
     linhas=linhas.slice().sort((a,b)=>nota(b)-nota(a));
   }
-  else if(adsFiltro==='mais_vendidos') linhas=linhas.filter(x=>dados.tagMaisVendido[x.camp.id]);
+  else if(adsFiltro==='mais_vendidos'){
+    /* média de vendas/dia (ads + orgânicas ÷ dias do período escolhido) — comparável mesmo se
+       depois passar a valer pra períodos diferentes lado a lado */
+    const diasPeriodo={d7:7,d15:15,d30:30}[adsPeriodoApi]||7;
+    const vendasDia=m=>((m.units_quantity||0)+(m.organic_units_quantity||0))/diasPeriodo;
+    linhas=linhas.slice().sort((a,b)=>vendasDia(b.m)-vendasDia(a.m));
+  }
 
   el.innerHTML=`
     <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
@@ -3968,7 +3974,7 @@ function renderAds(){
             <option value="tacos_asc" ${adsFiltro==='tacos_asc'?'selected':''}>Menor TACOS</option>
             <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
             <option value="roas_score" ${adsFiltro==='roas_score'?'selected':''}>Subir ROAS</option>
-            <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos</option>
+            <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos (média de vendas/dia)</option>
           </select>
         </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
@@ -4015,7 +4021,7 @@ function renderAds(){
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${!dados.atualizadoEm?'Clique em Atualizar pra puxar as campanhas dessa loja.':(adsFiltro==='mais_vendidos'?'Nenhuma campanha marcada como Mais Vendidos ainda — abra uma campanha e marque a etiqueta.':'Nenhuma campanha encontrada nesse período.')}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
