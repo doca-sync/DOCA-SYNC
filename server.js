@@ -1523,6 +1523,115 @@ app.get('/ads/data', async (req, res) => {
     res.json({ ok: true, loja, periodos, atualizadoEm });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+
+/* ================= Pesquisa de Mercado (busca de anuncios no Mercado Livre) =================
+   Usada tanto pra "achar produto novo pra vender" (busca livre por filtro, tipo Joom Pulse) quanto
+   pra "monitorar concorrente" (busca pelo nome/SKU de um produto que ja vendo no Doca). Usa o
+   token de QUALQUER loja ja autorizada so' como credencial pra API publica de busca - nao tem
+   nada de "vendedor" nessa busca em si, os resultados sao de qualquer anunciante do Mercado Livre.
+   Vendas/faturamento mensal NAO vem da API oficial do ML (isso a Joom Pulse e concorrentes tiram
+   de raspagem/estimativa propria, sem garantia de acerto) - aqui a estimativa de vendas/semana e
+   calculada por fora: conta quantas avaliacoes o anuncio recebeu nos ultimos 7 dias e multiplica
+   por 10, seguindo a regra combinada com o usuario ("em media 1 em cada 10 compradores avalia").
+   Essa parte (rota /pesquisa/avaliacao) depende da API de reviews do ML aceitar consultar item de
+   OUTRO vendedor - se ela recusar pra algum item, a rota devolve ok:false sem quebrar o resto. */
+async function tokenDeQualquerLoja(lojaPreferida) {
+  const ordem = lojaPreferida && LOJAS_VALIDAS.includes(lojaPreferida)
+    ? [lojaPreferida, ...LOJAS_VALIDAS.filter(l => l !== lojaPreferida)]
+    : LOJAS_VALIDAS;
+  let ultimoErro = null;
+  for (const loja of ordem) {
+    try { return { loja, accessToken: await tokenValido(loja) }; }
+    catch (e) { ultimoErro = e; }
+  }
+  throw ultimoErro || new Error('Nenhuma loja autorizada ainda.');
+}
+const REPUTACAO_LABEL = {
+  '5_green': 'Verde (MercadoLíder)',
+  '4_light_green': 'Verde claro',
+  '3_yellow': 'Amarelo',
+  '2_orange': 'Laranja',
+  '1_red': 'Vermelho',
+  newbie: 'Novo / sem reputação'
+};
+app.get('/pesquisa/buscar', async (req, res) => {
+  try {
+    const { q, categoria, precoMin, precoMax, condicao, catalogo, envio, loja, offset } = req.query;
+    if (!q && !categoria) return res.status(400).json({ ok: false, erro: 'Informe "q" (palavra-chave) ou "categoria".' });
+    const { accessToken, loja: lojaUsada } = await tokenDeQualquerLoja(loja);
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (categoria) params.set('category', categoria);
+    if (precoMin || precoMax) params.set('price', `${precoMin || '*'}-${precoMax || '*'}`);
+    if (condicao && condicao !== 'todos') params.set('condition', condicao);
+    params.set('limit', '50');
+    params.set('offset', String(parseInt(offset || '0', 10) || 0));
+    const url = `https://api.mercadolibre.com/sites/MLB/search?${params.toString()}`;
+    const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    let itens = j.results || [];
+    if (catalogo === 'sim') itens = itens.filter(it => it.catalog_listing);
+    else if (catalogo === 'nao') itens = itens.filter(it => !it.catalog_listing);
+    if (envio === 'full') itens = itens.filter(it => it.shipping && it.shipping.logistic_type === 'fulfillment');
+    /* reputacao do vendedor: 1 chamada por vendedor UNICO na pagina (deduplicado), pra nao
+       repetir a mesma chamada varias vezes quando o mesmo vendedor aparece em varios anuncios */
+    const vendedorIds = [...new Set(itens.map(it => it.seller && it.seller.id).filter(Boolean))];
+    const reputacoes = {};
+    for (const sid of vendedorIds) {
+      try {
+        const u = await fetchMLDebug(`https://api.mercadolibre.com/users/${sid}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        reputacoes[sid] = {
+          nickname: u.nickname,
+          nivelId: u.seller_reputation && u.seller_reputation.level_id,
+          nivelLabel: REPUTACAO_LABEL[u.seller_reputation && u.seller_reputation.level_id] || 'Sem termômetro',
+          powerSeller: u.seller_reputation && u.seller_reputation.power_seller_status,
+          transacoesCompletas: u.seller_reputation && u.seller_reputation.transactions && u.seller_reputation.transactions.completed
+        };
+      } catch (e) { reputacoes[sid] = null; }
+    }
+    const resultados = itens.map(it => ({
+      id: it.id,
+      titulo: it.title,
+      preco: it.price,
+      link: it.permalink,
+      thumbnail: it.thumbnail,
+      catalogo: !!it.catalog_listing,
+      condicao: it.condition,
+      envioFull: !!(it.shipping && it.shipping.logistic_type === 'fulfillment'),
+      vendedorId: it.seller && it.seller.id,
+      vendedor: (it.seller && reputacoes[it.seller.id]) || null
+    }));
+    const filtroCategoria = (j.available_filters || []).find(f => f.id === 'category');
+    res.json({
+      ok: true, lojaUsada,
+      total: j.paging && j.paging.total,
+      offset: j.paging && j.paging.offset,
+      categoriasDisponiveis: (filtroCategoria && filtroCategoria.values) || [],
+      resultados
+    });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+/* avaliacao + estimativa de vendas/semana de UM anuncio - separado da busca de propósito, pra nao
+   pedir isso de todo mundo da pagina de uma vez so' (a API de reviews e mais lenta e nem sempre
+   aceita consultar item de outro vendedor - se falhar, devolve ok:false sem quebrar o resto). */
+app.get('/pesquisa/avaliacao', async (req, res) => {
+  try {
+    const { itemId, loja } = req.query;
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Parametro "itemId" obrigatorio.' });
+    const { accessToken } = await tokenDeQualquerLoja(loja);
+    const j = await fetchMLDebug(`https://api.mercadolibre.com/reviews/item/${itemId}?limit=50`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const seteDiasAtras = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const reviews7d = (j.reviews || []).filter(r => r.date_created && new Date(r.date_created).getTime() >= seteDiasAtras).length;
+    res.json({
+      ok: true,
+      itemId,
+      mediaAvaliacao: j.rating_average != null ? Number(j.rating_average) : null,
+      totalAvaliacoes: (j.paging && j.paging.total) != null ? j.paging.total : (j.reviews || []).length,
+      avaliacoes7dias: reviews7d,
+      estimativaVendasSemana: reviews7d * 10
+    });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
