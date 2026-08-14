@@ -4282,6 +4282,37 @@ function despesaBateFiltroLoja(d){
   return d.loja===financasFiltroLoja;
 }
 
+/* ================= Sócios (TorvStore): despesas de cada um + fechamento equilibrado =================
+   Cada sócio lança à mão o que pagou do próprio bolso pela empresa. No fechamento, a margem
+   líquida do período é dividida 50/50 (a "cota" de cada um); quem gastou menos que a cota recebe
+   a diferença, quem gastou mais devolve a diferença — assim os dois ficam igualados. */
+function sociosLoja(loja){
+  if(!state.socios) state.socios={};
+  if(!state.socios[loja]) state.socios[loja]={felipe:[],thiago:[]};
+  if(!Array.isArray(state.socios[loja].felipe)) state.socios[loja].felipe=[];
+  if(!Array.isArray(state.socios[loja].thiago)) state.socios[loja].thiago=[];
+  return state.socios[loja];
+}
+function addDespesaSocio(loja,socio,descricao,valor,data){
+  snapshot('despesa de '+socio+' ('+loja+')');
+  const s=sociosLoja(loja);
+  s[socio].push({id:gerarId('soc'),descricao:(descricao||'').trim(),valor:Number(valor)||0,data:data||hoje()});
+  persist();
+}
+function removerDespesaSocio(loja,socio,id){
+  const s=sociosLoja(loja);
+  const d=s[socio].find(x=>x.id===id); if(!d) return;
+  snapshot('remoção de despesa de '+socio);
+  s[socio]=s[socio].filter(x=>x.id!==id);
+  persist();
+}
+function despesasSocioPeriodo(loja,socio,de,ate){
+  return sociosLoja(loja)[socio].filter(x=>x.data&&x.data>=de&&x.data<=ate).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
+}
+function totalSocioPeriodo(loja,socio,de,ate){
+  return despesasSocioPeriodo(loja,socio,de,ate).reduce((s,x)=>s+(Number(x.valor)||0),0);
+}
+
 /* ================= Resumo Financeiro (faturamento, margem de contribuição, deduções) =================
    Puxa direto da API de pedidos/ads/frete do Mercado Livre (não usa as despesas cadastradas à mão
    acima) - período flexível igual ferramenta tipo Metrify: 7/15/30 dias, mês fechado ou intervalo
@@ -4321,6 +4352,12 @@ function calcularCmvResumo(resumo){
   });
   return {cmv,unidSemCusto};
 }
+/* despesas manuais (cadastradas em Finanças, exceto a fatura do ML — que entra separada, com o
+   valor pendente atual) dessa loja com vencimento dentro do período do Resumo Financeiro — usadas
+   como "custos do período" na Margem Líquida. */
+function despesasPeriodoLoja(loja,de,ate){
+  return despesasArr().filter(d=>d.loja===loja&&d.origem!=='ml_fatura'&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate);
+}
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
    Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
    (o que você paga quando o anúncio tem frete grátis) é deduzido, igual o print de referência
@@ -4336,6 +4373,31 @@ function renderResumoFinanceiroResultado(resumo,loja){
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
   const itensOrdenados=(resumo.itensVendidos||[]).slice().sort((a,b)=>b.qtd-a.qtd);
   const unidadesVendidas=itensOrdenados.reduce((s,it)=>s+it.qtd,0);
+  /* Margem líquida = margem de contribuição - despesas manuais lançadas em Finanças nesse período
+     (aluguel, salário etc — sem contar a fatura ML, que entra à parte) - valor pendente atual da
+     fatura do Mercado Livire dessa loja. */
+  const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
+  const faturaMlAtual=faturaMlPendenteLoja(loja);
+  const margemLiquida=margem-custosPeriodo-faturaMlAtual;
+  const margemLiquidaPct=resumo.faturamento>0?(margemLiquida/resumo.faturamento*100):0;
+  /* sócios (Felipe/Thiago) — só faz sentido pra TorvStore por enquanto */
+  const ehTorvStore=loja==='TorvStore';
+  let totalFelipe=0,totalThiago=0,listaFelipe=[],listaThiago=[],cadaCota=0,ajusteFelipe=0,ajusteThiago=0;
+  if(ehTorvStore){
+    listaFelipe=despesasSocioPeriodo(loja,'felipe',resumo.periodo.de,resumo.periodo.ate);
+    listaThiago=despesasSocioPeriodo(loja,'thiago',resumo.periodo.de,resumo.periodo.ate);
+    totalFelipe=listaFelipe.reduce((s,x)=>s+(Number(x.valor)||0),0);
+    totalThiago=listaThiago.reduce((s,x)=>s+(Number(x.valor)||0),0);
+    cadaCota=margemLiquida/2;
+    ajusteFelipe=cadaCota-totalFelipe;
+    ajusteThiago=cadaCota-totalThiago;
+  }
+  const linhaAjuste=(nome,ajuste)=>ajuste>0.004
+    ?`<span class="okv">Pagamento de <b>${fmtMoney(ajuste)}</b> pra ${nome}</span>`
+    :(ajuste<-0.004?`<span class="pend">${nome} devolve <b>${fmtMoney(-ajuste)}</b></span>`:'<span class="muted">Já equilibrado</span>');
+  const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
+      ${lista.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}">✕</button></td></tr>`).join('')}
+    </tbody></table>`:'<p class="empty-inline">Nenhuma despesa lançada nesse período.</p>';
   return `
     <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)} · ${fmtInt(resumo.pedidosValidos)} pedido(s) válido(s) · ${fmtInt(unidadesVendidas)} unidade(s) vendida(s)${resumo.pedidosCancelados?' · '+fmtInt(resumo.pedidosCancelados)+' cancelado(s)':''}</p>
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
@@ -4349,14 +4411,27 @@ function renderResumoFinanceiroResultado(resumo,loja){
       ${cartao('CANCELAMENTOS',resumo.cancelamentosValor,pct(resumo.cancelamentosValor))}
       ${cartao('REEMBOLSOS',resumo.reembolsosValor,pct(resumo.reembolsosValor))}
     </div>
-    <div class="card" style="margin-top:12px">
-      <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
-      <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
-      <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento</div>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+      <div class="card" style="margin:0">
+        <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
+        <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
+        <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento</div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
+        <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
+        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente</div>
+      </div>
     </div>
-    <div class="card" style="margin-top:12px">
-      <div class="muted" style="font-size:11px">VENDAS DE HOJE</div>
-      <b style="font-size:18px">${fmtInt(resumo.vendasHoje.pedidos)} pedido(s) · ${fmtInt(resumo.vendasHoje.unidades||0)} unidade(s) · ${fmtMoney(resumo.vendasHoje.faturamento)}</b>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+      <div class="card" style="margin:0">
+        <div class="muted" style="font-size:11px">VENDAS DO PERÍODO</div>
+        <b style="font-size:18px">${fmtInt(resumo.pedidosValidos)} pedido(s) · ${fmtInt(unidadesVendidas)} unidade(s) · ${fmtMoney(resumo.faturamento)}</b>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="muted" style="font-size:11px">VENDAS DE HOJE</div>
+        <b style="font-size:18px">${fmtInt(resumo.vendasHoje.pedidos)} pedido(s) · ${fmtInt(resumo.vendasHoje.unidades||0)} unidade(s) · ${fmtMoney(resumo.vendasHoje.faturamento)}</b>
+      </div>
     </div>
     <div class="card" style="margin-top:12px">
       <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
@@ -4369,6 +4444,31 @@ function renderResumoFinanceiroResultado(resumo,loja){
       </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
     </div>
     ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
+    ${ehTorvStore?`
+    <div class="card" style="margin-top:12px">
+      <h3 style="margin-top:0">🤝 Sócios — Felipe &amp; Thiago</h3>
+      <p class="hint" style="margin:0 0 10px">Lance aqui o que cada sócio pagou do próprio bolso pela empresa nesse período (${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)}). No fechamento, a margem líquida é dividida 50/50: quem gastou menos que a cota recebe a diferença, quem gastou mais devolve.</p>
+      <div class="form-grid" style="grid-template-columns:1fr 2fr 1fr 1fr auto">
+        <label>Sócio<select id="socQuem"><option value="felipe">Felipe</option><option value="thiago">Thiago</option></select></label>
+        <label>Descrição<input id="socDescricao" type="text" placeholder="Ex: combustível"></label>
+        <label>Valor (R$)<input id="socValor" type="number" min="0" step="0.01"></label>
+        <label>Data<input id="socData" type="date" value="${esc(hoje())}"></label>
+        <button class="btn gold" id="btnAddSocio" style="align-self:end">+ Adicionar</button>
+      </div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+        <div><b style="font-size:12.5px">Felipe — ${fmtMoney(totalFelipe)} no período</b>${listaSocio('felipe',listaFelipe)}</div>
+        <div><b style="font-size:12.5px">Thiago — ${fmtMoney(totalThiago)} no período</b>${listaSocio('thiago',listaThiago)}</div>
+      </div>
+      <div class="card" style="margin-top:14px">
+        <div class="muted" style="font-size:11px">FECHAMENTO — CADA SÓCIO TEM DIREITO A</div>
+        <b style="font-size:18px">${fmtMoney(cadaCota)}</b>
+        <div class="hint" style="margin:4px 0 10px">50% da margem líquida (${fmtMoney(margemLiquida)}) do período.</div>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr">
+          <div>Felipe já gastou <b>${fmtMoney(totalFelipe)}</b><br>${linhaAjuste('Felipe',ajusteFelipe)}</div>
+          <div>Thiago já gastou <b>${fmtMoney(totalThiago)}</b><br>${linhaAjuste('Thiago',ajusteThiago)}</div>
+        </div>
+      </div>
+    </div>`:''}
   `;
 }
 function renderFinancas(){
@@ -4453,7 +4553,6 @@ function renderFinancas(){
         const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
         <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${temItens?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px">${financasExpandido[d.id]?'▾ ocultar':'▸ detalhar'}</button>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
-          ${d.origem==='ml_fatura'&&d.itensAviso?`<div class="hint" style="margin:2px 0 0;color:#e66">⚠ ${esc(d.itensAviso)}</div>`:''}
         </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
@@ -4543,6 +4642,23 @@ function renderFinancas(){
   if(frPesquisar) frPesquisar.onclick=pesquisarResumoFinanceiro;
   const frAliquota=document.getElementById('frAliquota');
   if(frAliquota) frAliquota.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{aliquotaImposto:e.target.value}); renderFinancas(); };
+  const btnAddSocio=document.getElementById('btnAddSocio');
+  if(btnAddSocio) btnAddSocio.onclick=()=>{
+    const socio=document.getElementById('socQuem').value;
+    const descricao=document.getElementById('socDescricao').value.trim();
+    const valor=Number(document.getElementById('socValor').value);
+    const data=document.getElementById('socData').value||hoje();
+    if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+    addDespesaSocio(financasResumoLoja,socio,descricao,valor,data);
+    toast('Despesa de '+(socio==='felipe'?'Felipe':'Thiago')+' lançada.');
+    renderFinancas();
+  };
+  el.querySelectorAll('[data-remsocio]').forEach(b=>b.onclick=()=>{
+    const [socio,id]=b.dataset.remsocio.split('|');
+    removerDespesaSocio(financasResumoLoja,socio,id);
+    toast('Despesa removida.');
+    renderFinancas();
+  });
 }
 
 /* ---------- listas de tarefas ---------- */
@@ -5851,6 +5967,16 @@ tentarReconectar();
    funcionou por último. */
 (async function sincronizarMlAoAbrir(){
   if(!backendUrl()) return;
+  /* fatura do Mercado Livre primeiro e em PARALELO (uma chamada rápida por loja) — antes ela
+     ficava no fim de uma fila sequencial (produtos → Mercado Pago → Ads → fatura → imposto,
+     loja por loja), então se qualquer passo mais lento travasse ou o backend gratuito estivesse
+     "dormindo", a fatura só aparecia depois de clicar manualmente em "🔄" na aba Finanças. Agora
+     ela dispara pras 4 lojas de uma vez, sem esperar o resto. */
+  await Promise.allSettled(STORES.map(loja=>puxarFaturaMl(loja).catch(e=>{
+    console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
+    financasUltimoErroAuto[loja]=e.message;
+  })));
+  renderFinancas();
   for(const loja of STORES){
     try{
       const resultado=await mlSincronizarLoja(loja);
@@ -5867,13 +5993,6 @@ tentarReconectar();
       await adsSincronizarLoja(loja);
     }catch(e){
       console.error(`Sincronização automática de Ads falhou ao abrir o Doca (loja ${loja}):`,e.message);
-    }
-    try{
-      await puxarFaturaMl(loja);
-    }catch(e){
-      console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
-      financasUltimoErroAuto[loja]=e.message;
-      renderFinancas();
     }
     try{
       await sincronizarImpostoAutomatico(loja);
