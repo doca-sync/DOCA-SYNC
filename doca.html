@@ -4198,11 +4198,17 @@ function mesLabel(m){
   return `${nomes[Number(mm)-1]||mm}/${a}`;
 }
 let financasFiltroMes=hoje().slice(0,7);
+let financasFiltroLoja='todas'; // 'todas' | nome de uma loja | '__geral__' (despesas sem loja específica, ex: aluguel do galpão)
 let financasPuxandoFatura=null;
 let financasExpandido={}; // id da despesa -> true enquanto mostra o detalhamento (ex: fatura do ML por categoria)
+function despesaBateFiltroLoja(d){
+  if(financasFiltroLoja==='todas') return true;
+  if(financasFiltroLoja==='__geral__') return !d.loja;
+  return d.loja===financasFiltroLoja;
+}
 function renderFinancas(){
   const el=document.getElementById('tab-financas'); if(!el) return;
-  const arr=despesasArr();
+  const arr=despesasArr().filter(despesaBateFiltroLoja);
   const meses=[...new Set(arr.map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean))].sort().reverse();
   if(!meses.includes(financasFiltroMes)) meses.unshift(financasFiltroMes);
   const doMes=arr.filter(d=>(d.dataPagamento||'').slice(0,7)===financasFiltroMes).sort((a,b)=>(a.dataPagamento||'').localeCompare(b.dataPagamento||''));
@@ -4237,6 +4243,11 @@ function renderFinancas(){
       </div>
     </div>
     <div class="toolbar-produtos">
+      <select id="fnFiltroLoja">
+        <option value="todas" ${financasFiltroLoja==='todas'?'selected':''}>Todas as lojas</option>
+        ${STORES.map(l=>`<option value="${esc(l)}" ${financasFiltroLoja===l?'selected':''}>${esc(l)}</option>`).join('')}
+        <option value="__geral__" ${financasFiltroLoja==='__geral__'?'selected':''}>Geral (sem loja)</option>
+      </select>
       <select id="fnFiltroMes">${meses.map(m=>`<option value="${m}" ${m===financasFiltroMes?'selected':''}>${mesLabel(m)}</option>`).join('')}</select>
       <span class="cont muted" style="font-size:12.5px">${doMes.length} despesa(s) no mês</span>
     </div>
@@ -4271,7 +4282,7 @@ function renderFinancas(){
         <div><span class="muted" style="font-size:11px">PENDENTE</span><br><b style="font-size:18px" class="pend">${fmtMoney(totalPendente)}</b></div>
       </div>
     </div>
-    <h3>Histórico por mês</h3>
+    <h3>Histórico por mês${financasFiltroLoja==='todas'?'':` — ${financasFiltroLoja==='__geral__'?'Geral (sem loja)':esc(financasFiltroLoja)}`}</h3>
     ${historico.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">Total de despesas</th></tr></thead><tbody>
       ${historico.map(m=>`<tr><td>${mesLabel(m)}</td><td class="num">${fmtMoney(porMes[m])}</td></tr>`).join('')}
     </tbody></table></div>`:`<p class="empty-inline">Sem histórico ainda.</p>`}
@@ -4291,6 +4302,7 @@ function renderFinancas(){
     renderFinancas();
   };
   document.getElementById('fnFiltroMes').onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
+  document.getElementById('fnFiltroLoja').onchange=e=>{ financasFiltroLoja=e.target.value; renderFinancas(); };
   el.querySelectorAll('[data-fnpago]').forEach(c=>c.onchange=()=>{
     marcarDespesaPaga(c.dataset.fnpago,c.checked);
     toast(c.checked?'Despesa marcada como paga.':'Despesa marcada como pendente.');
@@ -5639,6 +5651,11 @@ tentarReconectar();
       await adsSincronizarLoja(loja);
     }catch(e){
       console.error(`Sincronização automática de Ads falhou ao abrir o Doca (loja ${loja}):`,e.message);
+    }
+    try{
+      await puxarFaturaMl(loja);
+    }catch(e){
+      console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
     }
   }
 })();
