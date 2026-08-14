@@ -4281,38 +4281,40 @@ function despesaBateFiltroLoja(d){
   return d.loja===financasFiltroLoja;
 }
 
-/* ================= Sócios (TorvStore): despesas de cada um + fechamento equilibrado =================
-   Cada sócio lança à mão o que pagou do próprio bolso pela empresa. No fechamento, a margem
-   líquida do período é dividida 50/50 (a "cota" de cada um); quem gastou menos que a cota recebe
-   a diferença, quem gastou mais devolve a diferença — assim os dois ficam igualados. */
+/* ================= Retiradas e Reembolsos (TorvStore): fechamento equilibrado entre sócios =====
+   RETIRADA = dinheiro que o sócio já tirou da empresa pra ele (reduz o que falta receber da cota).
+   REEMBOLSO = o inverso: dinheiro que o sócio pagou do próprio bolso pela empresa e que a empresa
+   precisa devolver pra ele (aumenta o que a empresa ainda deve, além da cota). No fechamento, a
+   margem líquida do período é dividida 50/50 (a "cota" de cada um); o que falta pra cada um é:
+   cota − retiradas + reembolsos. Quem já retirou mais que a cota (líquido de reembolsos) devolve a
+   diferença. Cada entrada guarda um "tipo" ('retirada' ou 'reembolso') — entradas antigas sem tipo
+   (de antes desse campo existir) contam como retirada, mantendo o comportamento de antes. */
 function sociosLoja(loja){
   if(!state.socios) state.socios={};
   if(!state.socios[loja]) state.socios[loja]={felipe:[],thiago:[]};
   if(!Array.isArray(state.socios[loja].felipe)) state.socios[loja].felipe=[];
   if(!Array.isArray(state.socios[loja].thiago)) state.socios[loja].thiago=[];
+  [...state.socios[loja].felipe,...state.socios[loja].thiago].forEach(x=>{ if(x.tipo!=='retirada'&&x.tipo!=='reembolso') x.tipo='retirada'; });
   return state.socios[loja];
 }
-function addDespesaSocio(loja,socio,descricao,valor,data){
-  snapshot('despesa de '+socio+' ('+loja+')');
+function addMovimentoSocio(loja,socio,tipo,descricao,valor,data){
+  snapshot((tipo==='reembolso'?'reembolso de ':'retirada de ')+socio+' ('+loja+')');
   const s=sociosLoja(loja);
-  s[socio].push({id:gerarId('soc'),descricao:(descricao||'').trim(),valor:Number(valor)||0,data:data||hoje()});
+  s[socio].push({id:gerarId('soc'),tipo:tipo==='reembolso'?'reembolso':'retirada',descricao:(descricao||'').trim(),valor:Number(valor)||0,data:data||hoje()});
   persist();
 }
-function removerDespesaSocio(loja,socio,id){
+function removerMovimentoSocio(loja,socio,id){
   const s=sociosLoja(loja);
   const d=s[socio].find(x=>x.id===id); if(!d) return;
-  snapshot('remoção de despesa de '+socio);
+  snapshot('remoção de lançamento de '+socio);
   s[socio]=s[socio].filter(x=>x.id!==id);
   persist();
 }
-function despesasSocioPeriodo(loja,socio,de,ate){
-  return sociosLoja(loja)[socio].filter(x=>x.data&&x.data>=de&&x.data<=ate).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
-}
-function totalSocioPeriodo(loja,socio,de,ate){
-  return despesasSocioPeriodo(loja,socio,de,ate).reduce((s,x)=>s+(Number(x.valor)||0),0);
-}
-function despesasSocioMes(loja,socio,mes){
+function movimentosSocioMes(loja,socio,mes){
   return sociosLoja(loja)[socio].filter(x=>(x.data||'').slice(0,7)===mes).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
+}
+function totalPorTipo(lista,tipo){
+  return lista.filter(x=>x.tipo===tipo).reduce((s,x)=>s+(Number(x.valor)||0),0);
 }
 
 /* ================= Resumo Financeiro (faturamento, margem de contribuição, deduções) =================
@@ -4433,10 +4435,11 @@ function renderResumoFinanceiroResultado(resumo,loja){
     ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
   `;
 }
-/* ---- Sócios (TorvStore): cartão independente, sempre visível (não depende de ter pesquisado
-   um período no Resumo Financeiro acima) — mesma lógica de "sempre aparece" da tabela de
-   despesas, usando o mesmo mês selecionado em financasFiltroMes. O fechamento (margem líquida
-   do mês) é calculado sob demanda, com uma busca própria à API do Mercado Livre pro mês inteiro. */
+/* ---- Retiradas e Reembolsos (TorvStore): cartão independente, sempre visível (não depende de
+   ter pesquisado um período no Resumo Financeiro acima) — mesma lógica de "sempre aparece" da
+   tabela de despesas, usando o mesmo mês selecionado em financasFiltroMes. O fechamento (margem
+   líquida do mês) é calculado sob demanda, com uma busca própria à API do Mercado Livre pro mês
+   inteiro. */
 let sociosFechamento=null;
 let sociosFechamentoMes=null;
 let sociosFechamentoCarregando=false;
@@ -4462,13 +4465,14 @@ async function calcularFechamentoSocios(){
 function renderSociosCard(){
   const loja='TorvStore';
   const mes=financasFiltroMes;
-  const listaFelipe=despesasSocioMes(loja,'felipe',mes);
-  const listaThiago=despesasSocioMes(loja,'thiago',mes);
-  const totalFelipe=listaFelipe.reduce((s,x)=>s+(Number(x.valor)||0),0);
-  const totalThiago=listaThiago.reduce((s,x)=>s+(Number(x.valor)||0),0);
+  const listaFelipe=movimentosSocioMes(loja,'felipe',mes);
+  const listaThiago=movimentosSocioMes(loja,'thiago',mes);
+  const retiradaFelipe=totalPorTipo(listaFelipe,'retirada'), reembolsoFelipe=totalPorTipo(listaFelipe,'reembolso');
+  const retiradaThiago=totalPorTipo(listaThiago,'retirada'), reembolsoThiago=totalPorTipo(listaThiago,'reembolso');
+  const tagTipo=t=>t==='reembolso'?'<span class="badge okv">Reembolso</span>':'<span class="badge">Retirada</span>';
   const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
-      ${lista.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}">✕</button></td></tr>`).join('')}
-    </tbody></table>`:`<p class="empty-inline">Nenhuma despesa lançada em ${esc(mesLabel(mes))}.</p>`;
+      ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}">✕</button></td></tr>`).join('')}
+    </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
   const linhaAjuste=(nome,ajuste)=>ajuste>0.004
     ?`<span class="okv">Pagamento de <b>${fmtMoney(ajuste)}</b> pra ${nome}</span>`
     :(ajuste<-0.004?`<span class="pend">${nome} devolve <b>${fmtMoney(-ajuste)}</b></span>`:'<span class="muted">Já equilibrado</span>');
@@ -4480,14 +4484,16 @@ function renderSociosCard(){
   }else if(sociosFechamento&&sociosFechamentoMes===mes){
     const m=calcularMargensResumo(sociosFechamento,loja);
     const cadaCota=m.margemLiquida/2;
-    const ajusteFelipe=cadaCota-totalFelipe, ajusteThiago=cadaCota-totalThiago;
+    /* cota − retiradas (já tirou da empresa) + reembolsos (pagou do bolso, empresa deve devolver) */
+    const ajusteFelipe=cadaCota-retiradaFelipe+reembolsoFelipe;
+    const ajusteThiago=cadaCota-retiradaThiago+reembolsoThiago;
     fechamentoHtml=`<div class="card" style="margin-top:14px">
         <div class="muted" style="font-size:11px">FECHAMENTO DE ${esc(mesLabel(mes)).toUpperCase()} — CADA SÓCIO TEM DIREITO A</div>
         <b style="font-size:18px">${fmtMoney(cadaCota)}</b>
         <div class="hint" style="margin:4px 0 10px">50% da margem líquida (${fmtMoney(m.margemLiquida)}) do mês.</div>
         <div class="form-grid" style="grid-template-columns:1fr 1fr">
-          <div>Felipe já gastou <b>${fmtMoney(totalFelipe)}</b><br>${linhaAjuste('Felipe',ajusteFelipe)}</div>
-          <div>Thiago já gastou <b>${fmtMoney(totalThiago)}</b><br>${linhaAjuste('Thiago',ajusteThiago)}</div>
+          <div>Felipe: retirou <b>${fmtMoney(retiradaFelipe)}</b>${reembolsoFelipe?`, reembolso de <b>${fmtMoney(reembolsoFelipe)}</b>`:''}<br>${linhaAjuste('Felipe',ajusteFelipe)}</div>
+          <div>Thiago: retirou <b>${fmtMoney(retiradaThiago)}</b>${reembolsoThiago?`, reembolso de <b>${fmtMoney(reembolsoThiago)}</b>`:''}<br>${linhaAjuste('Thiago',ajusteThiago)}</div>
         </div>
       </div>`;
   }else{
@@ -4495,18 +4501,19 @@ function renderSociosCard(){
   }
   return `
     <div class="card" style="margin-top:16px">
-      <h3 style="margin-top:0">🤝 Sócios — Felipe &amp; Thiago (${esc(loja)})</h3>
-      <p class="hint" style="margin:0 0 10px">Lance aqui o que cada sócio pagou do próprio bolso pela empresa em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima). No fechamento, a margem líquida do mês é dividida 50/50: quem gastou menos que a cota recebe a diferença, quem gastou mais devolve.</p>
-      <div class="form-grid" style="grid-template-columns:1fr 2fr 1fr 1fr auto">
+      <h3 style="margin-top:0">💸 Retiradas e Reembolsos — Felipe &amp; Thiago (${esc(loja)})</h3>
+      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select id="socQuem"><option value="felipe">Felipe</option><option value="thiago">Thiago</option></select></label>
+        <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
         <label>Descrição<input id="socDescricao" type="text" placeholder="Ex: combustível"></label>
         <label>Valor (R$)<input id="socValor" type="number" min="0" step="0.01"></label>
         <label>Data<input id="socData" type="date" value="${esc(hoje())}"></label>
         <button class="btn gold" id="btnAddSocio" style="align-self:end">+ Adicionar</button>
       </div>
       <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
-        <div><b style="font-size:12.5px">Felipe — ${fmtMoney(totalFelipe)} em ${esc(mesLabel(mes))}</b>${listaSocio('felipe',listaFelipe)}</div>
-        <div><b style="font-size:12.5px">Thiago — ${fmtMoney(totalThiago)} em ${esc(mesLabel(mes))}</b>${listaSocio('thiago',listaThiago)}</div>
+        <div><b style="font-size:12.5px">Felipe — retirou ${fmtMoney(retiradaFelipe)}${reembolsoFelipe?` · reembolso ${fmtMoney(reembolsoFelipe)}`:''}</b>${listaSocio('felipe',listaFelipe)}</div>
+        <div><b style="font-size:12.5px">Thiago — retirou ${fmtMoney(retiradaThiago)}${reembolsoThiago?` · reembolso ${fmtMoney(reembolsoThiago)}`:''}</b>${listaSocio('thiago',listaThiago)}</div>
       </div>
       <button class="btn" id="btnFecharSocios" style="margin-top:12px" ${sociosFechamentoCarregando?'disabled':''}>${sociosFechamentoCarregando?'Calculando...':'📊 Calcular fechamento de '+esc(mesLabel(mes))}</button>
       ${fechamentoHtml}
@@ -4682,18 +4689,19 @@ function renderFinancas(){
   const btnAddSocio=document.getElementById('btnAddSocio');
   if(btnAddSocio) btnAddSocio.onclick=()=>{
     const socio=document.getElementById('socQuem').value;
+    const tipo=document.getElementById('socTipo').value;
     const descricao=document.getElementById('socDescricao').value.trim();
     const valor=Number(document.getElementById('socValor').value);
     const data=document.getElementById('socData').value||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
-    addDespesaSocio('TorvStore',socio,descricao,valor,data);
-    toast('Despesa de '+(socio==='felipe'?'Felipe':'Thiago')+' lançada.');
+    addMovimentoSocio('TorvStore',socio,tipo,descricao,valor,data);
+    toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(socio==='felipe'?'Felipe':'Thiago')+' lançado(a).');
     renderFinancas();
   };
   el.querySelectorAll('[data-remsocio]').forEach(b=>b.onclick=()=>{
     const [socio,id]=b.dataset.remsocio.split('|');
-    removerDespesaSocio('TorvStore',socio,id);
-    toast('Despesa removida.');
+    removerMovimentoSocio('TorvStore',socio,id);
+    toast('Lançamento removido.');
     renderFinancas();
   });
   const btnFecharSocios=document.getElementById('btnFecharSocios');
