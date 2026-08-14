@@ -3218,31 +3218,38 @@ function imprimirRelatorioCompraFornecedor(){
 }
 
 /* ---------- coletar ---------- */
-/* cada compra é uma linha própria — lotes do mesmo SKU não se somam */
+/* cada compra é uma linha própria — lotes do mesmo SKU não se somam.
+   agrupado por fornecedor (mesmo padrão do relatório impresso), e ordenado dentro do grupo
+   por "Nº do pedido" primeiro — assim os itens do mesmo pedido de compra ficam juntos. */
 function tableColetar(list){
   const linhas=[];
   list.forEach(p=>(p.lotes||[]).forEach(l=>linhas.push({p,l})));
   if(!linhas.length) return `<p class="empty-inline">Nada por aqui.</p>`;
-  linhas.sort((a,b)=>(a.l.data||'').localeCompare(b.l.data||'')||a.p.sku.localeCompare(b.p.sku));
-  return `<div class="table-wrap" style="margin-bottom:18px"><table class="tbl-produtos"><thead><tr>
-    <th style="width:36px">Coletar?</th><th>Comprado em</th><th>SKU</th><th>Código</th><th>Fornecedor</th><th>Qtd do lote</th><th>Pedido do fornecedor</th><th></th>
-  </tr></thead><tbody>
-    ${linhas.map(({p,l})=>`<tr>
-      <td><input type="checkbox" class="chk-coleta" data-lote="${p.id}|${l.id}" checked></td>
-      <td class="mono">${esc(fmtData(l.data))}</td>
-      <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td><td>${esc(p.fornecedor)||'<span class="muted">—</span>'}</td>
-      <td class="num">${fmtInt(l.qtd)}</td>
-      <td><input type="text" class="obs-input" placeholder="Nº do pedido" value="${esc(l.pedido||'')}" data-pedido="${p.id}|${l.id}"></td>
-      <td><button class="btn sm acc" data-receber="${p.id}|${l.id}">Chegou no galpão</button></td>
-    </tr>`).join('')}
-  </tbody></table></div>`;
+  const g={}; linhas.forEach(x=>{ const f=(x.p.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(x); });
+  const nomes=Object.keys(g).sort((a,b)=>a.localeCompare(b));
+  return nomes.map(f=>{
+    const l=g[f].sort((a,b)=>(a.l.pedido||'').localeCompare(b.l.pedido||'')||(a.l.data||'').localeCompare(b.l.data||'')||a.p.sku.localeCompare(b.p.sku));
+    return `<h4 style="margin-top:16px">${esc(f)} <span class="muted" style="font-weight:normal">— ${fmtInt(l.reduce((a,x)=>a+x.l.qtd,0))} un. em ${l.length} lote(s)</span></h4>
+    <div class="table-wrap" style="margin-bottom:18px"><table class="tbl-produtos"><thead><tr>
+      <th style="width:36px">Coletar?</th><th>Comprado em</th><th>SKU</th><th>Código</th><th>Qtd do lote</th><th>Pedido do fornecedor</th><th></th>
+    </tr></thead><tbody>
+      ${l.map(({p,l})=>`<tr>
+        <td><input type="checkbox" class="chk-coleta" data-lote="${p.id}|${l.id}" checked></td>
+        <td class="mono">${esc(fmtData(l.data))}</td>
+        <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
+        <td class="num">${fmtInt(l.qtd)}</td>
+        <td><input type="text" class="obs-input" placeholder="Nº do pedido" value="${esc(l.pedido||'')}" data-pedido="${p.id}|${l.id}"></td>
+        <td><button class="btn sm acc" data-receber="${p.id}|${l.id}">Chegou no galpão</button></td>
+      </tr>`).join('')}
+    </tbody></table></div>`;
+  }).join('');
 }
 function renderColetar(){
   const el=document.getElementById('tab-coletar');
   let h=`<h1 class="page-title">Coletar</h1>
     <div class="modal-actions" style="justify-content:flex-start;margin:0 0 16px">
       <button class="btn gold" id="btnImprimirColeta">🖨 Imprimir relatório de coleta</button></div>
-    <p class="hint" style="margin:0 0 16px">Cada compra aparece como um lote separado, mesmo sendo do mesmo SKU — assim o que chegou hoje pode ser buscado sem se misturar com o que você comprou depois. Anote o nº do pedido do fornecedor quando o lote estiver pronto para coleta. Desmarque o que o motorista não precisa buscar hoje antes de imprimir.</p>`;
+    <p class="hint" style="margin:0 0 16px">Cada compra aparece como um lote separado, mesmo sendo do mesmo SKU — assim o que chegou hoje pode ser buscado sem se misturar com o que você comprou depois. Agrupado por fornecedor, com os lotes do mesmo pedido de compra juntos. Anote o nº do pedido do fornecedor quando o lote estiver pronto para coleta. Desmarque o que o motorista não precisa buscar hoje antes de imprimir.</p>`;
   STORES.forEach(loja=>{
     const l=state.produtos.filter(p=>p.loja===loja&&(p.lotes||[]).length>0).sort((a,b)=>a.sku.localeCompare(b.sku));
     h+=`<h3>${esc(loja)}</h3>${tableColetar(l)}`;
@@ -3290,6 +3297,13 @@ function imprimirRelatorioColeta(){
 
 /* ---------- notas fiscais ---------- */
 let filtroNF={loja:'todas',so:'pendentes'};
+/* acha o "Nº do pedido" (informado lá em Coletar) do lote que deu origem a esta nota fiscal —
+   é o pedido de compra que foi criado junto com o lote, no momento em que a compra foi confirmada. */
+function pedidoDaNotaFiscal(n){
+  const p=prodById(n.produtoId); if(!p) return '';
+  const l=(p.lotes||[]).find(x=>x.id===n.loteId);
+  return l?(l.pedido||''):'';
+}
 function renderNotasFiscais(){
   const el=document.getElementById('tab-notasfiscais'); if(!el) return;
   const todas=[...(state.notasFiscais||[])].sort((a,b)=>(b.dataCompra||'').localeCompare(a.dataCompra||'')||(b.criadoEm||0)-(a.criadoEm||0));
@@ -3299,9 +3313,11 @@ function renderNotasFiscais(){
     return true;
   });
   const pendentes=todas.filter(n=>!n.recebida).length;
+  const g={}; lista.forEach(n=>{ const f=(n.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(n); });
+  const nomes=Object.keys(g).sort((a,b)=>a.localeCompare(b));
   el.innerHTML=`
     <h1 class="page-title">Notas Fiscais</h1>
-    <p class="hint" style="margin:0 0 16px">Cada compra confirmada em <b>Comprar</b> vira uma linha aqui, pra você marcar quando a nota fiscal do fornecedor chegar. Fica separado do estoque de propósito — às vezes a NF só chega depois da coleta já ter sido feita.</p>
+    <p class="hint" style="margin:0 0 16px">Cada compra confirmada em <b>Comprar</b> vira uma linha aqui, pra você marcar quando a nota fiscal do fornecedor chegar. Agrupado por fornecedor, com o pedido de compra criado junto (o mesmo nº do pedido informado em Coletar). Fica separado do estoque de propósito — às vezes a NF só chega depois da coleta já ter sido feita.</p>
     <div class="toolbar-produtos">
       <select id="filtroNFLoja"><option value="todas" ${filtroNF.loja==='todas'?'selected':''}>Todas as lojas</option>${optsLojas(filtroNF.loja==='todas'?null:filtroNF.loja)}</select>
       <select id="filtroNFSo">
@@ -3310,19 +3326,23 @@ function renderNotasFiscais(){
       </select>
       <span class="cont muted" style="font-size:12.5px">${pendentes} nota(s) pendente(s) de ${todas.length} compra(s)</span>
     </div>
-    <div class="table-wrap"><table class="tbl-produtos">
-      <thead><tr><th>Loja</th><th>SKU</th><th>Fornecedor</th><th class="num">Qtd</th><th>Comprado em</th><th>Nº da NF</th><th>Recebida</th></tr></thead>
-      <tbody>${lista.length?lista.map(n=>`
-        <tr class="${n.recebida?'':'row-baixo'}">
-          <td><span class="loja-tag">${esc(n.loja)}</span></td>
-          <td class="mono">${esc(n.sku)}</td>
-          <td>${esc(n.fornecedor)||'<span class="muted">—</span>'}</td>
-          <td class="num">${fmtInt(n.qtd)}</td>
-          <td>${fmtData(n.dataCompra)}</td>
-          <td><input type="text" class="obs-input" data-nfnum="${n.id}" value="${esc(n.numero||'')}" placeholder="Número da NF"></td>
-          <td style="text-align:center"><input type="checkbox" data-nfrec="${n.id}" ${n.recebida?'checked':''}></td>
-        </tr>`).join(''):`<tr><td colspan="7" class="empty">Nenhuma nota fiscal ${filtroNF.so==='pendentes'?'pendente. 🎉':'registrada ainda — elas aparecem aqui quando você confirmar uma compra em Comprar.'}</td></tr>`}</tbody>
-    </table></div>`;
+    ${lista.length?nomes.map(f=>{
+      const l=g[f];
+      return `<h4 style="margin-top:16px">${esc(f)} <span class="muted" style="font-weight:normal">— ${l.length} nota(s)</span></h4>
+      <div class="table-wrap" style="margin-bottom:18px"><table class="tbl-produtos">
+        <thead><tr><th>Loja</th><th>SKU</th><th class="num">Qtd</th><th>Comprado em</th><th>Pedido de compra</th><th>Nº da NF</th><th>Recebida</th></tr></thead>
+        <tbody>${l.map(n=>`
+          <tr class="${n.recebida?'':'row-baixo'}">
+            <td><span class="loja-tag">${esc(n.loja)}</span></td>
+            <td class="mono">${esc(n.sku)}</td>
+            <td class="num">${fmtInt(n.qtd)}</td>
+            <td>${fmtData(n.dataCompra)}</td>
+            <td class="mono">${esc(pedidoDaNotaFiscal(n))||'<span class="muted">—</span>'}</td>
+            <td><input type="text" class="obs-input" data-nfnum="${n.id}" value="${esc(n.numero||'')}" placeholder="Número da NF"></td>
+            <td style="text-align:center"><input type="checkbox" data-nfrec="${n.id}" ${n.recebida?'checked':''}></td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+    }).join(''):`<p class="empty-inline">Nenhuma nota fiscal ${filtroNF.so==='pendentes'?'pendente. 🎉':'registrada ainda — elas aparecem aqui quando você confirmar uma compra em Comprar.'}</p>`}`;
   document.getElementById('filtroNFLoja').onchange=e=>{ filtroNF.loja=e.target.value; renderNotasFiscais(); };
   document.getElementById('filtroNFSo').onchange=e=>{ filtroNF.so=e.target.value; renderNotasFiscais(); };
   el.querySelectorAll('[data-nfnum]').forEach(i=>i.onchange=()=>atualizarNotaFiscal(i.dataset.nfnum,{numero:i.value.toUpperCase()}));
@@ -3966,7 +3986,7 @@ function renderAds(){
         const av=avalAtual.get(camp.id);
         const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','CVR alto vs. outras','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')).join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
         return `<tr>
-          <td>${esc(camp.name||'')}${notaRoas}</td>
+          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -3986,6 +4006,10 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;margin:2px 0 8px">
+            <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>
+            🏅 Anúncio tem a etiqueta/selo de "Mais vendido" no Mercado Livre <span class="muted">(marque manualmente ao conferir)</span>
+          </label>
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
@@ -4005,6 +4029,12 @@ function renderAds(){
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
+    renderAds();
+  });
+  el.querySelectorAll('[data-adstag]').forEach(chk=>chk.onchange=()=>{
+    dados.tagMaisVendido[chk.dataset.adstag]=chk.checked;
+    persist();
+    toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
     renderAds();
   });
 }
@@ -4107,7 +4137,7 @@ function tarefasAtrasadas(lid){ const h=hoje(); return state.tarefas.filter(t=>(
 function renderEnvio(){
   const el=document.getElementById('tab-envio');
   const envios=[...state.envios].filter(e=>confirmarLojaAtual==='todas'||e.loja===confirmarLojaAtual)
-    .sort((a,b)=>(b.data||'').localeCompare(a.data||''));
+    .sort((a,b)=>(a.data||'').localeCompare(b.data||'')||a.loja.localeCompare(b.loja)); /* ordem crescente de data, depois loja */
   const avisos=state.avisosFornecedor||[];
   el.innerHTML=`
     <h1 class="page-title">Envios FULL</h1>
