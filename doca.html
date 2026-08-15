@@ -3863,6 +3863,28 @@ let adsPeriodoApi='d7';
 let adsSincronizando=false;
 let adsDetalheAberto=new Set();
 let adsFiltro='tacos_desc';
+/* período "Personalizado" (De/Até escolhido a dedo) - ao contrário de d1/d7/d15/d30 (que ficam
+   guardados no banco pelo Atualizar), esse é buscado sob demanda na hora, sem persistir - por
+   isso mora num state separado (não em adsApiLoja/dados.periodos). */
+let adsPersonalizadoDe='';
+let adsPersonalizadoAte='';
+let adsPersonalizadoResultado=null;
+let adsPersonalizadoCarregando=false;
+let adsPersonalizadoErro=null;
+async function adsBuscarPersonalizado(loja){
+  if(!adsPersonalizadoDe||!adsPersonalizadoAte) return;
+  adsPersonalizadoCarregando=true; adsPersonalizadoErro=null; renderAds();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const params=new URLSearchParams({loja,de:adsPersonalizadoDe,ate:adsPersonalizadoAte});
+    const r=await fetch(`${base}/ads/campanhas-periodo?${params.toString()}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar as campanhas do período (status '+r.status+').'));
+    adsPersonalizadoResultado=j.campanhas;
+  }catch(e){ adsPersonalizadoErro=e.message; }
+  finally{ adsPersonalizadoCarregando=false; renderAds(); }
+}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -4090,12 +4112,13 @@ function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
   const dados=adsApiLoja(c.loja);
-  const periodo=dados.periodos[adsPeriodoApi];
+  const personalizado=adsPeriodoApi==='personalizado';
+  const periodo=personalizado?adsPersonalizadoResultado:dados.periodos[adsPeriodoApi];
   const campanhas=(periodo&&periodo.results)||[];
-  const rotuloPeriodo={d7:'7 dias',d15:'15 dias',d30:'30 dias'}[adsPeriodoApi];
+  const rotuloPeriodo={d1:'hoje',d7:'7 dias',d15:'15 dias',d30:'30 dias',personalizado:'período personalizado'}[adsPeriodoApi];
   /* período de comparação pras setas: sempre o de 30 dias (a "base"), exceto quando já
-     estamos vendo 30 dias — aí não tem um período maior pra comparar */
-  const periodoComp=adsPeriodoApi==='d30'?null:'d30';
+     estamos vendo 30 dias (ou hoje/personalizado, onde a comparação não faz muito sentido) */
+  const periodoComp=(adsPeriodoApi==='d30'||adsPeriodoApi==='d1'||personalizado)?null:'d30';
   const dadosComp=periodoComp?dados.periodos[periodoComp]:null;
   const mapaComp={};
   if(dadosComp) (dadosComp.results||[]).forEach(camp=>mapaComp[camp.id]=camp.metrics||{});
@@ -4118,7 +4141,8 @@ function renderAds(){
   else if(adsFiltro==='mais_vendidos'){
     /* média de vendas/dia (ads + orgânicas ÷ dias do período escolhido) — comparável mesmo se
        depois passar a valer pra períodos diferentes lado a lado */
-    const diasPeriodo={d7:7,d15:15,d30:30}[adsPeriodoApi]||7;
+    const diasPersonalizado=personalizado&&adsPersonalizadoDe&&adsPersonalizadoAte?(Math.round((new Date(adsPersonalizadoAte)-new Date(adsPersonalizadoDe))/864e5)+1):7;
+    const diasPeriodo={d1:1,d7:7,d15:15,d30:30,personalizado:diasPersonalizado}[adsPeriodoApi]||7;
     const vendasDia=m=>((m.units_quantity||0)+(m.organic_units_quantity||0))/diasPeriodo;
     linhas=linhas.slice().sort((a,b)=>vendasDia(b.m)-vendasDia(a.m));
   }
@@ -4129,15 +4153,30 @@ function renderAds(){
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
         <label>Loja<select id="adLoja">${optsLojas(c.loja)}</select></label>
         <label>Período<select id="adPeriodo">
+          <option value="d1" ${adsPeriodoApi==='d1'?'selected':''}>Hoje</option>
           <option value="d7" ${adsPeriodoApi==='d7'?'selected':''}>Últimos 7 dias</option>
           <option value="d15" ${adsPeriodoApi==='d15'?'selected':''}>Últimos 15 dias</option>
           <option value="d30" ${adsPeriodoApi==='d30'?'selected':''}>Últimos 30 dias</option>
+          <option value="personalizado" ${personalizado?'selected':''}>Personalizado</option>
         </select></label>
+        ${personalizado?`
+        <label>De<input type="date" id="adPersonalizadoDe" value="${esc(adsPersonalizadoDe)}"></label>
+        <label>Até<input type="date" id="adPersonalizadoAte" value="${esc(adsPersonalizadoAte)}"></label>
+        `:`
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
         <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}"></label>
+        `}
       </div>
+      ${personalizado?`
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
-        <button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>
+        <button class="btn gold" id="adPersonalizadoCalcular" ${adsPersonalizadoCarregando||!adsPersonalizadoDe||!adsPersonalizadoAte?'disabled':''}>${adsPersonalizadoCarregando?'Calculando...':'🔍 Calcular'}</button>
+        <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}" style="width:70px"></label>
+        <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}" style="width:70px"></label>
+      </div>
+      ${adsPersonalizadoErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsPersonalizadoErro)}</p>`:''}
+      `:''}
+      <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
+        ${personalizado?'':`<button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>`}
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Filtro
           <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px">
             <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
@@ -4194,19 +4233,26 @@ function renderAds(){
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.'}</p>`}
+    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
   document.getElementById('adFiltro').onchange=e=>{ adsFiltro=e.target.value; renderAds(); };
   document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
   document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.tacosTeto=v; persist(); renderAds(); };
-  document.getElementById('adAtualizar').onclick=async()=>{
+  const btnAtualizar=document.getElementById('adAtualizar');
+  if(btnAtualizar) btnAtualizar.onclick=async()=>{
     adsSincronizando=true; renderAds();
     try{ await adsSincronizarLoja(c.loja); toast('Ads atualizado.'); }
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
   };
+  const elPersDe=document.getElementById('adPersonalizadoDe');
+  if(elPersDe) elPersDe.onchange=e=>{ adsPersonalizadoDe=e.target.value; renderAds(); };
+  const elPersAte=document.getElementById('adPersonalizadoAte');
+  if(elPersAte) elPersAte.onchange=e=>{ adsPersonalizadoAte=e.target.value; renderAds(); };
+  const btnPersCalc=document.getElementById('adPersonalizadoCalcular');
+  if(btnPersCalc) btnPersCalc.onclick=()=>adsBuscarPersonalizado(c.loja);
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
@@ -4500,12 +4546,17 @@ function renderResumoFinanceiroResultado(resumo,loja){
           const custoProdutoItem=(p&&p.custo?p.custo:0)*it.qtd;
           const impostoItem=it.valor*((aliquota||0)/100);
           const margemContribItem=it.valor-custoProdutoItem-(it.tarifa||0)-(it.freteMl||0)-impostoItem;
-          const adsItem=p?(adsGastoAutoProduto(p,resumo)||0):0;
+          // adsGastoAutoProduto devolve null quando NÃO achou nenhuma campanha com o SKU no nome -
+          // diferente de achar a campanha com gasto zero. Mostrar "—" nesse caso (em vez de R$0,00)
+          // deixa claro que é falta de match, não gasto zero de verdade.
+          const adsAchado=p?adsGastoAutoProduto(p,resumo):null;
+          const adsItem=adsAchado||0;
           const margemLiquidaItem=margemContribItem-adsItem;
-          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num ${margemContribItem>=0?'okv':'pend'}">${fmtMoney(margemContribItem)}</td><td class="num">${fmtMoney(adsItem)}</td><td class="num ${margemLiquidaItem>=0?'okv':'pend'}"><b>${fmtMoney(margemLiquidaItem)}</b></td></tr>`;
+          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha de Ads encontrada com o SKU no nome">—</span>':fmtMoney(adsAchado);
+          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num ${margemContribItem>=0?'okv':'pend'}">${fmtMoney(margemContribItem)}</td><td class="num">${adsCel}</td><td class="num ${margemLiquidaItem>=0?'okv':'pend'}"><b>${fmtMoney(margemLiquidaItem)}</b></td></tr>`;
         }).join('')}
       </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
-      <p class="hint" style="margin-top:6px">M. Contribuição por produto desconta custo do produto, tarifa, frete e imposto proporcional. M. Líquida desconta também o Ads gasto naquele produto (achado pelo SKU no nome da campanha — pode ficar zerado se não achar).</p>
+      <p class="hint" style="margin-top:6px">M. Contribuição por produto desconta custo do produto, tarifa, frete e imposto proporcional. M. Líquida desconta também o Ads gasto naquele produto. "—" em Ads significa que não achou nenhuma campanha com o SKU no nome (não necessariamente gasto zero).</p>
     </div>
     ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
   `;
@@ -4885,6 +4936,8 @@ function calcularLinhaAmauriProduto(p,resumo){
   const qtd=it?(it.qtd||0):0;
   const faturamento=it?(it.valor||0):0;
   const vendasConcluidas=it?(it.pedidos||0):0;
+  const qtdCancelada=it?(it.qtdCancelada||0):0;
+  const pedidosCancelados=it?(it.pedidosCancelados||0):0;
   const tarifaMlTotal=it?(it.tarifa||0):0;
   /* frete que o Mercado Livre encara como frete (o frete grátis que sai do seu bolso) - vem do
      backend já rateado por item quando o envio tinha mais de 1 produto. É diferente da "coleta"
@@ -4909,7 +4962,7 @@ function calcularLinhaAmauriProduto(p,resumo){
   ];
   const reembolsoAmauri=itensCusto.filter(x=>x.quemPagou==='amauri').reduce((s,x)=>s+x.valor,0);
   const repasseTotal=repasseMargem+reembolsoAmauri;
-  return {p,c,qtd,faturamento,vendasConcluidas,tarifaMlTotal,freteMlTotal,custoProdutoTotal,coletaTotal,embalagemTotal,etiquetaTotal,adsTotal,aliquota,impostoCalc,margemLiquida,percentual,repasseMargem,reembolsoAmauri,repasseTotal};
+  return {p,c,qtd,faturamento,vendasConcluidas,qtdCancelada,pedidosCancelados,tarifaMlTotal,freteMlTotal,custoProdutoTotal,coletaTotal,embalagemTotal,etiquetaTotal,adsTotal,aliquota,impostoCalc,margemLiquida,percentual,repasseMargem,reembolsoAmauri,repasseTotal};
 }
 /* tenta achar sozinho quanto foi gasto de ads com esse produto EXATAMENTE no período calculado,
    casando o SKU com o nome da campanha. Usa resumo.ads.campanhas, que o backend busca com o MESMO
@@ -4991,10 +5044,10 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
     <div class="sub">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <h2>Por produto</h2>
     <table><thead><tr>
-      <th>SKU</th><th class="n">Unid.</th><th class="n">Vendas</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo produto</th><th class="n">Coleta</th><th class="n">Embalagem</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Margem líquida</th><th class="n">Reembolso</th><th class="n">Repasse total</th>
+      <th>SKU</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo produto</th><th class="n">Coleta</th><th class="n">Embalagem</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Margem líquida</th><th class="n">Reembolso</th><th class="n">Repasse total</th>
     </tr></thead><tbody>
       ${linhas.map(l=>`<tr>
-        <td>${esc(l.p.sku)}</td><td class="n">${fmtInt(l.qtd)}</td><td class="n">${fmtInt(l.vendasConcluidas)}</td>
+        <td>${esc(l.p.sku)}</td><td class="n">${fmtInt(l.qtd)}</td>
         <td class="n">${fmtMoney(l.faturamento)}</td><td class="n">${fmtMoney(l.tarifaMlTotal)}</td><td class="n">${fmtMoney(l.freteMlTotal)}</td>
         <td class="n">${fmtMoney(l.custoProdutoTotal)}</td><td class="n">${fmtMoney(l.coletaTotal)}</td><td class="n">${fmtMoney(l.embalagemTotal)}</td>
         <td class="n">${fmtMoney(l.etiquetaTotal)}</td><td class="n">${fmtMoney(l.adsTotal)}</td><td class="n">${fmtMoney(l.impostoCalc)}</td>
@@ -5094,12 +5147,11 @@ function renderAmauri(){
       ${amauriResumoResultado?`
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · ${fmtInt(amauriResumoResultado.pedidosValidos)} pedido(s) válido(s)${amauriResumoResultado.pedidosCancelados?' · '+fmtInt(amauriResumoResultado.pedidosCancelados)+' cancelado(s) (loja toda, não só os produtos do Amauri)':''}</p>
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo produto</th><th class="num">Coleta</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
+          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo produto</th><th class="num">Coleta</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
         </tr></thead><tbody>
           ${linhas.map(l=>`<tr>
             <td class="mono">${esc(l.p.sku)}</td>
-            <td class="num">${fmtInt(l.qtd)}</td>
-            <td class="num">${fmtInt(l.vendasConcluidas)}</td>
+            <td class="num" title="${l.vendasConcluidas} venda(s) concluída(s)${l.qtdCancelada?' · '+l.qtdCancelada+' unidade(s) cancelada(s) ('+l.pedidosCancelados+' pedido(s))':''}">${fmtInt(l.qtd)}</td>
             <td class="num">${fmtMoney(l.faturamento)}</td>
             <td class="num">${fmtMoney(l.tarifaMlTotal)}</td>
             <td class="num">${fmtMoney(l.freteMlTotal)}</td>
