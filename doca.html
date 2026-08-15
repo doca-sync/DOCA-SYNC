@@ -3863,9 +3863,6 @@ let adsPeriodoApi='d7';
 let adsSincronizando=false;
 let adsDetalheAberto=new Set();
 let adsFiltro='tacos_desc';
-/* período "Personalizado" (De/Até escolhido a dedo) - ao contrário de d1/d7/d15/d30 (que ficam
-   guardados no banco pelo Atualizar), esse é buscado sob demanda na hora, sem persistir - por
-   isso mora num state separado (não em adsApiLoja/dados.periodos). */
 let adsPersonalizadoDe='';
 let adsPersonalizadoAte='';
 let adsPersonalizadoResultado=null;
@@ -3879,8 +3876,8 @@ async function adsBuscarPersonalizado(loja){
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
     const params=new URLSearchParams({loja,de:adsPersonalizadoDe,ate:adsPersonalizadoAte});
     const r=await fetch(`${base}/ads/campanhas-periodo?${params.toString()}`);
-    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar as campanhas do período (status '+r.status+').'));
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao buscar (HTTP '+r.status+').'));
     adsPersonalizadoResultado=j.campanhas;
   }catch(e){ adsPersonalizadoErro=e.message; }
   finally{ adsPersonalizadoCarregando=false; renderAds(); }
@@ -4117,7 +4114,7 @@ function renderAds(){
   const campanhas=(periodo&&periodo.results)||[];
   const rotuloPeriodo={d1:'hoje',d7:'7 dias',d15:'15 dias',d30:'30 dias',personalizado:'período personalizado'}[adsPeriodoApi];
   /* período de comparação pras setas: sempre o de 30 dias (a "base"), exceto quando já
-     estamos vendo 30 dias (ou hoje/personalizado, onde a comparação não faz muito sentido) */
+     estamos vendo 30 dias, hoje ou um período personalizado — aí não faz sentido comparar */
   const periodoComp=(adsPeriodoApi==='d30'||adsPeriodoApi==='d1'||personalizado)?null:'d30';
   const dadosComp=periodoComp?dados.periodos[periodoComp]:null;
   const mapaComp={};
@@ -4186,7 +4183,7 @@ function renderAds(){
             <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos</option>
           </select>
         </label>
-        <span style="flex:1;font-size:12.5px;color:var(--muted)">${dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.'}</span>
+        <span style="flex:1;font-size:12.5px;color:var(--muted)">${personalizado?'':(dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.')}</span>
       </div>
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}</p>
     </div>
@@ -4539,24 +4536,16 @@ function renderResumoFinanceiroResultado(resumo,loja){
         ${itensOrdenados.map((it,i)=>{
           const p=state.produtos.find(x=>x.mlItemId===it.itemId);
           const nome=p&&p.sku?esc(p.sku):`<span class="muted">${esc(it.itemId)} (sem SKU vinculado)</span>`;
-          // margem de contribuição por produto: mesma lógica do resumo geral (faturamento - custo -
-          // tarifa - frete - imposto proporcional), só que restrita a esse item. Margem líquida do
-          // produto = essa margem de contribuição - ads gasto NESSE produto (achado pelo SKU no nome
-          // da campanha, mesma função já usada no fechamento do Amauri).
           const custoProdutoItem=(p&&p.custo?p.custo:0)*it.qtd;
           const impostoItem=it.valor*((aliquota||0)/100);
           const margemContribItem=it.valor-custoProdutoItem-(it.tarifa||0)-(it.freteMl||0)-impostoItem;
-          // adsGastoAutoProduto devolve null quando NÃO achou nenhuma campanha com o SKU no nome -
-          // diferente de achar a campanha com gasto zero. Mostrar "—" nesse caso (em vez de R$0,00)
-          // deixa claro que é falta de match, não gasto zero de verdade.
           const adsAchado=p?adsGastoAutoProduto(p,resumo):null;
           const adsItem=adsAchado||0;
           const margemLiquidaItem=margemContribItem-adsItem;
           const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha de Ads encontrada com o SKU no nome">—</span>':fmtMoney(adsAchado);
-          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num ${margemContribItem>=0?'okv':'pend'}">${fmtMoney(margemContribItem)}</td><td class="num">${adsCel}</td><td class="num ${margemLiquidaItem>=0?'okv':'pend'}"><b>${fmtMoney(margemLiquidaItem)}</b></td></tr>`;
+          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num">${fmtMoney(margemContribItem)}</td><td class="num">${adsCel}</td><td class="num"><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b></td></tr>`;
         }).join('')}
       </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
-      <p class="hint" style="margin-top:6px">M. Contribuição por produto desconta custo do produto, tarifa, frete e imposto proporcional. M. Líquida desconta também o Ads gasto naquele produto. "—" em Ads significa que não achou nenhuma campanha com o SKU no nome (não necessariamente gasto zero).</p>
     </div>
     ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
   `;
@@ -4970,12 +4959,21 @@ function calcularLinhaAmauriProduto(p,resumo){
    quando você escolhe um intervalo personalizado por lá) - nada de aproximar por janela fixa de
    7/15/30 dias. Devolve null quando não consegue achar (backend antigo sem esse dado, ou nenhuma
    campanha com o SKU no nome) - nesse caso o campo continua editável na mão. */
+/* tira acento, espaço, hífen, underline etc e deixa maiúsculo - assim "CABO MICKEY" (nome da
+   campanha) casa com o SKU "CABOMICKEY" mesmo com espaço/acentuação diferente entre os dois. */
+function normalizarParaMatch(s){
+  return String(s||'')
+    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g,'');
+}
 function adsGastoAutoProduto(p,resumo){
   if(!p.sku) return null;
   const campanhas=(resumo&&resumo.ads&&resumo.ads.campanhas)||[];
   if(!campanhas.length) return null;
-  const skuUp=p.sku.toUpperCase();
-  const camp=campanhas.find(cc=>(cc.name||'').toUpperCase().includes(skuUp));
+  const skuNorm=normalizarParaMatch(p.sku);
+  if(!skuNorm) return null;
+  const camp=campanhas.find(cc=>normalizarParaMatch(cc.name).includes(skuNorm));
   return camp?(camp.cost||0):null;
 }
 /* preenche o custo de ads sozinho, disparado toda vez que o período é calculado (sem precisar de
@@ -5047,7 +5045,7 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
       <th>SKU</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo produto</th><th class="n">Coleta</th><th class="n">Embalagem</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Margem líquida</th><th class="n">Reembolso</th><th class="n">Repasse total</th>
     </tr></thead><tbody>
       ${linhas.map(l=>`<tr>
-        <td>${esc(l.p.sku)}</td><td class="n">${fmtInt(l.qtd)}</td>
+        <td>${esc(l.p.sku)}</td><td class="n" title="${l.vendasConcluidas} venda(s) concluída(s)${l.qtdCancelada?' · '+l.qtdCancelada+' unidade(s) cancelada(s) ('+l.pedidosCancelados+' pedido(s))':''}">${fmtInt(l.qtd)}</td>
         <td class="n">${fmtMoney(l.faturamento)}</td><td class="n">${fmtMoney(l.tarifaMlTotal)}</td><td class="n">${fmtMoney(l.freteMlTotal)}</td>
         <td class="n">${fmtMoney(l.custoProdutoTotal)}</td><td class="n">${fmtMoney(l.coletaTotal)}</td><td class="n">${fmtMoney(l.embalagemTotal)}</td>
         <td class="n">${fmtMoney(l.etiquetaTotal)}</td><td class="n">${fmtMoney(l.adsTotal)}</td><td class="n">${fmtMoney(l.impostoCalc)}</td>
