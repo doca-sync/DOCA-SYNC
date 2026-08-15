@@ -4787,17 +4787,19 @@ function amauriState(){
   if(!Array.isArray(state.amauri.pagamentos)) state.amauri.pagamentos=[];
   return state.amauri;
 }
-/* cada custo tem um valor E um "quem pagou" (torvstore ou amauri) — o custo do produto (ele
-   custeia/fabrica) já nasce marcado como pago pelo Amauri; os outros nascem como pagos pela loja.
-   Isso é só o padrão inicial, dá pra trocar em cada produto. */
+/* cada custo tem um valor E um "quem pagou" (torvstore ou amauri) - só o custo do produto não
+   tem valor editável aqui: ele é puxado direto do custo unitário cadastrado em Produtos (sempre
+   o valor mais atual de lá, não uma cópia que fica desatualizada) - só o "quem paga" desse custo
+   fica editável na Amauri. Os outros nascem como pagos pela loja; é só o padrão inicial, dá pra
+   trocar em cada produto. */
 function amauriCustos(produtoId){
   const a=amauriState();
   const p=prodById(produtoId);
   if(!a.custos[produtoId]||typeof a.custos[produtoId]!=='object'){
-    a.custos[produtoId]={custoProduto:(p&&p.custo)||0,custoProdutoQuemPagou:'amauri',frete:0,freteQuemPagou:'torvstore',embalagem:0,embalagemQuemPagou:'torvstore',etiqueta:0,etiquetaQuemPagou:'torvstore',ads:0,adsQuemPagou:'torvstore',percentual:50};
+    a.custos[produtoId]={custoProdutoQuemPagou:'amauri',frete:0,freteQuemPagou:'torvstore',embalagem:0,embalagemQuemPagou:'torvstore',etiqueta:0,etiquetaQuemPagou:'torvstore',ads:0,adsQuemPagou:'torvstore',percentual:50};
   }
   const c=a.custos[produtoId];
-  if(c.custoProduto==null) c.custoProduto=(p&&p.custo)||0;
+  delete c.custoProduto;
   if(!c.custoProdutoQuemPagou) c.custoProdutoQuemPagou='amauri';
   if(c.frete==null) c.frete=0; if(!c.freteQuemPagou) c.freteQuemPagou='torvstore';
   if(c.embalagem==null) c.embalagem=0; if(!c.embalagemQuemPagou) c.embalagemQuemPagou='torvstore';
@@ -4849,6 +4851,7 @@ async function pesquisarResumoAmauri(){
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo (status '+r.status+').'));
     amauriResumoResultado=j.resumo;
+    autoPreencherAdsAmauri();
   }catch(e){ amauriResumoErro=e.message; }
   finally{ amauriResumoCarregando=false; renderAmauri(); }
 }
@@ -4865,7 +4868,7 @@ function calcularLinhaAmauriProduto(p,resumo){
   const qtd=it?(it.qtd||0):0;
   const faturamento=it?(it.valor||0):0;
   const vendasConcluidas=it?(it.pedidos||0):0;
-  const custoProdutoTotal=(c.custoProduto||0)*qtd;
+  const custoProdutoTotal=(p.custo||0)*qtd;
   const freteTotal=(c.frete||0)*qtd;
   const embalagemTotal=(c.embalagem||0)*qtd;
   const etiquetaTotal=(c.etiqueta||0)*qtd;
@@ -4905,15 +4908,18 @@ function adsGastoAutoProduto(p,periodoAmauri){
   const camp=resultados.find(cc=>(cc.name||'').toUpperCase().includes(skuUp));
   return camp?((camp.metrics&&camp.metrics.cost)||0):null;
 }
-function puxarAdsAutoAmauri(){
+/* preenche o custo de ads sozinho, disparado toda vez que o período é calculado (sem precisar de
+   botão à parte) - silencioso quando não acha nada (fica só o valor manual de antes), só avisa com
+   um toast discreto quando consegue achar pra pelo menos 1 produto. */
+function autoPreencherAdsAmauri(){
   const marcados=amauriProdutosMarcados();
-  let achados=0,naoAchados=0;
+  if(!marcados.length) return;
+  let achados=0;
   marcados.forEach(p=>{
     const v=adsGastoAutoProduto(p,amauriResumoPeriodo);
-    if(v!=null){ atualizarCustoAmauri(p.id,{ads:v}); achados++; } else naoAchados++;
+    if(v!=null){ amauriCustos(p.id).ads=v; achados++; }
   });
-  if(achados) toast(`Ads puxado automático pra ${achados} produto(s).`+(naoAchados?` ${naoAchados} sem campanha encontrada — confira/edite na mão.`:''));
-  else alert('Não achei campanha de Ads com o SKU no nome pra nenhum produto marcado. Sincronize a aba Ads primeiro (ou informe o valor de ads na mão).');
+  if(achados){ persist(); toast(`Ads puxado automático pra ${achados} produto(s).`); }
 }
 /* Os campos de custo/quem-paga/percentual só gravam no estado quando o campo perde o foco
    (onchange) - igual todo campo de valor no Doca. Só que "Calcular", trocar o período e "Puxar
@@ -4960,6 +4966,11 @@ function renderAmauri(){
       <td class="num">${moeda(valor,valorAttr)}</td>
       <td>${quemSel(quem,quemAttr)}</td>
     </tr>`;
+  const linhaCustoFixo=(rotulo,valor,quemAttr,quem,hint)=>`<tr>
+      <td>${rotulo}${hint?`<div class="hint" style="margin:2px 0 0">${hint}</div>`:''}</td>
+      <td class="num">${fmtMoney(valor)}</td>
+      <td>${quemSel(quem,quemAttr)}</td>
+    </tr>`;
   el.innerHTML=`
     <h1 class="page-title">Amauri</h1>
     <p class="hint" style="margin:0 0 16px">Fechamento dos produtos da TorvStore em sociedade com o Amauri: marque os produtos, ajuste os custos de cada um (e quem pagou cada um) e puxe o período pra calcular a margem líquida e o repasse devido a ele.</p>
@@ -4982,19 +4993,16 @@ function renderAmauri(){
       <div class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))">
         <b class="mono">${esc(p.sku)}</b>
         <div class="table-wrap" style="margin-top:8px"><table class="tbl-produtos"><thead><tr><th>Custo</th><th class="num">Valor</th><th>Quem paga</th></tr></thead><tbody>
-          ${linhaCusto('Custo do produto (por un.)',idb+'|custoProduto',c.custoProduto,idb+'|custoProdutoQuemPagou',c.custoProdutoQuemPagou,'Ele custeia o produto — normalmente pago pelo Amauri.')}
+          ${linhaCustoFixo('Custo do produto (por un.)',p.custo||0,idb+'|custoProdutoQuemPagou',c.custoProdutoQuemPagou,'Puxado direto do custo unitário cadastrado em Produtos — pra mudar o valor, edite lá.')}
           ${linhaCusto('Frete (por un.)',idb+'|frete',c.frete,idb+'|freteQuemPagou',c.freteQuemPagou)}
           ${linhaCusto('Embalagem (por un.)',idb+'|embalagem',c.embalagem,idb+'|embalagemQuemPagou',c.embalagemQuemPagou)}
           ${linhaCusto('Etiqueta (por un.)',idb+'|etiqueta',c.etiqueta,idb+'|etiquetaQuemPagou',c.etiquetaQuemPagou)}
-          ${linhaCusto('Publicidade / Ads (no período)',idb+'|ads',c.ads,idb+'|adsQuemPagou',c.adsQuemPagou,'🔄 Puxar ads automático (abaixo) tenta preencher isso sozinho.')}
+          ${linhaCusto('Publicidade / Ads (no período)',idb+'|ads',c.ads,idb+'|adsQuemPagou',c.adsQuemPagou,'Preenchido automático ao calcular o período (abaixo) — casa o SKU com a campanha em Ads. Edite se estiver errado.')}
         </tbody></table></div>
         <div class="form-grid" style="grid-template-columns:1fr;margin-top:8px">
           <label>% da margem líquida repassado ao Amauri<input type="number" min="0" max="100" step="1" style="width:80px" value="${c.percentual!=null?c.percentual:50}" data-amauripct="${p.id}"></label>
         </div>
       </div>`; }).join('')}
-      <div class="acoes-linha" style="margin-top:12px">
-        <button class="btn" id="btnAdsAutoAmauri">🔄 Puxar ads automático (período selecionado abaixo)</button>
-      </div>
     </div>
     <div class="card">
       <h3 style="margin-top:0">📊 Período do fechamento</h3>
@@ -5068,8 +5076,6 @@ function renderAmauri(){
   el.querySelectorAll('[data-amauricusto]').forEach(inp=>inp.onchange=commitCustosAmauri);
   el.querySelectorAll('[data-amauriquem]').forEach(sel=>sel.onchange=commitCustosAmauri);
   el.querySelectorAll('[data-amauripct]').forEach(inp=>inp.onchange=commitCustosAmauri);
-  const btnAdsAuto=document.getElementById('btnAdsAutoAmauri');
-  if(btnAdsAuto) btnAdsAuto.onclick=()=>{ commitCustosAmauri(); puxarAdsAutoAmauri(); };
   const amPeriodo=document.getElementById('amPeriodo');
   if(amPeriodo) amPeriodo.onchange=e=>{
     commitCustosAmauri();
