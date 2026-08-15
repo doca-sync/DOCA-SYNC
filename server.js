@@ -359,6 +359,89 @@ app.get('/debug/frete-fulfillment', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de diagnostico v78c - compara, pedido a pedido, 3 formas diferentes de saber a comissao:
+   1) sale_fee DECLARADO no pedido (o que ja vinha em order_items, hoje usado so' de fallback)
+   2) tarifa CALCULADA pela % de comissao da categoria (metodo atual, v70) aplicada sobre o valor
+      daquele pedido especifico
+   3) cobranca REAL no pagamento (via Mercado Pago, charges_details filtrado por accounts.from
+      === 'collector' - mesmo caminho ja usado e validado em /debug/frete-fulfillment)
+   Objetivo: descobrir se o gap de ~2% visto no agregado (R$572,65 calculado vs R$561,76 de outra
+   ferramenta) vem do metodo 2 usar o PRECO ATUAL do anuncio pra achar a % (em vez do preco de cada
+   venda historica), ou de outra causa.
+   Ex.: /debug/tarifa/comparar?loja=TorvStore&titulo=afiador&de=2026-07-01&ate=2026-07-31&limite=15 */
+app.get('/debug/tarifa/comparar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const titulo = (req.query.titulo || '').toLowerCase();
+    const de = req.query.de, ate = req.query.ate;
+    const limite = parseInt(req.query.limite || '15', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!titulo) return res.status(400).json({ ok: false, erro: 'Parametro "titulo" obrigatorio (trecho do titulo do anuncio, ex: "afiador").' });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const log = { avisos: [] };
+    const deIso = `${de}T00:00:00-03:00`, ateIso = `${ate}T23:59:59-03:00`;
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+    const combinam = pedidos.filter(p => p.status !== 'cancelled' && p.status !== 'invalid' && (p.order_items || []).some(oi => oi.item && (oi.item.title || '').toLowerCase().includes(titulo)));
+    const amostra = combinam.slice(0, limite);
+
+    // % de comissao da categoria - busca 1x por item unico da amostra (usa o preco ATUAL do
+    // anuncio, igual o metodo v70 real usado no Resumo Financeiro - e' exatamente isso que
+    // queremos comparar contra o preco de venda de cada pedido individual)
+    const idsUnicos = [...new Set(amostra.flatMap(p => (p.order_items || []).filter(oi => oi.item && (oi.item.title || '').toLowerCase().includes(titulo)).map(oi => oi.item.id)))];
+    const percentualPorItem = {};
+    for (const itemId of idsUnicos) {
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${itemId}?attributes=id,price,category_id,listing_type_id,site_id`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const item = await r.json();
+        const url = `https://api.mercadolibre.com/sites/${item.site_id || 'MLB'}/listing_prices?price=${item.price}&category_id=${item.category_id}&listing_type_id=${item.listing_type_id}`;
+        const j2 = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        percentualPorItem[itemId] = {
+          percentual: j2.sale_fee_details && typeof j2.sale_fee_details.percentage_fee === 'number' ? j2.sale_fee_details.percentage_fee : null,
+          preco_atual_usado: item.price, category_id: item.category_id, listing_type_id: item.listing_type_id
+        };
+      } catch (e) { percentualPorItem[itemId] = { erro: e.message }; }
+    }
+
+    const resultado = [];
+    for (const p of amostra) {
+      const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved') || (p.payments || [])[0];
+      let cobrancasReais = null;
+      if (pgAprovado && pgAprovado.id && tokenMpDaLoja(loja)) {
+        try {
+          const r = await mpFetch(loja, `/v1/payments/${pgAprovado.id}`, { method: 'GET' });
+          const jp = await r.json();
+          const cobrancasDoVendedor = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
+          cobrancasReais = cobrancasDoVendedor.map(c => ({ nome: c.name, tipo: c.type, valor: c.amounts && c.amounts.original, destino: c.accounts.to, detalhe: c.metadata && c.metadata.source_detail }));
+        } catch (e) { cobrancasReais = { erro: e.message }; }
+      }
+      for (const oi of (p.order_items || [])) {
+        if (!oi.item || !(oi.item.title || '').toLowerCase().includes(titulo)) continue;
+        const itemId = oi.item.id;
+        const valorItem = (Number(oi.unit_price) || 0) * (oi.quantity || 0);
+        const infoPercentual = percentualPorItem[itemId] || {};
+        const tarifaCalculada = infoPercentual.percentual != null ? Math.round(valorItem * (infoPercentual.percentual / 100) * 100) / 100 : null;
+        resultado.push({
+          pedido_id: p.id, item_id: itemId, quantidade: oi.quantity,
+          preco_de_venda_desse_pedido: oi.unit_price, valor_total_desse_item: valorItem,
+          sale_fee_declarado_no_pedido: oi.sale_fee,
+          percentual_categoria_hoje: infoPercentual.percentual, preco_atual_do_anuncio: infoPercentual.preco_atual_usado,
+          tarifa_calculada_pela_percentual: tarifaCalculada,
+          cobrancas_reais_no_pagamento_mp: cobrancasReais
+        });
+      }
+    }
+    res.json({
+      ok: true, loja, titulo, periodo: { de, ate },
+      total_pedidos_no_periodo: pedidos.length,
+      total_combinando_titulo: combinam.length,
+      mostrando: resultado.length,
+      itens: resultado,
+      avisos: log.avisos
+    });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 /* rota de diagnostico - a pessoa apontou (com razao) que buscar o pagamento de CADA pedido pra
    calcular Tarifa/Frete e' pesado demais (uma chamada extra por venda) - o jeito que ferramentas
    tipo Metrify parecem fazer e' mais leve: pra CADA PRODUTO (nao pedido), consultar de uma vez
@@ -1720,16 +1803,22 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
    SKU dentro, tipo a campanha "ALHO VALECOM" pro produto Amassadoralho): agora da' pra casar direto
    pelo item_id do Mercado Livre, que o Doca ja tem salvo em cada produto (mlItemId) - sem depender
    de nome de campanha nenhum. */
-async function buscarItensAdsPeriodo(loja, siteId, advertiserId, de, ate) {
+async function buscarItensAdsPeriodo(loja, siteId, advertiserId, de, ate, campaignIdSugerido) {
   const accessToken = await tokenValido(loja);
   const LIMIT = 50;
   // a API parece exigir um campaign_id no parametro mesmo devolvendo itens de todas as campanhas -
-  // pega qualquer campanha valida do periodo pra preencher esse parametro
-  let campaignIdQualquer = null;
-  try {
-    const campanhas = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de, ate });
-    campaignIdQualquer = (campanhas.results && campanhas.results[0] && campanhas.results[0].id) || null;
-  } catch (e) { /* segue sem - tenta a busca de itens mesmo assim */ }
+  // pega qualquer campanha valida do periodo pra preencher esse parametro. v78b: se quem chamou ja
+  // tem uma campanha em maos (ex.: calcularResumoFinanceiroCompleto ja buscou as campanhas do
+  // periodo um pouco acima), usa ela direto em vez de buscar de novo - evitava uma 2a chamada
+  // paginada inteira (com backoff e sleep entre paginas) só pra pegar 1 id, que deixava o
+  // /financas/resumo bem mais lento (a aba Amauri ficava "Buscando..." por muito mais tempo).
+  let campaignIdQualquer = campaignIdSugerido || null;
+  if (!campaignIdQualquer) {
+    try {
+      const campanhas = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de, ate });
+      campaignIdQualquer = (campanhas.results && campanhas.results[0] && campanhas.results[0].id) || null;
+    } catch (e) { /* segue sem - tenta a busca de itens mesmo assim */ }
+  }
   async function buscarPagina(offset) {
     const qs = new URLSearchParams({ date_from: de, date_to: ate, metrics: 'cost,clicks,prints', limit: String(LIMIT), offset: String(offset) });
     if (campaignIdQualquer) qs.set('campaign_id', campaignIdQualquer);
@@ -2471,7 +2560,8 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       // v78: gasto por ITEM (item_id), casado direto com o produto - nao depende do nome da
       // campanha ter o SKU dentro (ver comentario em buscarItensAdsPeriodo)
       try {
-        adsItens = await buscarItensAdsPeriodo(loja, primeiro.site_id, primeiro.advertiser_id, de, ate);
+        const campanhaIdJaConhecida = (campanhas.results && campanhas.results[0] && campanhas.results[0].id) || null;
+        adsItens = await buscarItensAdsPeriodo(loja, primeiro.site_id, primeiro.advertiser_id, de, ate, campanhaIdJaConhecida);
       } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads por item do periodo (ficou so o casamento por nome de campanha): ' + e.message); }
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
