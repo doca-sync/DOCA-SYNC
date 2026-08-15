@@ -359,6 +359,62 @@ app.get('/debug/frete-fulfillment', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de diagnostico - a pessoa apontou (com razao) que buscar o pagamento de CADA pedido pra
+   calcular Tarifa/Frete e' pesado demais (uma chamada extra por venda) - o jeito que ferramentas
+   tipo Metrify parecem fazer e' mais leve: pra CADA PRODUTO (nao pedido), consultar de uma vez
+   (1) a comissao que a categoria dele cobra (API de precificacao do ML) e (2) o custo de frete
+   gratis que o vendedor absorve, calculado a partir do peso/dimensao do anuncio (API de opcoes de
+   frete gratis do proprio vendedor) - e depois multiplicar isso pela quantidade vendida, sem
+   precisar abrir pedido por pedido. Essa rota testa os 2 candidatos de endpoint mais prováveis
+   pra um item especifico, devolvendo a resposta CRUA de cada um - decide com dado real quais
+   campos usar antes de ligar isso no calculo de verdade. Ex.:
+   /debug/custo-estimado?loja=TorvStore&itemId=MLB6574356166 */
+app.get('/debug/custo-estimado', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const itemId = req.query.itemId;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Parametro "itemId" obrigatorio (ex: MLB6574356166).' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const resultado = { item: null, comissao: null, frete_gratis: null, opcoes_frete: null };
+    // 1) dados basicos do anuncio (preco, categoria, tipo de listagem, site, peso/dimensao)
+    const rItem = await fetch(`https://api.mercadolibre.com/items/${itemId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const jItem = await rItem.json();
+    resultado.item = {
+      http_status: rItem.status,
+      price: jItem.price, category_id: jItem.category_id, listing_type_id: jItem.listing_type_id,
+      site_id: jItem.site_id, seller_id: jItem.seller_id,
+      shipping: jItem.shipping || null,
+      dados_completos: jItem
+    };
+    // 2) comissao pela categoria (API de precificacao) - devolve sale_fee_amount e o detalhamento
+    try {
+      const url = `https://api.mercadolibre.com/sites/${jItem.site_id}/listing_prices?price=${jItem.price}&category_id=${jItem.category_id}&listing_type_id=${jItem.listing_type_id}`;
+      const rComissao = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      resultado.comissao = { url, http_status: rComissao.status, corpo: await rComissao.json() };
+    } catch (e) { resultado.comissao = { erro: e.message }; }
+    // 3) custo de frete gratis que o VENDEDOR absorve (calculado pelo peso/dimensao do anuncio,
+    //    nivel de reputacao e regiao do vendedor) - candidato mais provavel do que ferramentas
+    //    tipo Metrify usam pra estimar frete sem abrir pedido por pedido
+    try {
+      const url = `https://api.mercadolibre.com/users/${jItem.seller_id}/shipping_options/free?item_id=${itemId}`;
+      const rFrete = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      resultado.frete_gratis = { url, http_status: rFrete.status, corpo: await rFrete.json() };
+    } catch (e) { resultado.frete_gratis = { erro: e.message }; }
+    // 4) opcoes de frete do proprio anuncio (o que aparece pro comprador) - so' pra comparar
+    try {
+      const url = `https://api.mercadolibre.com/items/${itemId}/shipping_options`;
+      const rOpcoes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      resultado.opcoes_frete = { url, http_status: rOpcoes.status, corpo: await rOpcoes.json() };
+    } catch (e) { resultado.opcoes_frete = { erro: e.message }; }
+    res.json({ ok: true, loja, itemId, ...resultado });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 /* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
    auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.
    Devolve o objeto completo (status, status_detail, tags, pack_id, date_last_updated, etc). Ex.:
