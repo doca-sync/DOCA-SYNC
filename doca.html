@@ -597,6 +597,18 @@ function filtrarValorMoeda(el){
   el.value=v;
 }
 function fmtInt(v){ return (Number(v)||0).toLocaleString('pt-BR'); }
+/* mostra a conversão pra caixas (quando o SKU tem "unidades por caixa" cadastrado) junto de uma
+   quantidade em unidades - usado em Comprar/FULL pra facilitar pedir/conferir por caixa fechada.
+   Arredonda pra cima (não dá pra pedir "meia caixa"), então avisa quando sobra fração. */
+function caixasTxt(qtd,unidPorCaixa){
+  const un=Number(unidPorCaixa)||0;
+  if(un<=0||!qtd) return '';
+  const caixas=qtd/un;
+  const fechadas=Math.floor(caixas);
+  const resto=qtd-fechadas*un;
+  if(resto<=0) return `${fmtInt(fechadas)} cx`;
+  return `${fmtInt(Math.ceil(caixas))} cx (${fechadas?fmtInt(fechadas)+' fechada(s) + ':''}${fmtInt(resto)} un.)`;
+}
 function gerarId(p){ return (p||'p')+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function optsLojas(sel){ return STORES.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
 function optsColeta(sel){ return LOCAIS_COLETA.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
@@ -1535,6 +1547,47 @@ function updateFileStatus(){
 /* ---------- CRUD ---------- */
 function addProduto(d){ const p={id:gerarId('p'),...d,criadoEm:Date.now(),atualizadoEm:Date.now()}; garantirLotes(p); garantirPedidos(p); state.produtos.push(p); return p; }
 function updateProduto(id,patch){ snapshot('edição do SKU '+(prodById(id)||{}).sku); const p=prodById(id); if(!p) return; Object.assign(p,patch); p.atualizadoEm=Date.now(); persist(); }
+/* transfere TODO o estoque próprio (comprar/coletar/local) e as reservas em envios FULL do SKU
+   "origem" pro SKU "alvo" (mestre), como parte de vincular estoque compartilhado. Antes disso era
+   pedido pra fazer essa mudança à mão (Ajuste manual de estoque), mas isso não dava conta das
+   reservas em envio (não tem como "mover" isso na tela) nem era proporcional - o número bruto de
+   um SKU não corresponde ao do outro. Agora o vínculo já faz a transferência sozinho: os pedidos
+   de compra e os lotes a coletar do SKU antigo passam a pertencer ao SKU mestre (mantendo a
+   rastreabilidade de cada lote/pedido), o "local" soma direto, e cada item de envio FULL que
+   apontava pro SKU antigo passa a apontar pro mestre (juntando com o item do mestre no mesmo
+   envio, se já existir um). */
+function mesclarEstoqueNoVinculo(origemId,alvoId){
+  const origem=prodById(origemId), alvo=prodById(alvoId);
+  if(!origem||!alvo) return {ok:false,msg:'SKU não encontrado.'};
+  (origem.pedidos||[]).forEach(ped=>{
+    if((ped.qtd||0)<=0) return;
+    alvo.pedidos.push({...ped,id:gerarId('c'),obs:(ped.obs?ped.obs+' ':'')+'(transferido de '+origem.sku+')'});
+  });
+  (origem.lotes||[]).forEach(lote=>{
+    if((lote.qtd||0)<=0) return;
+    alvo.lotes.push({...lote,id:gerarId('l')});
+  });
+  alvo.qtd.local=(alvo.qtd.local||0)+(origem.qtd.local||0);
+  state.envios.forEach(e=>{
+    const idxOrigem=e.itens.findIndex(i=>i.produtoId===origemId);
+    if(idxOrigem<0) return;
+    const itOrigem=e.itens[idxOrigem];
+    const idxAlvo=e.itens.findIndex(i=>i.produtoId===alvoId);
+    if(idxAlvo>=0){
+      const itAlvo=e.itens[idxAlvo];
+      itAlvo.solicitado=(itAlvo.solicitado||0)+(itOrigem.solicitado||0);
+      itAlvo.alocado=(itAlvo.alocado||0)+(itOrigem.alocado||0);
+      itAlvo.reservadoColeta=(itAlvo.reservadoColeta||0)+(itOrigem.reservadoColeta||0);
+      itAlvo.geradoCompra=(itAlvo.geradoCompra||0)+(itOrigem.geradoCompra||0);
+      e.itens.splice(idxOrigem,1);
+    }else{
+      itOrigem.produtoId=alvoId;
+    }
+  });
+  origem.qtd={comprar:0,coletar:0,local:0};
+  origem.pedidos=[]; origem.lotes=[];
+  return {ok:true};
+}
 function deleteProduto(id){
   const p=prodById(id); if(!p) return;
   snapshot('exclusão do SKU '+p.sku);
@@ -2523,27 +2576,8 @@ function renderDashboard(){
   const tv=totals.reduce((a,t)=>a+t.valor,0), tc=totals.reduce((a,t)=>a+t.capitalGiro,0), tvc=totals.reduce((a,t)=>a+t.valorColetar,0);
   const tmp=totals.reduce((a,t)=>a+(t.fin.mercadoPago||0),0), trec=totals.reduce((a,t)=>a+(t.fin.aReceber||0),0);
   const timp=totals.reduce((a,t)=>a+(t.fin.imposto||0),0), tfat=totals.reduce((a,t)=>a+(t.faturaMl||0),0);
-  /* classificação de curva A/B/C por loja, usada tanto no alerta de ruptura quanto no de
-     estoque mínimo logo abaixo — precisa vir antes dos dois */
+  /* classificação de curva A/B/C por loja, usada no alerta de ruptura logo abaixo */
   const curvasPorLoja={}; STORES.forEach(l=>curvasPorLoja[l]=classificarCurvaLoja(l));
-  /* estoque abaixo do mínimo: agrupado por loja, curva A primeiro, depois quem está mais
-     perto de zerar */
-  const baixosPorLoja=STORES.map(loja=>{
-    const itens=state.produtos.filter(p=>p.loja===loja&&estoqueBaixo(p))
-      .map(p=>{
-        const media=mediaVendasDiaria(p);
-        const dias=(media&&media>0)?Math.floor(disponivel(p)/media):null;
-        const diaZero=dias!=null?new Date(Date.now()+Math.max(0,dias)*864e5).toISOString().slice(0,10):null;
-        return {produto:p,curva:curvasPorLoja[loja].get(p.id)||null,media,dias,diaZero};
-      })
-      .sort((a,b)=>{
-        const ord={A:0,B:1,C:2,null:3};
-        const ca=ord[a.curva??'null'], cb=ord[b.curva??'null'];
-        if(ca!==cb) return ca-cb;
-        return disponivel(a.produto)-disponivel(b.produto);
-      });
-    return {loja,itens};
-  }).filter(g=>g.itens.length);
   const diasAlertaRuptura=fullCfg().diasAlertaRuptura||10;
   /* ruptura no FULL: mesma lógica da aba Ruptura de estoque (rupturaLojaLista) — considera
      aptas + em transferência + envios já programados que chegam a tempo, e sinaliza quando
@@ -2667,15 +2701,15 @@ function renderDashboard(){
         <div class="alert-list">${g.itens.map(r=>{
           const st=statusAcaoFull(r.p);
           const zeraTxt=r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`;
+          /* específico por PRODUTO — se esse SKU não está em nenhum envio programado, ou está mas
+             ele chega depois da ruptura, não importa se a loja tem outro envio programado com
+             OUTROS produtos */
           const envioTxt=r.zeraAntesDoEnvio
-            ?` — <b class="pend">🚨 já tem FULL programado pra ${fmtData(r.prox.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
-            :(r.prox?` — próximo FULL programado pra ${fmtData(r.prox.data)} (chega a tempo)`:' — nenhum FULL programado ainda');
+            ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
+            :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`:' — este SKU não tem nenhum FULL programado ainda');
           return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt}</span>`;
         }).join('')}</div></div>`).join('')}
-      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL). A data de ruptura já desconta aptas + em transferência + envios programados que chegam a tempo — quando aparece o aviso de FULL programado tardio, o envio existente não evita a parada, é preciso antecipá-lo ou criar um FULL de emergência.</p></div>`:''}
-    ${baixosPorLoja.length?`<div class="alert-baixo"><div class="alert-head">⚠ Estoque disponível abaixo do mínimo definido</div>
-      ${baixosPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
-        <div class="alert-list">${g.itens.map(r=>`<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.produto.sku)}</span> — ${r.dias==null?'sem venda registrada':(r.dias<=0?'<b>zerando agora</b>':`zera em <b>${r.dias} dia(s)</b>`)}${r.diaZero?` (${fmtData(r.diaZero)})`:''} — média: ${r.media!=null?r.media.toFixed(2):'—'}/dia</span>`).join('')}</div></div>`).join('')}</div>`:''}
+      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL). A data de ruptura já desconta aptas + em transferência + envios programados <b>desse SKU específico</b> que chegam a tempo — quando aparece o aviso de FULL programado tardio, é o envio desse próprio produto que chega tarde, não evita a parada, é preciso antecipá-lo ou criar um FULL de emergência.</p></div>`:''}
     <p class="hint"><b>Comprar</b>, <b>Coletar</b> e <b>Local</b> mostram onde a mercadoria está fisicamente (a comprar, no fornecedor, no galpão). <b>Reservado</b> é quanto disso já tem destino num envio FULL — por isso ele se sobrepõe a Coletar e Local, não soma com eles. <b>Mercado Pago</b> e <b>A receber</b> são automáticos nas lojas já integradas (passe o mouse pro detalhe) e digitados à mão nas demais.</p>`;
   el.querySelectorAll('[data-mpago]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.mpago,{mercadoPago:i.value});
@@ -3101,6 +3135,7 @@ function openProdutoModal(id,lojaPadrao){
       <label>Código do produto<input id="fCodigo" type="text" value="${p?esc(p.codigo):''}" placeholder="Ex: JIIK92165"></label>
       <label>Fornecedor<input id="fFornecedor" type="text" value="${p?esc(p.fornecedor):''}" placeholder="Ex: Distribuidora XYZ"></label>
       <label>Custo unitário (R$)<input id="fCusto" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${p&&p.custo?String(p.custo).replace('.',','):''}"></label>
+      <label>Unidades por caixa <small>(opcional)</small><input id="fUnidCaixa" type="number" min="1" step="1" placeholder="Ex: 12" value="${p&&p.unidPorCaixa?p.unidPorCaixa:''}"></label>
     </div>
     ${sug!=null?`<p class="hint" style="margin-top:-8px">Estoque mínimo automático pelas vendas do FULL: <b>${fmtInt(sug)} un.</b> (média diária ponderada 7/15/30d × 30 dias de cobertura${vinculadosDeP.length?', somando '+vinculadosDeP.map(v=>esc(v.sku)).join(' + '):''}).</p>`:''}
     ${!editing?`<div class="form-grid">
@@ -3163,6 +3198,7 @@ function openProdutoModal(id,lojaPadrao){
     const codigo=document.getElementById('fCodigo').value.trim().toUpperCase();
     const fornecedor=document.getElementById('fFornecedor').value.trim().toUpperCase();
     const custo=parseMoeda(document.getElementById('fCusto').value);
+    const unidPorCaixa=Math.max(0,parseInt(document.getElementById('fUnidCaixa').value)||0);
     if(!sku){ alert('Preencha o SKU.'); return; }
     const dup=state.produtos.some(x=>x.id!==id&&x.loja===loja&&x.sku.toLowerCase()===sku.toLowerCase());
     if(dup){ alert('Já existe esse SKU cadastrado nessa loja.'); return; }
@@ -3176,9 +3212,9 @@ function openProdutoModal(id,lojaPadrao){
       const qtd={comprar:0,coletar:0,local:0}; qtd[st]=q;
       const lotes = st==='coletar'&&q>0 ? [novoLote(q)] : [];
       const pedidos = st==='comprar'&&q>0 ? [novoPedido(q)] : [];
-      batch('cadastro do SKU '+sku,()=>addProduto({loja,sku,codigo,fornecedor,custo,estoqueMinimo:0,qtd,lotes,pedidos,obsCompra:''}));
+      batch('cadastro do SKU '+sku,()=>addProduto({loja,sku,codigo,fornecedor,custo,unidPorCaixa,estoqueMinimo:0,qtd,lotes,pedidos,obsCompra:''}));
       closeModal(); toast('SKU cadastrado.');
-    } else { updateProduto(id,{loja,sku,codigo,fornecedor,custo}); closeModal(); toast('Alterações salvas.'); }
+    } else { updateProduto(id,{loja,sku,codigo,fornecedor,custo,unidPorCaixa}); closeModal(); toast('Alterações salvas.'); }
   };
   if(editing){
     /* seções de compra/ajuste só existem no DOM quando este SKU NÃO está vinculado (ver
@@ -3210,18 +3246,20 @@ function openProdutoModal(id,lojaPadrao){
       const alvoId=document.getElementById('fVincularA').value;
       if(!alvoId){ alert('Escolha um SKU pra vincular.'); return; }
       const alvo=prodById(alvoId);
-      /* trava de segurança: depois de vinculado, este SKU some das contas de Valor em
-         estoque/Patrimônio (pra não contar o mesmo estoque físico 2x, uma vez em cada SKU) -
-         então só deixa vincular se ele já estiver zerado. Sem isso, estoque real registrado
-         aqui desapareceria silenciosamente das somas gerais. */
+      /* estoque próprio (Comprar/Coletar/Local) e reservas em envio FULL deste SKU não ficam
+         perdidos - são transferidos automaticamente pro SKU mestre ao vincular (ver
+         mesclarEstoqueNoVinculo), não precisa mais zerar/mover nada à mão antes. */
       const temEstoqueProprio=(p.qtd.comprar||0)+(p.qtd.coletar||0)+(p.qtd.local||0)>0;
       const temReserva=reservadoDe(p)>0;
-      if(temEstoqueProprio||temReserva){
-        alert(`${p.sku} ainda tem estoque próprio registrado (Comprar/Coletar/Local ou reservado em envio). Zere isso primeiro — mova pro SKU ${alvo.sku} manualmente (Ajuste manual de estoque, aba Comprar/Coletar) — senão esse estoque some das somas de valor/patrimônio ao vincular.`);
-        return;
-      }
-      confirmAction(`Vincular ${p.sku} ao estoque de ${alvo.sku}? Este SKU passa a não ter mais compra/coleta/ajuste próprios — tudo isso passa a ser feito no SKU ${alvo.sku}.`,()=>{
-        updateProduto(id,{vinculadoA:alvoId}); openProdutoModal(id); toast(`Vinculado ao estoque de ${alvo.sku}.`);
+      const avisoTransferencia=(temEstoqueProprio||temReserva)
+        ?` O estoque próprio deste SKU (${fmtInt(p.qtd.comprar)} a comprar, ${fmtInt(p.qtd.coletar)} a coletar, ${fmtInt(p.qtd.local)} no galpão${temReserva?', incluindo o que já está reservado em envio':''}) será transferido automaticamente pro SKU ${alvo.sku}.`
+        :'';
+      confirmAction(`Vincular ${p.sku} ao estoque de ${alvo.sku}? Este SKU passa a não ter mais compra/coleta/ajuste próprios — tudo isso passa a ser feito no SKU ${alvo.sku}.${avisoTransferencia}`,()=>{
+        batch('vínculo de '+p.sku+' ao estoque de '+alvo.sku,()=>{
+          if(temEstoqueProprio||temReserva) mesclarEstoqueNoVinculo(id,alvoId);
+          updateProduto(id,{vinculadoA:alvoId});
+        });
+        openProdutoModal(id); toast(`Vinculado ao estoque de ${alvo.sku}.`+(avisoTransferencia?' Estoque próprio transferido.':''));
       });
     };
     document.getElementById('btnExcluirProduto').onclick=()=>{
@@ -3265,7 +3303,7 @@ function tableComprar(list){
       <td><input type="checkbox" class="chk-compra" data-ped="${p.id}|${c.id}" checked></td>
       <td class="mono">${esc(fmtData(c.data))}</td>
       <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td><td>${esc(p.fornecedor)||'<span class="muted">—</span>'}</td>
-      <td><input type="number" min="0" value="${c.qtd}" class="qty-acao" data-qtdped="${p.id}|${c.id}" title="Ajuste aqui se o fornecedor não tiver a quantidade toda"></td>
+      <td><input type="number" min="0" value="${c.qtd}" class="qty-acao" data-qtdped="${p.id}|${c.id}" title="Ajuste aqui se o fornecedor não tiver a quantidade toda">${p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(c.qtd,p.unidPorCaixa)}</div>`:''}</td>
       <td class="num">${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney((p.custo||0)*c.qtd)}</td>
       <td>${c.origem?`<span class="cam" style="font-size:11.5px">${esc(c.origem)}</span>`:'<span class="muted">—</span>'}</td>
       <td><input type="text" class="obs-input" placeholder="Observação (opcional)" value="${esc(c.obs||'')}" title="${esc(c.obs||'')}" data-obsped="${p.id}|${c.id}"></td>
@@ -3998,26 +4036,31 @@ function setaTrendAds(atual,base,maiorMelhor){
 }
 /* ---------- sugestão "subir ROAS" (regra combinada com o usuário — ver
    regras_sugestao_roas_ads.md pra descrição completa de cada critério) ----------
-   Reescrita pra 6 critérios, SEMPRE em cima dos últimos 7 dias (não muda com o período
-   selecionado na tela) - as tendências (critérios 5 e 6) comparam contra 15d E 30d juntos. */
-function percentilAds(valores,p){
-  const ord=valores.filter(v=>v!=null&&isFinite(v)).sort((a,b)=>a-b);
-  if(!ord.length) return null;
-  const idx=Math.min(ord.length-1,Math.floor(p*ord.length));
-  return ord[idx];
+   SEMPRE em cima dos últimos 7 dias (não muda com o período selecionado na tela) - as
+   tendências (critérios de TACOS e CVR vs. histórico) comparam contra 15d E 30d juntos.
+   O critério de CVR (o mais importante de todos, segundo o usuário) não é mais um simples
+   sim/não - vira peso crescente em 6 faixas: CVR > 5% = peso 1, > 10% = peso 2, > 15% = peso 3,
+   > 20% = peso 4, > 25% = peso 5, > 30% = peso 6. Os outros 5 critérios continuam valendo 1
+   ponto cada (sim/não). A nota final é a soma de tudo dividida pelo máximo possível (5 + 6 = 11). */
+const PESO_MAX_CVR=6;
+function pesoCvr(cvrPct){
+  if(cvrPct==null) return 0;
+  if(cvrPct>30) return 6;
+  if(cvrPct>25) return 5;
+  if(cvrPct>20) return 4;
+  if(cvrPct>15) return 3;
+  if(cvrPct>10) return 2;
+  if(cvrPct>5) return 1;
+  return 0;
 }
-/* avalia os 6 critérios pra TODAS as campanhas de 1 loja de uma vez (sempre com base nos
-   últimos 7 dias), porque o critério de CVR alto só faz sentido comparando uma campanha com
-   as outras da MESMA loja/período - por isso o percentil é calculado 1x em cima do conjunto
-   inteiro. Devolve um Map campanhaId -> {score (0-100), criterios:[6 booleans], vendasDia}. */
+/* avalia os critérios pra TODAS as campanhas de 1 loja de uma vez. Devolve um Map
+   campanhaId -> {score (0-100), criterios:[5 booleans], pesoCvr (0-6), cvr7, vendasDia}. */
 function avaliarSugestoesRoas7d(loja,dados){
   const p7=dados.periodos.d7, p15=dados.periodos.d15, p30=dados.periodos.d30;
   const campanhas7=(p7&&p7.results)||[];
   const mapa15={}, mapa30={};
   ((p15&&p15.results)||[]).forEach(cp=>mapa15[cp.id]=cp.metrics||{});
   ((p30&&p30.results)||[]).forEach(cp=>mapa30[cp.id]=cp.metrics||{});
-  const cvrs=campanhas7.map(cp=>(cp.metrics||{}).cvr).filter(v=>v!=null&&v>0);
-  const p75Cvr=percentilAds(cvrs,0.75);
   const resultado=new Map();
   campanhas7.forEach(camp=>{
     const m=camp.metrics||{};
@@ -4032,12 +4075,12 @@ function avaliarSugestoesRoas7d(loja,dados){
       m.roas!=null&&camp.roas_target!=null&&m.roas>camp.roas_target,          // 1. ROAS real > objetivo
       m.sov!=null&&m.sov>50,                                                  // 2. Ganho de Leilões > 50%
       vendasDia>=10,                                                          // 3. 10 vendas/dia (orgânica+ads)
-      p75Cvr!=null&&cvr7>=p75Cvr,                                             // 4. CVR alto vs. outras campanhas
-      (tacos15!=null&&tacos7<tacos15)&&(tacos30!=null&&tacos7<tacos30),       // 5. TACOS caindo vs. 15d E 30d
-      (cvr15!=null&&cvr7>=cvr15-0.05)&&(cvr30!=null&&cvr7>=cvr30-0.05)        // 6. CVR subindo ou igual vs. 15d E 30d
+      (tacos15!=null&&tacos7<tacos15)&&(tacos30!=null&&tacos7<tacos30),       // 4. TACOS caindo vs. 15d E 30d
+      (cvr15!=null&&cvr7>=cvr15-0.05)&&(cvr30!=null&&cvr7>=cvr30-0.05)        // 5. CVR subindo ou igual vs. 15d E 30d
     ];
-    const score=criterios.filter(Boolean).length/6*100;
-    resultado.set(camp.id,{score,criterios,vendasDia,tacos:tacos7});
+    const pesoCvrCriterio=pesoCvr(cvr7);
+    const score=(criterios.filter(Boolean).length+pesoCvrCriterio)/(criterios.length+PESO_MAX_CVR)*100;
+    resultado.set(camp.id,{score,criterios,pesoCvr:pesoCvrCriterio,cvr7,vendasDia,tacos:tacos7});
   });
   return resultado;
 }
@@ -4117,7 +4160,10 @@ function renderAds(){
         const tacosComp=comp?calcTacos(comp):null;
         const tacosAlto=tacos>c.margemPct;
         const av=avalAtual.get(camp.id);
-        const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','CVR alto vs. outras','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')).join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
+        const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${[
+          ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
+          `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
+        ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
         return `<tr>
           <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
@@ -4573,7 +4619,6 @@ function renderFinancas(){
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Alíquota de imposto dessa loja (%)
           <input type="text" inputmode="decimal" style="width:60px" id="frAliquota" value="${finLoja(financasResumoLoja).aliquotaImposto?String(finLoja(financasResumoLoja).aliquotaImposto).replace('.',','):''}" placeholder="0,0">
         </label>
-        <span class="hint" style="margin:0">O Mercado Livre não informa isso — é o seu regime tributário (ex: Simples Nacional), digite manualmente.</span>
       </div>
       ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
       ${financasResumoResultado?renderResumoFinanceiroResultado(financasResumoResultado,financasResumoLoja):''}
@@ -5092,7 +5137,7 @@ function openAddSkuEnvioModal(envioId){
       if(dl) partes.push(`<span class="okv">${fmtInt(dl)}</span> do galpão`);
       if(dc) partes.push(`<span class="cam">${fmtInt(dc)}</span> do coletar`);
       if(gc) partes.push(`<span class="pend">${fmtInt(gc)}</span> vai pra comprar`);
-      cel.innerHTML=partes.join(' + ');
+      cel.innerHTML=partes.join(' + ')+(p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(q,p.unidPorCaixa)}</div>`:'');
     };
   });
   document.getElementById('btnCancelar').onclick=closeModal;
@@ -5785,7 +5830,7 @@ function renderPrevisao(){
             else s+='<span class="obs">O histórico começa a se formar a partir da segunda leitura do painel.</span>';
             return s;})()}</span></span></td>
         <td class="num">${k.cob===Infinity?'∞':Math.round(k.cob)+' d'}</td>
-        <td><span class="det"><input type="number" min="0" class="qty-acao" data-fq="${i.id}" value="${k.qtd}"><span class="pop">
+        <td>${p&&p.unidPorCaixa?`<div class="hint" style="margin:0 0 2px">${caixasTxt(k.qtd,p.unidPorCaixa)}</div>`:''}<span class="det"><input type="number" min="0" class="qty-acao" data-fq="${i.id}" value="${k.qtd}"><span class="pop">
           <span class="ln"><span>Demanda de ${c.cobertura} dias</span><b>${Math.round(k.dem)}</b></span>
           <span class="ln"><span>Estoque FULL hoje</span><b>−${fmtInt(k.full)}</b></span>
           <span class="ln"><span>Consumo em ${k.D} d até o envio</span><b>+${Math.round(k.consumo)}</b></span>
@@ -5876,23 +5921,28 @@ function rupturaCalcComData(i){
       }
     }
   }
-  return {...k,full,cob,diaZero};
+  /* primeiro envio programado PRA ESSE PRODUTO que não entrou a tempo de evitar a ruptura (chega
+     depois da projeção de zerar) — usado pra avisar "já tem FULL programado, mas é tarde" de
+     forma específica por produto, em vez de olhar só se a LOJA tem algum envio programado
+     (podia ser um envio que nem inclui esse SKU). */
+  const pendenteTardio=pendentes.find(p=>!usados.has(p.data))||null;
+  return {...k,full,cob,diaZero,pendentes,pendenteTardio};
 }
 function rupturaLojaLista(loja,diasLimite){
   const prox=proximoEnvioLoja(loja);
-  const diasAteEnvio=prox?diasEntre(hoje(),prox.data):null;
   return fullItensLoja(loja).map(i=>({i,k:fullCalc(i),p:fullProduto(i)}))
     .filter(({k})=>k.media>0&&k.cob!==Infinity)
     .map(x=>{
       const kr=rupturaCalcComData(x.i);
       const cobDias=Math.floor(kr.cob);
-      const zeraAntesDoEnvio=prox!=null&&cobDias<diasAteEnvio;
+      const zeraAntesDoEnvio=!!kr.pendenteTardio; /* ESSE produto tem FULL programado, mas tarde */
+      const proximoFullProduto=kr.pendentes&&kr.pendentes.length?kr.pendentes[0]:null;
       const diaZero=kr.diaZero||new Date(Date.now()+Math.max(0,cobDias)*864e5).toISOString().slice(0,10);
-      return {...x,k:kr,cobDias,zeraAntesDoEnvio,diaZero};
+      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero};
     })
     .filter(x=>x.cobDias<=diasLimite||x.zeraAntesDoEnvio)
     .sort((a,b)=>a.cobDias-b.cobDias)
-    .map(x=>({...x,prox,diasAteEnvio}));
+    .map(x=>({...x,prox}));
 }
 function renderRuptura(){
   const el=document.getElementById('tab-ruptura'); if(!el) return;
@@ -5928,13 +5978,14 @@ function renderRuptura(){
       ${antesDoEnvio?`<div class="aviso risco" style="margin-top:10px"><span>🚨</span><span><b>${antesDoEnvio} SKU(s) vão zerar antes do envio programado.</b> Antecipe o envio se der, ou crie um FULL de emergência só com eles.</span>
         <button class="btn sm danger" data-remerg="${esc(loja)}">🚨 FULL de emergência</button></span></div>`:''}
       <div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
-        <th>SKU</th><th class="num">Estoque FULL</th><th class="num">Vendas/dia</th><th class="num">Cobertura</th><th>Zera em</th><th></th></tr></thead><tbody>
-        ${l.map(({i,k,p,cobDias,zeraAntesDoEnvio,diaZero})=>`<tr>
+        <th>SKU</th><th class="num">Estoque FULL</th><th class="num">Vendas/dia</th><th class="num">Cobertura</th><th>Zera em</th><th>FULL programado pra este SKU</th><th></th></tr></thead><tbody>
+        ${l.map(({i,k,p,cobDias,zeraAntesDoEnvio,diaZero,proximoFullProduto})=>`<tr>
           <td class="mono">${esc(fullSku(i))}</td>
           <td class="num">${fmtInt(k.full)}</td>
           <td class="num">${k.media.toFixed(2)}</td>
           <td class="num">${cobDias} d</td>
           <td>${zeraAntesDoEnvio?`<span class="pend">${fmtData(diaZero)} — antes do envio</span>`:fmtData(diaZero)}</td>
+          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(proximoFullProduto.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data)):'<span class="muted">nenhum</span>'}</td>
           <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button></td>
         </tr>`).join('')}
       </tbody></table></div>`}
