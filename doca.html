@@ -5104,6 +5104,7 @@ function renderAmauri(){
             <td class="num"><b>${fmtMoney(l.repasseTotal)}</b></td>
           </tr>`).join('')}
         </tbody></table></div>
+        ${amauriResumoResultado.avisos&&amauriResumoResultado.avisos.length?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ ${amauriResumoResultado.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
         <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
           ${cel('MARGEM LÍQUIDA TOTAL (SOMA DOS PRODUTOS)',totalMargem,totalMargem>=0?'okv':'pend')}
           ${cel('REEMBOLSO TOTAL (custos que o Amauri pagou)',totalReembolso)}
