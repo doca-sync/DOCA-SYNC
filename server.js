@@ -1685,7 +1685,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
 
   let faturamento = 0, tarifas = 0, cancelamentosValor = 0, reembolsosValor = 0;
   let pedidosValidos = 0, pedidosCancelados = 0;
-  const itensVendidos = new Map(); // itemId -> qtd
+  const itensVendidos = new Map(); // itemId -> { qtd, valor, pedidos }
   const shippingIds = new Set();
 
   for (const pedido of pedidos) {
@@ -1701,7 +1701,13 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       for (const oi of (pedido.order_items || [])) {
         tarifas += Number(oi.sale_fee) || 0;
         const itemId = oi.item && oi.item.id;
-        if (itemId) itensVendidos.set(itemId, (itensVendidos.get(itemId) || 0) + (oi.quantity || 0));
+        if (itemId) {
+          const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0 };
+          atual.qtd += oi.quantity || 0;
+          atual.valor += (Number(oi.unit_price) || 0) * (oi.quantity || 0);
+          atual.pedidos += 1;
+          itensVendidos.set(itemId, atual);
+        }
       }
       if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
       // reembolso parcial/total detectado via status do pagamento - conta separado de "cancelado".
@@ -1794,7 +1800,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // titulo de cada item vendido (pro ranking de produtos mostrar o nome, nao so' o item_id cru) -
   // em lotes de 20 (teto da API pra /items?ids=), tolerante a item que nao respondeu (ex.: anuncio
   // ja' apagado) - nesse caso o Doca mostra so' o item_id no lugar do titulo
-  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, qtd]) => ({ itemId, qtd, titulo: null }));
+  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, v]) => ({ itemId, qtd: v.qtd, valor: v.valor, pedidos: v.pedidos, titulo: null }));
   try {
     const idsUnicos = itensVendidosArr.map(x => x.itemId);
     const titulos = {};
