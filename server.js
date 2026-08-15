@@ -712,6 +712,33 @@ app.get('/debug/mp/relatorio/pagamentos-resumo', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* rota de diagnostico - achado importante no /pagamentos-resumo: MP_FEE_AMOUNT sozinho ja' da'
+   ~12% do bruto (perto da comissao de categoria + taxa do Mercado Pago somadas), e sobra mais
+   ~8,75% em "outras_deducoes" sem rotulo nenhum nesse relatorio. ISSO LEVANTA UMA DUVIDA sobre o
+   fix da taxa de financiamento (v64): no pagamento de teste examinado antes (170621591243), o
+   charges_details mostrava financing_transfer (+2,05, do comprador pro vendedor) E financing_fee
+   (-2,05, do vendedor pro Mercado Pago) - SE esses dois se cancelam na conta do vendedor, a taxa
+   de financiamento NAO seria um custo real (seria so' dinheiro passando), e o que foi somado na
+   Tarifa em v64 estaria ERRADO (inflando artificialmente). Essa rota acha, no MESMO relatorio real
+   ja' baixado, TODAS as linhas ligadas a um SOURCE_ID especifico (pode aparecer em mais de uma
+   linha/categoria) - usando o pagamento 170621591243 (ja' investigado antes) da' pra confirmar
+   com dado real se o GROSS/NET dele reflete ou nao esse cancelamento. Ex.:
+   /debug/mp/relatorio/busca?loja=TorvStore&arquivo=reserve-release-....csv&source_id=170621591243 */
+app.get('/debug/mp/relatorio/busca', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const arquivo = req.query.arquivo;
+    const sourceId = req.query.source_id;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!arquivo) return res.status(400).json({ ok: false, erro: 'Parametro "arquivo" obrigatorio.' });
+    if (!sourceId) return res.status(400).json({ ok: false, erro: 'Parametro "source_id" obrigatorio (id do pagamento).' });
+    const r = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(arquivo)}`, { method: 'GET' });
+    const texto = await r.text();
+    const { cabecalho, linhas } = parseCsvPontoEVirgula(texto);
+    const encontradas = linhas.filter(l => l.SOURCE_ID === sourceId);
+    res.json({ ok: true, loja, arquivo, source_id: sourceId, total_encontrado: encontradas.length, linhas: encontradas, colunas: cabecalho });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 /* le um CSV separado por ";" (formato dos relatorios do Mercado Pago) e devolve como lista de
    objetos {coluna: valor}, usando a 1a linha como cabecalho. Ignora linhas vazias no fim. */
 function parseCsvPontoEVirgula(texto) {
