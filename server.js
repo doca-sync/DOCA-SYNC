@@ -1794,13 +1794,18 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
 
   // Ads: reusa o mesmo endpoint de campanhas ja' confirmado funcionando, so' com o intervalo
-  // personalizado no lugar do preset de 7/15/30 dias
+  // personalizado no lugar do preset de 7/15/30 dias. Guarda tambem o gasto POR CAMPANHA (nao so'
+  // o total da loja) - usado pelo fechamento do Amauri pra achar o gasto exato de cada produto
+  // nesse MESMO periodo personalizado (antes so' tinha as janelas fixas de 7/15/30 dias, que nao
+  // batiam com um periodo escolhido a dedo como "1 a 31 de julho").
   let adsCusto = 0;
+  let adsCampanhas = [];
   try {
     const { primeiro } = await buscarAdvertiserId(loja);
     if (primeiro) {
       const campanhas = await buscarCampanhasAds(loja, primeiro.site_id, primeiro.advertiser_id, null, { de, ate });
-      adsCusto = (campanhas.results || []).reduce((s, c) => s + ((c.metrics && c.metrics.cost) || 0), 0);
+      adsCampanhas = (campanhas.results || []).map(c => ({ id: c.id, name: c.name, cost: (c.metrics && c.metrics.cost) || 0 }));
+      adsCusto = adsCampanhas.reduce((s, c) => s + c.cost, 0);
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
 
@@ -1842,7 +1847,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     pedidosValidos, pedidosCancelados,
     itensVendidos: itensVendidosArr,
     frete: { comprador: freteComprador, vendedor: freteVendedor },
-    ads: { custo: adsCusto },
+    ads: { custo: adsCusto, campanhas: adsCampanhas },
     vendasHoje,
     avisos: log.avisos
   };
