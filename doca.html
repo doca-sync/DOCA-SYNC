@@ -4476,13 +4476,15 @@ function calcularMargensResumo(resumo,loja){
   const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
   const aliquota=finLoja(loja).aliquotaImposto||0;
   const impostoCalc=resumo.faturamento*(aliquota/100);
-  // regra: Ads NAO entra na Margem de Contribuicao - so' vira custo depois, na Margem Liquida
-  // (junto com despesas do periodo e fatura ML pendente), igual ja' funcionava no ranking por produto.
+  // regra: Ads NAO entra na Margem de Contribuicao - vira custo no Lucro Bruto (Margem de
+  // Contribuicao - Ads), e so' depois a Margem Liquida desconta despesas do periodo e fatura ML
+  // pendente por cima do Lucro Bruto.
   const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.cancelamentosValor-resumo.reembolsosValor;
+  const lucroBruto=margem-(resumo.ads.custo||0);
   const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
   const faturaMlAtual=faturaMlPendenteLoja(loja);
-  const margemLiquida=margem-(resumo.ads.custo||0)-custosPeriodo-faturaMlAtual;
-  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida};
+  const margemLiquida=lucroBruto-custosPeriodo-faturaMlAtual;
+  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,lucroBruto,custosPeriodo,faturaMlAtual,margemLiquida};
 }
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
    Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
@@ -4491,8 +4493,9 @@ function calcularMargensResumo(resumo,loja){
    custo/trabalho mas não viraram receita de verdade. */
 let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
-  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
+  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,lucroBruto,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
+  const lucroBrutoPct=resumo.faturamento>0?(lucroBruto/resumo.faturamento*100):0;
   const margemLiquidaPct=resumo.faturamento>0?(margemLiquida/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
@@ -4511,16 +4514,21 @@ function renderResumoFinanceiroResultado(resumo,loja){
       ${cartao('CANCELAMENTOS',resumo.cancelamentosValor,pct(resumo.cancelamentosValor))}
       ${cartao('REEMBOLSOS',resumo.reembolsosValor,pct(resumo.reembolsosValor))}
     </div>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
         <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
         <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento</div>
       </div>
       <div class="card" style="margin:0">
+        <div class="muted" style="font-size:11px">LUCRO BRUTO</div>
+        <b style="font-size:22px" class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>
+        <div class="hint" style="margin:2px 0 0">${lucroBrutoPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(resumo.ads.custo||0)} de Ads</div>
+      </div>
+      <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(resumo.ads.custo||0)} de Ads, ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente</div>
+        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente</div>
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
