@@ -214,6 +214,46 @@ app.get('/debug/pedidos', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de diagnostico - acha pedidos PARCELADOS (payments[].installments > 1) num periodo e
+   devolve o array de "payments" completo de cada um, sem cortar nada. Objetivo: descobrir em qual
+   campo o Mercado Livre expoe a taxa de financiamento/parcelamento que o vendedor absorve - a
+   "Tarifa" calculada pelo Doca hoje so' soma sale_fee (comissao de venda) de cada item, e bate
+   ~13% abaixo do painel deles numa loja com bastante venda parcelada - a suspeita e' que essa
+   taxa de parcelamento fica em outro campo, ligado ao PAGAMENTO, nao ao item. Ex.:
+   /debug/parcelamento?loja=TorvStore&de=2026-08-01&ate=2026-08-14&limite=5 */
+app.get('/debug/parcelamento', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const de = req.query.de, ate = req.query.ate;
+    const limite = parseInt(req.query.limite || '5', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const log = { avisos: [] };
+    const deIso = `${de}T00:00:00-03:00`, ateIso = `${ate}T23:59:59-03:00`;
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+    const parcelados = pedidos.filter(p => (p.payments || []).some(pg => (pg.installments || 1) > 1));
+    const achados = parcelados.slice(0, limite).map(p => ({
+      pedido_id: p.id,
+      status: p.status,
+      total_amount: p.total_amount,
+      payments: p.payments
+    }));
+    res.json({
+      ok: true, loja, periodo: { de, ate },
+      total_pedidos_no_periodo: pedidos.length,
+      total_pedidos_parcelados: parcelados.length,
+      mostrando: achados.length,
+      pedidos_parcelados: achados,
+      avisos: log.avisos
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 /* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
    auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.
    Devolve o objeto completo (status, status_detail, tags, pack_id, date_last_updated, etc). Ex.:
@@ -1693,13 +1733,12 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // isso e' o que o Mercado Livre "encara como frete" (o frete grátis que sai do seu bolso).
   const itensPorShipping = new Map(); // shippingId -> [{ itemId, valor }]
 
-  // diagnostico: quanto de tarifa (sale_fee) ficou "presa" em pedidos cancelados - o Doca exclui
-  // pedido cancelado 100% do calculo de tarifa/frete (correto pra faturamento, que nao deve contar
-  // venda cancelada), mas se o Mercado Livre NAO devolveu a tarifa/frete desse cancelamento (comum
-  // quando o cancelamento acontece depois do produto ja despachado), o painel deles continua
-  // mostrando esse valor em "Tarifas e investimentos" - so' que o Doca some com ele. Isso nao muda
-  // o calculo (ainda incerto se e' sempre assim), so' avisa pra confirmar a hipotese comparando com
-  // o painel do Mercado Livre.
+  // tarifa (sale_fee) e frete de pedido CANCELADO: confirmado comparando com o painel do Mercado
+  // Livre (aviso de diagnostico de uma versao anterior) que o ML normalmente NAO devolve a tarifa
+  // nem o frete de um cancelamento que ja tinha sido cobrado (comum quando cancela depois do
+  // produto despachado) - o "Tarifas e investimentos" do painel deles inclui esse valor mesmo a
+  // venda tendo sido cancelada. Por isso tarifa/frete SEMPRE contam (cancelado ou nao), so'
+  // faturamento/qtd/pedidos (vendas de verdade) que so' contam pedido NAO cancelado.
   let tarifaCancelados = 0;
 
   for (const pedido of pedidos) {
@@ -1709,36 +1748,41 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     if (cancelado) {
       pedidosCancelados++;
       cancelamentosValor += total;
-      for (const oi of (pedido.order_items || [])) { tarifaCancelados += Number(oi.sale_fee) || 0; }
     } else {
       pedidosValidos++;
       faturamento += total;
-      for (const oi of (pedido.order_items || [])) {
-        const saleFee = Number(oi.sale_fee) || 0;
-        tarifas += saleFee;
-        const itemId = oi.item && oi.item.id;
-        if (itemId) {
-          const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0 };
+    }
+    for (const oi of (pedido.order_items || [])) {
+      const saleFee = Number(oi.sale_fee) || 0;
+      tarifas += saleFee;
+      if (cancelado) tarifaCancelados += saleFee;
+      const itemId = oi.item && oi.item.id;
+      const valorItem = (Number(oi.unit_price) || 0) * (oi.quantity || 0);
+      if (itemId) {
+        const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0 };
+        if (!cancelado) {
           atual.qtd += oi.quantity || 0;
-          atual.valor += (Number(oi.unit_price) || 0) * (oi.quantity || 0);
+          atual.valor += valorItem;
           atual.pedidos += 1;
-          atual.tarifa += saleFee;
-          itensVendidos.set(itemId, atual);
-          if (pedido.shipping && pedido.shipping.id) {
-            const lista = itensPorShipping.get(pedido.shipping.id) || [];
-            lista.push({ itemId, valor: (Number(oi.unit_price) || 0) * (oi.quantity || 0) });
-            itensPorShipping.set(pedido.shipping.id, lista);
-          }
+        }
+        atual.tarifa += saleFee;
+        itensVendidos.set(itemId, atual);
+        if (pedido.shipping && pedido.shipping.id) {
+          const lista = itensPorShipping.get(pedido.shipping.id) || [];
+          lista.push({ itemId, valor: valorItem || 1 }); // >0 sempre, pra nao ficar com peso zero no rateio
+          itensPorShipping.set(pedido.shipping.id, lista);
         }
       }
-      if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
-      // reembolso parcial/total detectado via status do pagamento - conta separado de "cancelado".
-      // IMPORTANTE: so' verifica isso pra pedido NAO cancelado - um pedido cancelado quase sempre
-      // tem o pagamento com status "refunded" tambem (o cancelamento em si dispara o estorno), e
-      // esse valor ja' foi contado em cancelamentosValor acima. Sem esse cuidado, todo pedido
-      // cancelado era contado 2x (uma vez como cancelamento, outra como reembolso) - bug real
-      // encontrado comparando com o Metrify em 15/08 (reembolsos aparecia ~140x maior que o valor
-      // real, quase identico ao total de cancelamentos - sinal claro de duplicacao).
+    }
+    if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
+    // reembolso parcial/total detectado via status do pagamento - conta separado de "cancelado".
+    // IMPORTANTE: so' verifica isso pra pedido NAO cancelado - um pedido cancelado quase sempre
+    // tem o pagamento com status "refunded" tambem (o cancelamento em si dispara o estorno), e
+    // esse valor ja' foi contado em cancelamentosValor acima. Sem esse cuidado, todo pedido
+    // cancelado era contado 2x (uma vez como cancelamento, outra como reembolso) - bug real
+    // encontrado comparando com o Metrify em 15/08 (reembolsos aparecia ~140x maior que o valor
+    // real, quase identico ao total de cancelamentos - sinal claro de duplicacao).
+    if (!cancelado) {
       for (const pg of (pedido.payments || [])) {
         if (pg.status === 'refunded' || pg.status === 'partially_refunded') {
           reembolsosValor += Number(pg.transaction_amount) || 0;
@@ -1802,7 +1846,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
   if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
-  if (tarifaCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo tinham R$ ${tarifaCancelados.toFixed(2)} em tarifa de venda que NAO entrou no total de Tarifa ML (cancelamento e' excluido do calculo) - se o Mercado Livre nao devolveu essa tarifa no cancelamento, e' provavel que seja essa a causa da Tarifa ML/Frete ML aparecerem abaixo do painel deles.`);
+  if (tarifaCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo somaram R$ ${tarifaCancelados.toFixed(2)} em tarifa de venda - incluida no total de Tarifa ML (confirmado que o Mercado Livre normalmente nao devolve isso so' por causa do cancelamento).`);
 
   // Ads: reusa o mesmo endpoint de campanhas ja' confirmado funcionando, so' com o intervalo
   // personalizado no lugar do preset de 7/15/30 dias. Guarda tambem o gasto POR CAMPANHA (nao so'
