@@ -1791,16 +1791,27 @@ app.get('/debug/ads/leiloes', async (req, res) => {
 app.get('/debug/ads/itens-campanha', async (req, res) => {
   try {
     const loja = req.query.loja;
-    const campanhaId = req.query.campanhaId;
+    let campanhaId = req.query.campanhaId;
+    const nome = req.query.nome; // alternativa a campanhaId: acha a campanha pelo nome (ex.: "ALHO VALECOM")
     const dias = parseInt(req.query.dias || '30', 10);
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    if (!campanhaId && !nome) return res.status(400).json({ ok: false, erro: 'Informe "campanhaId" (pegue no /debug/ads/campanhas) ou "nome" (parte do nome da campanha, ex.: nome=ALHO).' });
     const accessToken = await tokenValido(loja);
     const { primeiro } = await buscarAdvertiserId(loja);
     const siteId = primeiro && primeiro.site_id;
     const advertiserId = primeiro && primeiro.advertiser_id;
     const de = dataYMD(Date.now() - (dias - 1) * 864e5);
     const ate = dataYMD(Date.now());
+    let campanhaEncontrada = null;
+    if (!campanhaId && nome) {
+      const campanhas = await buscarCampanhasAds(loja, siteId, advertiserId, dias);
+      const nomeNorm = nome.toUpperCase();
+      const achadas = (campanhas.results || []).filter(c => (c.name || '').toUpperCase().includes(nomeNorm));
+      if (!achadas.length) return res.json({ ok: false, erro: `Nenhuma campanha com "${nome}" no nome nos ultimos ${dias} dia(s).`, nomes_disponiveis: (campanhas.results || []).map(c => c.name) });
+      campanhaEncontrada = achadas[0];
+      campanhaId = achadas[0].id;
+      if (achadas.length > 1) campanhaEncontrada = { aviso: `${achadas.length} campanhas bateram com "${nome}" - usando a primeira.`, escolhida: achadas[0], todas: achadas.map(c => ({ id: c.id, name: c.name })) };
+    }
     const metricas = 'cost,clicks,prints';
     const candidatos = [
       { nome: 'ads (novo prefixo) - lista de anuncios da campanha', url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}/ads?date_from=${de}&date_to=${ate}&metrics=${metricas}` },
@@ -1814,12 +1825,12 @@ app.get('/debug/ads/itens-campanha', async (req, res) => {
     for (const cand of candidatos) {
       try {
         const j = await fetchMLDebug(cand.url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
-        return res.json({ ok: true, loja, campanhaId, dias, funcionou: cand.nome, url: cand.url, resultado: j, tentativas_anteriores: tentativas });
+        return res.json({ ok: true, loja, campanhaId, campanha: campanhaEncontrada, dias, funcionou: cand.nome, url: cand.url, resultado: j, tentativas_anteriores: tentativas });
       } catch (e) {
         tentativas.push({ nome: cand.nome, url: cand.url, http_status: e.http_status, erro: e.message, corpo: e.corpo });
       }
     }
-    res.json({ ok: false, erro: 'Nenhum dos formatos de endpoint testados funcionou.', tentativas });
+    res.json({ ok: false, erro: 'Nenhum dos formatos de endpoint testados funcionou.', campanhaId, campanha: campanhaEncontrada, tentativas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
 /* rota de diagnostico - testa campo por campo (um de cada vez) no endpoint que JA FUNCIONA
