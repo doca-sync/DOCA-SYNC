@@ -2330,16 +2330,12 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     }
     const itensDoPedido = [];
     for (const oi of (pedido.order_items || [])) {
-      // v70: o sale_fee DECLARADO no pedido nem sempre bate com o que o Mercado Livre de fato
-      // debita da conta (confirmado com dado real - GET /v1/payments/{id} - varios pedidos com
-      // sale_fee bem diferente da cobranca real "ml_sale_fee"). Fonte mais confiavel: a % de
-      // comissao da CATEGORIA do produto (API /sites/{site}/listing_prices), aplicada sobre o
-      // faturamento do produto - bate muito mais perto do painel do Mercado Livre (testado no
-      // Substrato: 14.624,25 x 11,5% = 1.681,79, quase igual ao R$1.683,75 do painel, contra
-      // R$1.511,73 que a soma de sale_fee dava). Por isso agora so' ACUMULA sale_fee aqui pra
-      // guardar de FALLBACK (caso a API de comissao falhe pra algum item) - o total real de
-      // Tarifa e' recalculado por produto mais abaixo, depois de buscar o percentual de cada um.
-      const saleFee = Number(oi.sale_fee) || 0;
+      // v79: bug real encontrado via /debug/tarifa/comparar - oi.sale_fee e' POR UNIDADE, nao pelo
+      // order_item inteiro. O codigo antigo (v70) somava sale_fee SEM multiplicar pela quantidade,
+      // subestimando muito a Tarifa em qualquer pedido com quantity>1 - foi isso (nao o sale_fee em
+      // si) que fez o teste do Substrato na v70 achar o sale_fee somado "errado" (R$1.511,73 contra
+      // R$1.683,75 do painel). Corrigido: multiplica por quantity.
+      const saleFee = (Number(oi.sale_fee) || 0) * (oi.quantity || 1);
       if (cancelado) tarifaCancelados += saleFee;
       const itemId = oi.item && oi.item.id;
       const valorItem = (Number(oi.unit_price) || 0) * (oi.quantity || 0);
@@ -2419,55 +2415,60 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o peso dos itens vendidos (rateio de frete entre produtos de um mesmo envio caiu pra 1g cada, quando nao achar o peso real): ' + e.message); }
 
-  // Tarifa (comissao) por PRODUTO - v70: em vez de somar sale_fee (declarado no pedido, que
-  // confirmado com dado real as vezes NAO bate com o que o Mercado Livre de fato cobra), busca a
-  // % de comissao da CATEGORIA de cada produto (API /sites/{site}/listing_prices) e aplica sobre
-  // o faturamento total do produto no periodo (cancelado incluso, mesmo raciocinio de antes).
-  // So' 1 chamada extra POR PRODUTO (nao por pedido) - leve mesmo numa loja com milhares de
-  // vendas. Se a API falhar pra algum item especifico, cai pro sale_fee somado (tarifaDeclarada)
-  // como fallback, em vez de zerar a tarifa dele.
+  // Tarifa (comissao) por PRODUTO - v79: a rota /debug/tarifa/comparar (comparando pedido a pedido
+  // com a cobranca REAL no Mercado Pago) mostrou que o metodo da v70 (% de comissao da categoria)
+  // estava SUPERESTIMANDO a Tarifa em ~13% numa amostra real, porque nao enxerga cupom de desconto
+  // do Mercado Livre (que reduz a base de calculo da comissao real). Ja o sale_fee DECLARADO em
+  // cada pedido - agora corrigido pra multiplicar por quantity (bug achado na mesma investigacao,
+  // ver comentario acima no loop de pedidos) - bate MUITO perto da cobranca real (ml_sale_fee +
+  // mp_processing_fee somados, que e' como o Mercado Pago as vezes reparte a mesma comissao total
+  // quando tem parcelamento) mesmo em pedidos com cupom ou financiamento: erro medio de ~1% contra
+  // ~13% do metodo por percentual. Por isso o sale_fee declarado (corrigido) volta a ser o metodo
+  // PRINCIPAL - e tambem fica bem mais leve (nao precisa mais de 1 chamada extra por produto pra
+  // achar a % de comissao). A % de categoria vira fallback, so' usada quando um produto nao tem
+  // NENHUM sale_fee declarado no periodo (ex.: campo ausente em pedido muito antigo).
+  itensVendidos.forEach(atual => { atual.tarifa = atual.tarifaDeclarada; });
   let itensSemComissao = 0;
   try {
-    const idsParaComissao = [...itensVendidos.keys()];
-    const dadosItem = new Map(); // itemId -> { price, category_id, listing_type_id }
-    for (let i = 0; i < idsParaComissao.length; i += 20) {
-      const lote = idsParaComissao.slice(i, i + 20).join(',');
-      const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,price,category_id,listing_type_id,site_id`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      const j2 = await r.json();
-      (j2 || []).forEach(entry => { if (entry.code === 200) dadosItem.set(entry.body.id, entry.body); });
-    }
-    const CONCORRENCIA_COMISSAO = 8;
-    const idsComDados = [...dadosItem.keys()];
-    let cursorComissao = 0;
-    async function workerComissao() {
-      while (cursorComissao < idsComDados.length) {
-        const itemId = idsComDados[cursorComissao++];
-        const dados = dadosItem.get(itemId);
-        const atual = itensVendidos.get(itemId);
-        if (!atual || !dados || !dados.price || !dados.category_id || !dados.listing_type_id) { itensSemComissao++; continue; }
-        try {
-          const url = `https://api.mercadolibre.com/sites/${dados.site_id || 'MLB'}/listing_prices?price=${dados.price}&category_id=${dados.category_id}&listing_type_id=${dados.listing_type_id}`;
-          const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-          const j3 = await r.json();
-          const percentual = j3 && j3.sale_fee_details && typeof j3.sale_fee_details.percentage_fee === 'number' ? j3.sale_fee_details.percentage_fee : null;
-          if (percentual != null) {
-            atual.tarifa = atual.faturamentoTotal * (percentual / 100);
-          } else {
-            atual.tarifa = atual.tarifaDeclarada; // fallback
+    const idsSemSaleFee = [...itensVendidos.entries()].filter(([id, v]) => !v.tarifaDeclarada && v.faturamentoTotal > 0).map(([id]) => id);
+    if (idsSemSaleFee.length) {
+      const dadosItem = new Map(); // itemId -> { price, category_id, listing_type_id }
+      for (let i = 0; i < idsSemSaleFee.length; i += 20) {
+        const lote = idsSemSaleFee.slice(i, i + 20).join(',');
+        const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,price,category_id,listing_type_id,site_id`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const j2 = await r.json();
+        (j2 || []).forEach(entry => { if (entry.code === 200) dadosItem.set(entry.body.id, entry.body); });
+      }
+      const CONCORRENCIA_COMISSAO = 8;
+      const idsComDados = [...dadosItem.keys()];
+      let cursorComissao = 0;
+      async function workerComissao() {
+        while (cursorComissao < idsComDados.length) {
+          const itemId = idsComDados[cursorComissao++];
+          const dados = dadosItem.get(itemId);
+          const atual = itensVendidos.get(itemId);
+          if (!atual || !dados || !dados.price || !dados.category_id || !dados.listing_type_id) { itensSemComissao++; continue; }
+          try {
+            const url = `https://api.mercadolibre.com/sites/${dados.site_id || 'MLB'}/listing_prices?price=${dados.price}&category_id=${dados.category_id}&listing_type_id=${dados.listing_type_id}`;
+            const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+            const j3 = await r.json();
+            const percentual = j3 && j3.sale_fee_details && typeof j3.sale_fee_details.percentage_fee === 'number' ? j3.sale_fee_details.percentage_fee : null;
+            if (percentual != null) {
+              atual.tarifa = atual.faturamentoTotal * (percentual / 100);
+            } else {
+              itensSemComissao++;
+            }
+          } catch (e) {
             itensSemComissao++;
           }
-        } catch (e) {
-          atual.tarifa = atual.tarifaDeclarada; // fallback
-          itensSemComissao++;
         }
       }
+      await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_COMISSAO, idsComDados.length) }, workerComissao));
     }
-    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_COMISSAO, idsComDados.length) }, workerComissao));
   } catch (e) {
-    log.avisos.push('Nao foi possivel buscar a comissao por categoria dos produtos - a Tarifa caiu pro sale_fee declarado no pedido (menos preciso): ' + e.message);
-    itensVendidos.forEach(atual => { atual.tarifa = atual.tarifaDeclarada; });
+    log.avisos.push('Nao foi possivel buscar a comissao por categoria pros produtos sem sale_fee declarado (ficaram com Tarifa em R$0 - pode estar subestimado): ' + e.message);
   }
-  if (itensSemComissao) log.avisos.push(`${itensSemComissao} produto(s) sem comissao por categoria disponivel - Tarifa desses ficou no sale_fee declarado no pedido (fallback, menos preciso).`);
+  if (itensSemComissao) log.avisos.push(`${itensSemComissao} produto(s) sem sale_fee declarado E sem comissao por categoria disponivel - Tarifa desses pode estar subestimada (R$0).`);
   // tarifas (total da loja) agora e' a SOMA da tarifa por produto ja calculada acima (por
   // percentual de categoria, com fallback pro sale_fee declarado quando a API falha)
   tarifas = [...itensVendidos.values()].reduce((s, v) => s + v.tarifa, 0);
