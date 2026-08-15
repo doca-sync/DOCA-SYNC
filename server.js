@@ -1776,6 +1776,17 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // faturamento/qtd/pedidos (vendas de verdade) que so' contam pedido NAO cancelado.
   let tarifaCancelados = 0;
 
+  // taxa de parcelamento (financing_fee): confirmado com dado real (GET /v1/payments/{id} no
+  // Mercado Pago) que quando a venda e' parcelada, o Mercado Pago cobra uma "financing_fee"
+  // SEPARADA da comissao de venda (sale_fee) - ela NAO aparece em lugar nenhum na API do
+  // Mercado Livre (nem no pedido, nem no order_item), so' no objeto de pagamento completo do
+  // Mercado Pago, dentro de fee_details: [{type:'financing_fee', fee_payer:'collector', amount}].
+  // So' conta quando fee_payer==='collector' (o VENDEDOR que absorveu - quando fee_payer e'
+  // 'payer', foi o COMPRADOR que pagou o juro, isso nao e' custo nenhum pra loja). Essa e' a
+  // causa da Tarifa do Doca ficar ~13% abaixo do painel do Mercado Livre numa loja com venda
+  // parcelada. Igual sale_fee/frete, conta pra pedido cancelado tambem (mesmo raciocinio: o ML
+  // normalmente nao devolve essa taxa so' por causa do cancelamento).
+  const itensPorPagamento = new Map(); // paymentId -> [{ itemId, valor }]
   for (const pedido of pedidos) {
     if (pedido.status === 'invalid') continue; // nunca chegou a valer nada
     const cancelado = pedido.status === 'cancelled';
@@ -1787,6 +1798,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       pedidosValidos++;
       faturamento += total;
     }
+    const itensDoPedido = [];
     for (const oi of (pedido.order_items || [])) {
       const saleFee = Number(oi.sale_fee) || 0;
       tarifas += saleFee;
@@ -1807,9 +1819,16 @@ async function buscarResumoFinanceiro(loja, de, ate) {
           lista.push({ itemId, valor: valorItem || 1 }); // >0 sempre, pra nao ficar com peso zero no rateio
           itensPorShipping.set(pedido.shipping.id, lista);
         }
+        itensDoPedido.push({ itemId, valor: valorItem || 1 });
       }
     }
     if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
+    for (const pg of (pedido.payments || [])) {
+      if (pg.status === 'approved' && (pg.installments || 1) > 1 && pg.id) {
+        const lista = itensPorPagamento.get(pg.id) || [];
+        itensPorPagamento.set(pg.id, lista.concat(itensDoPedido));
+      }
+    }
     // reembolso parcial/total detectado via status do pagamento - conta separado de "cancelado".
     // IMPORTANTE: so' verifica isso pra pedido NAO cancelado - um pedido cancelado quase sempre
     // tem o pagamento com status "refunded" tambem (o cancelamento em si dispara o estorno), e
@@ -1882,6 +1901,64 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
   if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
   if (tarifaCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo somaram R$ ${tarifaCancelados.toFixed(2)} em tarifa de venda - incluida no total de Tarifa ML (confirmado que o Mercado Livre normalmente nao devolve isso so' por causa do cancelamento).`);
+
+  // taxa de parcelamento (financing_fee) - busca o pagamento completo no Mercado Pago pra cada
+  // pagamento parcelado encontrado acima (so' da' pra ver esse valor la', nao na API do Mercado
+  // Livre). Mesmo pool de concorrencia limitada + retry em 429 usado no frete. So' roda se a loja
+  // tiver MP_ACCESS_TOKEN configurado (senao pula, sem quebrar o resto do resumo).
+  let financiamentoTotal = 0, financiamentoFalhas = 0, financiamentoEncontrados = 0;
+  if (tokenMpDaLoja(loja)) {
+    const idsPagamento = [...itensPorPagamento.keys()];
+    async function buscarPagamentoMpComRetry(paymentId, tentativa) {
+      tentativa = tentativa || 0;
+      try {
+        const r = await mpFetch(loja, `/v1/payments/${paymentId}`, { method: 'GET' });
+        if (r.status === 429 && tentativa < 4) {
+          await sleep(500 * Math.pow(2, tentativa));
+          return buscarPagamentoMpComRetry(paymentId, tentativa + 1);
+        }
+        return await r.json();
+      } catch (e) {
+        if (tentativa < 4) {
+          await sleep(500 * Math.pow(2, tentativa));
+          return buscarPagamentoMpComRetry(paymentId, tentativa + 1);
+        }
+        throw e;
+      }
+    }
+    const CONCORRENCIA_FINANCIAMENTO = 8;
+    let cursorFinanciamento = 0;
+    async function workerFinanciamento() {
+      while (cursorFinanciamento < idsPagamento.length) {
+        const paymentId = idsPagamento[cursorFinanciamento++];
+        try {
+          const j = await buscarPagamentoMpComRetry(paymentId);
+          const taxas = (j.fee_details || []).filter(f => f.type === 'financing_fee' && f.fee_payer === 'collector');
+          const valor = taxas.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+          if (valor > 0) {
+            financiamentoTotal += valor;
+            financiamentoEncontrados++;
+            tarifas += valor;
+            const itensDoPagamento = itensPorPagamento.get(paymentId) || [];
+            const totalValor = itensDoPagamento.reduce((s, it) => s + it.valor, 0);
+            if (totalValor > 0) {
+              itensDoPagamento.forEach(it => {
+                const atual = itensVendidos.get(it.itemId);
+                if (atual) atual.tarifa += valor * (it.valor / totalValor);
+              });
+            }
+          }
+        } catch (e) {
+          financiamentoFalhas++;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FINANCIAMENTO, idsPagamento.length) }, workerFinanciamento));
+    if (financiamentoFalhas) log.avisos.push(`${financiamentoFalhas} de ${idsPagamento.length} pagamento(s) parcelado(s) nao respondeu(ram) a consulta de taxa de financiamento no Mercado Pago (ignorados no total - pode subestimar levemente a Tarifa).`);
+    if (financiamentoEncontrados) log.avisos.push(`${financiamentoEncontrados} pagamento(s) parcelado(s) tinham taxa de financiamento (R$ ${financiamentoTotal.toFixed(2)} no total) - incluida no total de Tarifa ML.`);
+  } else if (itensPorPagamento.size) {
+    log.avisos.push(`${itensPorPagamento.size} pagamento(s) parcelado(s) no periodo, mas a loja nao tem MP_ACCESS_TOKEN configurado - a taxa de financiamento (juro absorvido pelo vendedor) NAO entrou na Tarifa.`);
+  }
 
   // Ads: reusa o mesmo endpoint de campanhas ja' confirmado funcionando, so' com o intervalo
   // personalizado no lugar do preset de 7/15/30 dias. Guarda tambem o gasto POR CAMPANHA (nao so'
