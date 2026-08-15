@@ -4487,6 +4487,7 @@ function calcularMargensResumo(resumo,loja){
    (o que você paga quando o anúncio tem frete grátis) é deduzido, igual o print de referência
    (Metrify) mostrava. Cancelamentos e reembolsos também são deduzidos - são vendas que geraram
    custo/trabalho mas não viraram receita de verdade. */
+let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
   const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
@@ -4532,18 +4533,32 @@ function renderResumoFinanceiroResultado(resumo,loja){
     </div>
     <div class="card" style="margin-top:12px">
       <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
-      ${itensOrdenados.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">M. Contribuição</th><th class="num">Ads</th><th class="num">M. Líquida</th></tr></thead><tbody>
+      ${itensOrdenados.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">M. Contribuição</th><th class="num">Ads</th><th class="num">M. Líquida</th><th></th></tr></thead><tbody>
         ${itensOrdenados.map((it,i)=>{
           const p=state.produtos.find(x=>x.mlItemId===it.itemId);
           const nome=p&&p.sku?esc(p.sku):`<span class="muted">${esc(it.itemId)} (sem SKU vinculado)</span>`;
-          const custoProdutoItem=(p&&p.custo?p.custo:0)*it.qtd;
+          const custoUnit=p&&p.custo?p.custo:0;
+          const custoProdutoItem=custoUnit*it.qtd;
           const impostoItem=it.valor*((aliquota||0)/100);
           const margemContribItem=it.valor-custoProdutoItem-(it.tarifa||0)-(it.freteMl||0)-impostoItem;
           const adsAchado=p?adsGastoAutoProduto(p,resumo):null;
           const adsItem=adsAchado||0;
           const margemLiquidaItem=margemContribItem-adsItem;
-          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha de Ads encontrada com o SKU no nome">—</span>':fmtMoney(adsAchado);
-          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num">${fmtMoney(margemContribItem)}</td><td class="num">${adsCel}</td><td class="num"><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b></td></tr>`;
+          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':fmtMoney(adsAchado);
+          const aberto=resumoRankingAberto.has(String(it.itemId));
+          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num">${fmtMoney(margemContribItem)}</td><td class="num">${adsCel}</td><td class="num"><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b></td><td><button class="btn sm" data-rankver="${esc(it.itemId)}">${aberto?'▲':'▼'}</button></td></tr>
+          ${aberto?`<tr><td colspan="8">
+            <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
+              <div><span class="muted" style="font-size:11px">Faturamento</span><br>${fmtMoney(it.valor)}</div>
+              <div><span class="muted" style="font-size:11px">Custo do produto${p&&p.custo?' ('+fmtMoney(custoUnit)+'/un. × '+fmtInt(it.qtd)+')':' (sem custo cadastrado em Produtos)'}</span><br>− ${fmtMoney(custoProdutoItem)}</div>
+              <div><span class="muted" style="font-size:11px">Tarifa (comissão ML, % da categoria)</span><br>− ${fmtMoney(it.tarifa||0)}</div>
+              <div><span class="muted" style="font-size:11px">Frete (vendedor, rateado por peso)</span><br>− ${fmtMoney(it.freteMl||0)}</div>
+              <div><span class="muted" style="font-size:11px">Imposto (${aliquota||0}% do faturamento)</span><br>− ${fmtMoney(impostoItem)}</div>
+              <div><span class="muted" style="font-size:11px">= Margem de Contribuição</span><br><b>${fmtMoney(margemContribItem)}</b></div>
+              <div><span class="muted" style="font-size:11px">Ads (não entra na M. Contribuição)</span><br>${adsAchado==null?'não encontrado':'− '+fmtMoney(adsAchado)}</div>
+              <div><span class="muted" style="font-size:11px">= Margem Líquida</span><br><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b></div>
+            </div>
+          </td></tr>`:''}`;
         }).join('')}
       </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
     </div>
@@ -4820,6 +4835,11 @@ function renderFinancas(){
   });
   const btnFecharSocios=document.getElementById('btnFecharSocios');
   if(btnFecharSocios) btnFecharSocios.onclick=calcularFechamentoSocios;
+  el.querySelectorAll('[data-rankver]').forEach(b=>b.onclick=()=>{
+    const id=String(b.dataset.rankver);
+    if(resumoRankingAberto.has(id)) resumoRankingAberto.delete(id); else resumoRankingAberto.add(id);
+    renderFinancas();
+  });
 }
 
 /* ================= Amauri: fechamento dos produtos em parceria (TorvStore) =================
