@@ -4457,7 +4457,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
       ${cartao('FATURAMENTO',resumo.faturamento)}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
-      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'comissão de venda + taxa de parcelamento absorvida pelo vendedor')}
+      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'% de comissão da categoria de cada produto sobre o faturamento')}
       ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
       ${cartao('ADS',resumo.ads.custo,pct(resumo.ads.custo))}
       ${cartao('FRETE (VENDEDOR)',resumo.frete.vendedor,pct(resumo.frete.vendedor))}
