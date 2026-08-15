@@ -4489,13 +4489,23 @@ function renderResumoFinanceiroResultado(resumo,loja){
     </div>
     <div class="card" style="margin-top:12px">
       <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
-      ${itensOrdenados.length?`<div class="table-wrap" style="max-width:420px"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unidades vendidas</th></tr></thead><tbody>
+      ${itensOrdenados.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">M. Contribuição</th><th class="num">Ads</th><th class="num">M. Líquida</th></tr></thead><tbody>
         ${itensOrdenados.map((it,i)=>{
           const p=state.produtos.find(x=>x.mlItemId===it.itemId);
           const nome=p&&p.sku?esc(p.sku):`<span class="muted">${esc(it.itemId)} (sem SKU vinculado)</span>`;
-          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td></tr>`;
+          // margem de contribuição por produto: mesma lógica do resumo geral (faturamento - custo -
+          // tarifa - frete - imposto proporcional), só que restrita a esse item. Margem líquida do
+          // produto = essa margem de contribuição - ads gasto NESSE produto (achado pelo SKU no nome
+          // da campanha, mesma função já usada no fechamento do Amauri).
+          const custoProdutoItem=(p&&p.custo?p.custo:0)*it.qtd;
+          const impostoItem=it.valor*((aliquota||0)/100);
+          const margemContribItem=it.valor-custoProdutoItem-(it.tarifa||0)-(it.freteMl||0)-impostoItem;
+          const adsItem=p?(adsGastoAutoProduto(p,resumo)||0):0;
+          const margemLiquidaItem=margemContribItem-adsItem;
+          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num ${margemContribItem>=0?'okv':'pend'}">${fmtMoney(margemContribItem)}</td><td class="num">${fmtMoney(adsItem)}</td><td class="num ${margemLiquidaItem>=0?'okv':'pend'}"><b>${fmtMoney(margemLiquidaItem)}</b></td></tr>`;
         }).join('')}
       </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
+      <p class="hint" style="margin-top:6px">M. Contribuição por produto desconta custo do produto, tarifa, frete e imposto proporcional. M. Líquida desconta também o Ads gasto naquele produto (achado pelo SKU no nome da campanha — pode ficar zerado se não achar).</p>
     </div>
     ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
   `;
@@ -5104,7 +5114,6 @@ function renderAmauri(){
             <td class="num"><b>${fmtMoney(l.repasseTotal)}</b></td>
           </tr>`).join('')}
         </tbody></table></div>
-        ${amauriResumoResultado.avisos&&amauriResumoResultado.avisos.length?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ ${amauriResumoResultado.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
         <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
           ${cel('MARGEM LÍQUIDA TOTAL (SOMA DOS PRODUTOS)',totalMargem,totalMargem>=0?'okv':'pend')}
           ${cel('REEMBOLSO TOTAL (custos que o Amauri pagou)',totalReembolso)}
