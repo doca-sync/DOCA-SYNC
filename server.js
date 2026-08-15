@@ -1657,21 +1657,16 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
   const removidas = [];
   const LIMIT = 50;
   // v77: antes buscava so' a 1a pagina (limit=50&offset=0 fixo) - lojas com mais de 50 campanhas
-  // no periodo perdiam o resto em silencio (o Amauri/Resumo Financeiro nao achava ads pra produtos
-  // cuja campanha caia depois da campanha 50). Agora pagina ate' cobrir "paging.total" da API,
-  // igual o padrao ja usado em buscarItensDoVendedor.
-  let offset = 0;
-  let todosResultados = [];
-  let ultimaResposta = null;
-  while (true) {
-    const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=${LIMIT}&offset=${offset}&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}`;
-    let j = null;
-    let sucessoNestaPagina = false;
+  // no periodo perdiam o resto em silencio. Agora pagina ate' cobrir "paging.total" da API, igual
+  // o padrao ja usado em buscarItensDoVendedor. v77b: se uma pagina seguinte (2a em diante) falhar
+  // (ex.: rate limit), NAO derruba a busca inteira - fica com o que ja tinha conseguido ate' ali,
+  // porque a 1a versao desse fix estava jogando fora TUDO (inclusive a pagina 1, que antes
+  // funcionava sozinha) quando uma pagina extra dava erro.
+  async function buscarPagina(offset) {
     for (let tentativa = 0; tentativa < 15; tentativa++) {
+      const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=${LIMIT}&offset=${offset}&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}`;
       try {
-        j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
-        sucessoNestaPagina = true;
-        break;
+        return await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
       } catch (e) {
         const desc = (e.corpo && e.corpo.description) || '';
         const m = desc.match(/Field (\w+) not allowed/i);
@@ -1683,15 +1678,28 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
         throw e;
       }
     }
-    if (!sucessoNestaPagina) throw new Error('Muitas metricas invalidas seguidas - parei de tentar. Removidas: ' + removidas.join(', '));
-    ultimaResposta = j;
-    todosResultados = todosResultados.concat(j.results || []);
-    offset += LIMIT;
-    const total = (j.paging && j.paging.total) || 0;
-    if (!j.results || j.results.length < LIMIT || offset >= total) break;
+    throw new Error('Muitas metricas invalidas seguidas - parei de tentar. Removidas: ' + removidas.join(', '));
+  }
+  const primeira = await buscarPagina(0);
+  let todosResultados = (primeira.results || []).slice();
+  let ultimaResposta = primeira;
+  const total = (primeira.paging && primeira.paging.total) || 0;
+  let avisoPaginacao = null;
+  let offset = LIMIT;
+  try {
+    while (primeira.results && primeira.results.length === LIMIT && offset < total && offset < 5000) {
+      const pagina = await buscarPagina(offset);
+      ultimaResposta = pagina;
+      todosResultados = todosResultados.concat(pagina.results || []);
+      if (!pagina.results || pagina.results.length < LIMIT) break;
+      offset += LIMIT;
+    }
+  } catch (e) {
+    avisoPaginacao = `Parou de paginar campanhas no offset ${offset} (motivo: ${e.message}) - a lista pode estar incompleta, mas o que ja tinha sido buscado foi mantido.`;
   }
   const resultado = Object.assign({}, ultimaResposta, { results: todosResultados });
   if (removidas.length) resultado._metricas_removidas_pela_api = removidas;
+  if (avisoPaginacao) resultado._aviso_paginacao = avisoPaginacao;
   return resultado;
 }
 /* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
@@ -2381,6 +2389,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       const campanhas = await buscarCampanhasAds(loja, primeiro.site_id, primeiro.advertiser_id, null, { de, ate });
       adsCampanhas = (campanhas.results || []).map(c => ({ id: c.id, name: c.name, cost: (c.metrics && c.metrics.cost) || 0 }));
       adsCusto = adsCampanhas.reduce((s, c) => s + c.cost, 0);
+      if (campanhas._aviso_paginacao) log.avisos.push(campanhas._aviso_paginacao);
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
 
