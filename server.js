@@ -1741,6 +1741,48 @@ app.get('/debug/ads/leiloes', async (req, res) => {
     res.json({ ok: false, erro: 'Nenhum dos formatos de endpoint testados funcionou.', tentativas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
+/* rota de diagnostico - a pessoa apontou (com razao) que o jeito certo de achar o gasto de Ads
+   de um produto NAO e' adivinhar pelo nome da campanha (frágil, so' funciona se o SKU aparecer
+   no nome) - a API de Ads deve deixar ver quais anuncios (item_id) estao DENTRO de cada campanha,
+   o que permite casar direto pelo mesmo item_id que o Doca ja usa em todo o resto do app (produto
+   -> mlItemId). Essa rota testa os candidatos mais prováveis de endpoint pra listar os itens de
+   uma campanha (mesmo estilo dos outros /debug/ads/* que ja' funcionaram testando variacoes),
+   devolvendo a resposta CRUA de quem funcionar primeiro. Ex.:
+   /debug/ads/itens-campanha?loja=TorvStore&campanhaId=357022681 */
+app.get('/debug/ads/itens-campanha', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const campanhaId = req.query.campanhaId;
+    const dias = parseInt(req.query.dias || '30', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    const accessToken = await tokenValido(loja);
+    const { primeiro } = await buscarAdvertiserId(loja);
+    const siteId = primeiro && primeiro.site_id;
+    const advertiserId = primeiro && primeiro.advertiser_id;
+    const de = dataYMD(Date.now() - (dias - 1) * 864e5);
+    const ate = dataYMD(Date.now());
+    const metricas = 'cost,clicks,prints';
+    const candidatos = [
+      { nome: 'ads (novo prefixo) - lista de anuncios da campanha', url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}/ads?date_from=${de}&date_to=${ate}&metrics=${metricas}` },
+      { nome: 'ads (novo prefixo) - com /search', url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}/ads/search?date_from=${de}&date_to=${ate}&metrics=${metricas}` },
+      { nome: 'items (novo prefixo)', url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}/items?date_from=${de}&date_to=${ate}&metrics=${metricas}` },
+      { nome: 'ads (prefixo antigo, advertisers/id)', url: `https://api.mercadolibre.com/advertising/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}/ads?date_from=${de}&date_to=${ate}&metrics=${metricas}` },
+      { nome: 'items (prefixo antigo)', url: `https://api.mercadolibre.com/advertising/advertisers/${advertiserId}/product_ads/campaigns/${campanhaId}/items?date_from=${de}&date_to=${ate}&metrics=${metricas}` },
+      { nome: 'product_ads direto (sem campanha) filtrando por campaign_id', url: `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/ads/search?campaign_id=${campanhaId}&date_from=${de}&date_to=${ate}&metrics=${metricas}` }
+    ];
+    const tentativas = [];
+    for (const cand of candidatos) {
+      try {
+        const j = await fetchMLDebug(cand.url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+        return res.json({ ok: true, loja, campanhaId, dias, funcionou: cand.nome, url: cand.url, resultado: j, tentativas_anteriores: tentativas });
+      } catch (e) {
+        tentativas.push({ nome: cand.nome, url: cand.url, http_status: e.http_status, erro: e.message, corpo: e.corpo });
+      }
+    }
+    res.json({ ok: false, erro: 'Nenhum dos formatos de endpoint testados funcionou.', tentativas });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+});
 /* rota de diagnostico - testa campo por campo (um de cada vez) no endpoint que JA FUNCIONA
    (o /search com campaign_ids filtrando 1 campanha), pra descobrir exatamente qual desses
    campos de "perda por leilao/orcamento" a API aceita e qual ela recusa - em vez de mandar
@@ -1827,7 +1869,9 @@ async function sincronizarAdsLoja(loja) {
   const { primeiro } = await buscarAdvertiserId(loja);
   if (!primeiro) throw new Error('Nenhum advertiser_id encontrado pra essa loja.');
   const { advertiser_id, site_id } = primeiro;
-  const periodos = [7, 15, 30];
+  // dias:1 -> "hoje" (de==ate==hoje) - guardado com a mesma chave "dN" das outras janelas
+  // (vira "d1"), o front-end so' precisa saber traduzir esse valor pro rotulo "Hoje".
+  const periodos = [1, 7, 15, 30];
   const resultado = {};
   for (const dias of periodos) {
     const campanhas = await buscarCampanhasAds(loja, site_id, advertiser_id, dias);
@@ -1865,6 +1909,23 @@ app.get('/ads/data', async (req, res) => {
     });
     res.json({ ok: true, loja, periodos, atualizadoEm });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
+/* periodo PERSONALIZADO de Ads (De/Ate escolhido a dedo) - ao contrario de d7/d15/d30 (que ficam
+   guardados no banco pelo /ads/sync), esse busca direto na hora, sem gravar nada - o intervalo
+   muda toda hora conforme a pessoa digita, nao faz sentido cachear. Reusa a mesma buscarCampanhasAds
+   (com deAteCustom) que ja usada em /financas/resumo. Ex.:
+   /ads/campanhas-periodo?loja=TorvStore&de=2026-07-01&ate=2026-07-31 */
+app.get('/ads/campanhas-periodo', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const de = req.query.de, ate = req.query.ate;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const { primeiro } = await buscarAdvertiserId(loja);
+    if (!primeiro) return res.status(200).json({ ok: false, erro: 'Nenhum advertiser_id encontrado pra essa loja.' });
+    const campanhas = await buscarCampanhasAds(loja, primeiro.site_id, primeiro.advertiser_id, null, { de, ate });
+    res.json({ ok: true, loja, periodo: { de, ate }, campanhas });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 
 /* ================= Finanças: fatura (cobrança mensal) do Mercado Livre =================
@@ -2089,11 +2150,14 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       const itemId = oi.item && oi.item.id;
       const valorItem = (Number(oi.unit_price) || 0) * (oi.quantity || 0);
       if (itemId) {
-        const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0, faturamentoTotal: 0, tarifaDeclarada: 0 };
+        const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0, faturamentoTotal: 0, tarifaDeclarada: 0, qtdCancelada: 0, pedidosCancelados: 0 };
         if (!cancelado) {
           atual.qtd += oi.quantity || 0;
           atual.valor += valorItem;
           atual.pedidos += 1;
+        } else {
+          atual.qtdCancelada += oi.quantity || 0;
+          atual.pedidosCancelados += 1;
         }
         // faturamentoTotal conta CANCELADO tambem - a comissao por percentual incide sobre toda
         // venda faturada, cancelada ou nao (mesmo raciocinio que ja' valia pro sale_fee antes).
@@ -2319,7 +2383,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // titulo de cada item vendido (pro ranking de produtos mostrar o nome, nao so' o item_id cru) -
   // em lotes de 20 (teto da API pra /items?ids=), tolerante a item que nao respondeu (ex.: anuncio
   // ja' apagado) - nesse caso o Doca mostra so' o item_id no lugar do titulo
-  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, v]) => ({ itemId, qtd: v.qtd, valor: v.valor, pedidos: v.pedidos, tarifa: v.tarifa, freteMl: v.freteMl || 0, titulo: null }));
+  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, v]) => ({ itemId, qtd: v.qtd, valor: v.valor, pedidos: v.pedidos, tarifa: v.tarifa, freteMl: v.freteMl || 0, qtdCancelada: v.qtdCancelada || 0, pedidosCancelados: v.pedidosCancelados || 0, titulo: null }));
   try {
     const idsUnicos = itensVendidosArr.map(x => x.itemId);
     const titulos = {};
