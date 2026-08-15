@@ -254,6 +254,41 @@ app.get('/debug/parcelamento', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de diagnostico - o /debug/parcelamento (acima) mostrou que o "payments" que vem
+   DENTRO do pedido do Mercado Livre e' uma versao resumida (so' tem installments,
+   transaction_amount, total_paid_amount etc) - NAO tem o detalhamento de taxas. A taxa de
+   financiamento/parcelamento que o vendedor absorve, quando existe, fica no objeto de
+   pagamento COMPLETO do Mercado Pago (campo "fee_details", um array com {type, amount} -
+   tipos possiveis incluem "mercadopago_fee" e "financing_fee"). Essa rota busca esse objeto
+   completo direto na API do Mercado Pago (GET /v1/payments/{id}), usando o mesmo token
+   MP_ACCESS_TOKEN_<LOJA> que ja' e' usado pros relatorios financeiros. Ex.:
+   /debug/pagamento-mp?loja=TorvStore&id=170621591243 */
+app.get('/debug/pagamento-mp', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const id = req.query.id;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    if (!id) return res.status(400).json({ ok: false, erro: 'Parametro "id" obrigatorio (id do pagamento, campo "id" dentro de payments[] do /debug/parcelamento).' });
+    if (!tokenMpDaLoja(loja)) {
+      return res.status(400).json({ ok: false, erro: `Faltou a variavel de ambiente MP_ACCESS_TOKEN_${normalizarChaveLoja(loja)} (ou MP_ACCESS_TOKEN) no Render.` });
+    }
+    const r = await mpFetch(loja, `/v1/payments/${encodeURIComponent(id)}`, { method: 'GET' });
+    const j = await r.json();
+    res.status(200).json({
+      ok: r.ok, http_status: r.status,
+      transaction_amount: j.transaction_amount,
+      installments: j.installments,
+      total_paid_amount: j.transaction_details && j.transaction_details.total_paid_amount,
+      fee_details: j.fee_details || null,
+      charges_details: j.charges_details || null,
+      pagamento_completo: j
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 /* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
    auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.
    Devolve o objeto completo (status, status_detail, tags, pack_id, date_last_updated, etc). Ex.:
