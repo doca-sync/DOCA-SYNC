@@ -1713,6 +1713,61 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
   if (avisoPaginacao) resultado._aviso_paginacao = avisoPaginacao;
   return resultado;
 }
+/* v78: achado no /debug/ads/itens-campanha - o endpoint /product_ads/ads/search (mesmo exigindo um
+   campaign_id no parametro) devolve os ANUNCIOS de TODAS as campanhas do advertiser, com metrics
+   (cost/clicks/prints) JA' calculado por item individual, nao por campanha. Isso resolve de vez o
+   problema de casar Ads com produto pelo NOME da campanha (que falha toda vez que o nome nao tem o
+   SKU dentro, tipo a campanha "ALHO VALECOM" pro produto Amassadoralho): agora da' pra casar direto
+   pelo item_id do Mercado Livre, que o Doca ja tem salvo em cada produto (mlItemId) - sem depender
+   de nome de campanha nenhum. */
+async function buscarItensAdsPeriodo(loja, siteId, advertiserId, de, ate) {
+  const accessToken = await tokenValido(loja);
+  const LIMIT = 50;
+  // a API parece exigir um campaign_id no parametro mesmo devolvendo itens de todas as campanhas -
+  // pega qualquer campanha valida do periodo pra preencher esse parametro
+  let campaignIdQualquer = null;
+  try {
+    const campanhas = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de, ate });
+    campaignIdQualquer = (campanhas.results && campanhas.results[0] && campanhas.results[0].id) || null;
+  } catch (e) { /* segue sem - tenta a busca de itens mesmo assim */ }
+  async function buscarPagina(offset) {
+    const qs = new URLSearchParams({ date_from: de, date_to: ate, metrics: 'cost,clicks,prints', limit: String(LIMIT), offset: String(offset) });
+    if (campaignIdQualquer) qs.set('campaign_id', campaignIdQualquer);
+    const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/ads/search?${qs.toString()}`;
+    for (let tentativa = 0; tentativa < 6; tentativa++) {
+      try {
+        return await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+      } catch (e) {
+        if ((e.http_status === 429 || e.http_status >= 500) && tentativa < 5) { await sleep(500 * (tentativa + 1)); continue; }
+        throw e;
+      }
+    }
+  }
+  const primeira = await buscarPagina(0);
+  let todos = (primeira.results || []).slice();
+  const total = (primeira.paging && primeira.paging.total) || 0;
+  let offset = LIMIT;
+  try {
+    while (primeira.results && primeira.results.length === LIMIT && offset < total && offset < 5000) {
+      await sleep(200);
+      const pagina = await buscarPagina(offset);
+      todos = todos.concat(pagina.results || []);
+      if (!pagina.results || pagina.results.length < LIMIT) break;
+      offset += LIMIT;
+    }
+  } catch (e) { /* fica com as paginas que ja tinha conseguido */ }
+  // agrega por item_id (soma, caso o mesmo item apareca mais de uma vez - ex.: mais de 1 anuncio ativo pro mesmo item)
+  const porItem = new Map();
+  for (const it of todos) {
+    const m = it.metrics || {};
+    const atual = porItem.get(it.item_id) || { itemId: it.item_id, cost: 0, clicks: 0, prints: 0, campaignId: it.campaign_id };
+    atual.cost += m.cost || 0;
+    atual.clicks += m.clicks || 0;
+    atual.prints += m.prints || 0;
+    porItem.set(it.item_id, atual);
+  }
+  return [...porItem.values()];
+}
 /* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
    Doca. Testar assim: /debug/ads/advertiser?loja=TorvStore
                         /debug/ads/campanhas?loja=TorvStore&dias=30 */
@@ -2405,6 +2460,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // batiam com um periodo escolhido a dedo como "1 a 31 de julho").
   let adsCusto = 0;
   let adsCampanhas = [];
+  let adsItens = [];
   try {
     const { primeiro } = await buscarAdvertiserId(loja);
     if (primeiro) {
@@ -2412,6 +2468,11 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       adsCampanhas = (campanhas.results || []).map(c => ({ id: c.id, name: c.name, cost: (c.metrics && c.metrics.cost) || 0 }));
       adsCusto = adsCampanhas.reduce((s, c) => s + c.cost, 0);
       if (campanhas._aviso_paginacao) log.avisos.push(campanhas._aviso_paginacao);
+      // v78: gasto por ITEM (item_id), casado direto com o produto - nao depende do nome da
+      // campanha ter o SKU dentro (ver comentario em buscarItensAdsPeriodo)
+      try {
+        adsItens = await buscarItensAdsPeriodo(loja, primeiro.site_id, primeiro.advertiser_id, de, ate);
+      } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads por item do periodo (ficou so o casamento por nome de campanha): ' + e.message); }
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
 
@@ -2453,7 +2514,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     pedidosValidos, pedidosCancelados,
     itensVendidos: itensVendidosArr,
     frete: { comprador: freteComprador, vendedor: freteVendedor },
-    ads: { custo: adsCusto, campanhas: adsCampanhas },
+    ads: { custo: adsCusto, campanhas: adsCampanhas, itens: adsItens },
     vendasHoje,
     avisos: log.avisos
   };
