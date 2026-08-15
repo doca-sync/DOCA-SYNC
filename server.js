@@ -2274,63 +2274,15 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
   if (pedidosCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo - o faturamento deles continua entrando na base de calculo da Tarifa (confirmado que o Mercado Livre normalmente nao devolve a comissao so' por causa do cancelamento).`);
 
-  // taxa de parcelamento (financing_fee) - busca o pagamento completo no Mercado Pago pra cada
-  // pagamento parcelado encontrado acima (so' da' pra ver esse valor la', nao na API do Mercado
-  // Livre). Mesmo pool de concorrencia limitada + retry em 429 usado no frete. So' roda se a loja
-  // tiver MP_ACCESS_TOKEN configurado (senao pula, sem quebrar o resto do resumo).
-  let financiamentoTotal = 0, financiamentoFalhas = 0, financiamentoEncontrados = 0;
-  if (tokenMpDaLoja(loja)) {
-    const idsPagamento = [...itensPorPagamento.keys()];
-    async function buscarPagamentoMpComRetry(paymentId, tentativa) {
-      tentativa = tentativa || 0;
-      try {
-        const r = await mpFetch(loja, `/v1/payments/${paymentId}`, { method: 'GET' });
-        if (r.status === 429 && tentativa < 4) {
-          await sleep(500 * Math.pow(2, tentativa));
-          return buscarPagamentoMpComRetry(paymentId, tentativa + 1);
-        }
-        return await r.json();
-      } catch (e) {
-        if (tentativa < 4) {
-          await sleep(500 * Math.pow(2, tentativa));
-          return buscarPagamentoMpComRetry(paymentId, tentativa + 1);
-        }
-        throw e;
-      }
-    }
-    const CONCORRENCIA_FINANCIAMENTO = 8;
-    let cursorFinanciamento = 0;
-    async function workerFinanciamento() {
-      while (cursorFinanciamento < idsPagamento.length) {
-        const paymentId = idsPagamento[cursorFinanciamento++];
-        try {
-          const j = await buscarPagamentoMpComRetry(paymentId);
-          const taxas = (j.fee_details || []).filter(f => f.type === 'financing_fee' && f.fee_payer === 'collector');
-          const valor = taxas.reduce((s, f) => s + (Number(f.amount) || 0), 0);
-          if (valor > 0) {
-            financiamentoTotal += valor;
-            financiamentoEncontrados++;
-            tarifas += valor;
-            const itensDoPagamento = itensPorPagamento.get(paymentId) || [];
-            const totalValor = itensDoPagamento.reduce((s, it) => s + it.valor, 0);
-            if (totalValor > 0) {
-              itensDoPagamento.forEach(it => {
-                const atual = itensVendidos.get(it.itemId);
-                if (atual) atual.tarifa += valor * (it.valor / totalValor);
-              });
-            }
-          }
-        } catch (e) {
-          financiamentoFalhas++;
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FINANCIAMENTO, idsPagamento.length) }, workerFinanciamento));
-    if (financiamentoFalhas) log.avisos.push(`${financiamentoFalhas} de ${idsPagamento.length} pagamento(s) parcelado(s) nao respondeu(ram) a consulta de taxa de financiamento no Mercado Pago (ignorados no total - pode subestimar levemente a Tarifa).`);
-    if (financiamentoEncontrados) log.avisos.push(`${financiamentoEncontrados} pagamento(s) parcelado(s) tinham taxa de financiamento (R$ ${financiamentoTotal.toFixed(2)} no total) - incluida no total de Tarifa ML.`);
-  } else if (itensPorPagamento.size) {
-    log.avisos.push(`${itensPorPagamento.size} pagamento(s) parcelado(s) no periodo, mas a loja nao tem MP_ACCESS_TOKEN configurado - a taxa de financiamento (juro absorvido pelo vendedor) NAO entrou na Tarifa.`);
-  }
+  // taxa de parcelamento (financing_fee) - v73: REVERTIDO. O fix da v64 somava essa taxa na
+  // Tarifa (achando, via fee_details, que o vendedor absorvia ela). Confirmado com dado real do
+  // extrato de Liberacoes (release_report) que isso estava ERRADO: pro pagamento de teste
+  // 170621591243, a conta bate certinho SEM contar financing_fee (R$19,00 venda - R$2,18 comissao
+  // - R$6,85 frete real = R$9,97, quase identico ao net_received_amount real de R$10,27) - ou
+  // seja, o financing_transfer (dinheiro que entra do comprador) e o financing_fee (que sai pro
+  // Mercado Pago) SE CANCELAM na conta do vendedor, nao sobra como custo de verdade. Fica so' o
+  // mapa itensPorPagamento (construido acima, sem custo nenhum de chamada extra) sem uso por
+  // enquanto - se precisar reativar essa investigacao um dia, os dados ja estao ali.
 
   // Ads: reusa o mesmo endpoint de campanhas ja' confirmado funcionando, so' com o intervalo
   // personalizado no lugar do preset de 7/15/30 dias. Guarda tambem o gasto POR CAMPANHA (nao so'
