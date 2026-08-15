@@ -1655,24 +1655,44 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
   const ate = (deAteCustom && deAteCustom.ate) || dataYMD(Date.now());
   let metricas = ADS_METRICAS.split(',');
   const removidas = [];
-  for (let tentativa = 0; tentativa < 15; tentativa++) {
-    const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=50&offset=0&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}`;
-    try {
-      const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
-      if (removidas.length) j._metricas_removidas_pela_api = removidas;
-      return j;
-    } catch (e) {
-      const desc = (e.corpo && e.corpo.description) || '';
-      const m = desc.match(/Field (\w+) not allowed/i);
-      if (e.http_status === 400 && m) {
-        const campo = m[1].toLowerCase();
-        const idx = metricas.indexOf(campo);
-        if (idx >= 0) { metricas.splice(idx, 1); removidas.push(campo); continue; }
+  const LIMIT = 50;
+  // v77: antes buscava so' a 1a pagina (limit=50&offset=0 fixo) - lojas com mais de 50 campanhas
+  // no periodo perdiam o resto em silencio (o Amauri/Resumo Financeiro nao achava ads pra produtos
+  // cuja campanha caia depois da campanha 50). Agora pagina ate' cobrir "paging.total" da API,
+  // igual o padrao ja usado em buscarItensDoVendedor.
+  let offset = 0;
+  let todosResultados = [];
+  let ultimaResposta = null;
+  while (true) {
+    const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=${LIMIT}&offset=${offset}&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}`;
+    let j = null;
+    let sucessoNestaPagina = false;
+    for (let tentativa = 0; tentativa < 15; tentativa++) {
+      try {
+        j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+        sucessoNestaPagina = true;
+        break;
+      } catch (e) {
+        const desc = (e.corpo && e.corpo.description) || '';
+        const m = desc.match(/Field (\w+) not allowed/i);
+        if (e.http_status === 400 && m) {
+          const campo = m[1].toLowerCase();
+          const idx = metricas.indexOf(campo);
+          if (idx >= 0) { metricas.splice(idx, 1); removidas.push(campo); continue; }
+        }
+        throw e;
       }
-      throw e;
     }
+    if (!sucessoNestaPagina) throw new Error('Muitas metricas invalidas seguidas - parei de tentar. Removidas: ' + removidas.join(', '));
+    ultimaResposta = j;
+    todosResultados = todosResultados.concat(j.results || []);
+    offset += LIMIT;
+    const total = (j.paging && j.paging.total) || 0;
+    if (!j.results || j.results.length < LIMIT || offset >= total) break;
   }
-  throw new Error('Muitas metricas invalidas seguidas - parei de tentar. Removidas: ' + removidas.join(', '));
+  const resultado = Object.assign({}, ultimaResposta, { results: todosResultados });
+  if (removidas.length) resultado._metricas_removidas_pela_api = removidas;
+  return resultado;
 }
 /* rotas de diagnostico - mostram o retorno CRU da API antes de decidir como guardar/mostrar no
    Doca. Testar assim: /debug/ads/advertiser?loja=TorvStore
