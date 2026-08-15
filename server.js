@@ -1662,6 +1662,11 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
   // (ex.: rate limit), NAO derruba a busca inteira - fica com o que ja tinha conseguido ate' ali,
   // porque a 1a versao desse fix estava jogando fora TUDO (inclusive a pagina 1, que antes
   // funcionava sozinha) quando uma pagina extra dava erro.
+  // v77c: cada pagina extra (2a em diante) e' uma chamada a mais na MESMA rajada de chamadas que
+  // o resto do /financas/resumo ja faz (pedidos, comissao por item, etc.) - period que sobra pouca
+  // "cota" e a API devolve 429 (rate limit) bem mais nas paginas 2+. Antes so' retentava em 400
+  // "Field X not allowed"; agora tambem retenta em 429/5xx com espera crescente (backoff), pra nao
+  // desistir de paginas que passariam numa 2a tentativa alguns segundos depois.
   async function buscarPagina(offset) {
     for (let tentativa = 0; tentativa < 15; tentativa++) {
       const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?limit=${LIMIT}&offset=${offset}&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}`;
@@ -1674,6 +1679,10 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
           const campo = m[1].toLowerCase();
           const idx = metricas.indexOf(campo);
           if (idx >= 0) { metricas.splice(idx, 1); removidas.push(campo); continue; }
+        }
+        if ((e.http_status === 429 || e.http_status >= 500) && tentativa < 5) {
+          await sleep(500 * (tentativa + 1));
+          continue;
         }
         throw e;
       }
@@ -1688,6 +1697,8 @@ async function buscarCampanhasAds(loja, siteId, advertiserId, dias, deAteCustom)
   let offset = LIMIT;
   try {
     while (primeira.results && primeira.results.length === LIMIT && offset < total && offset < 5000) {
+      // pequena pausa entre paginas pra dar folga na cota de rate limit da API
+      await sleep(200);
       const pagina = await buscarPagina(offset);
       ultimaResposta = pagina;
       todosResultados = todosResultados.concat(pagina.results || []);
