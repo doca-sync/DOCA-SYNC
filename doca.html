@@ -4835,9 +4835,12 @@ function removerPagamentoAmauri(id){
   a.pagamentos=a.pagamentos.filter(x=>x.id!==id);
   persist();
 }
-let amauriResumoPeriodo='30d', amauriResumoDe='', amauriResumoAte='';
+/* sem período padrão - fica sempre pedindo pra escolher, em vez de já vir com "30 dias" marcado
+   (o que dava a impressão de já ter um cálculo pronto, mesmo sem ter buscado nada ainda). */
+let amauriResumoPeriodo='', amauriResumoDe='', amauriResumoAte='';
 let amauriResumoResultado=null, amauriResumoCarregando=false, amauriResumoErro=null;
 async function pesquisarResumoAmauri(){
+  if(!amauriResumoPeriodo) return;
   amauriResumoCarregando=true; amauriResumoErro=null; renderAmauri();
   try{
     const base=backendUrl();
@@ -4868,6 +4871,7 @@ function calcularLinhaAmauriProduto(p,resumo){
   const qtd=it?(it.qtd||0):0;
   const faturamento=it?(it.valor||0):0;
   const vendasConcluidas=it?(it.pedidos||0):0;
+  const tarifaMlTotal=it?(it.tarifa||0):0;
   const custoProdutoTotal=(p.custo||0)*qtd;
   const freteTotal=(c.frete||0)*qtd;
   const embalagemTotal=(c.embalagem||0)*qtd;
@@ -4875,7 +4879,7 @@ function calcularLinhaAmauriProduto(p,resumo){
   const adsTotal=c.ads||0;
   const aliquota=finLoja('TorvStore').aliquotaImposto||0;
   const impostoCalc=faturamento*(aliquota/100);
-  const margemLiquida=faturamento-custoProdutoTotal-freteTotal-embalagemTotal-etiquetaTotal-adsTotal-impostoCalc;
+  const margemLiquida=faturamento-tarifaMlTotal-custoProdutoTotal-freteTotal-embalagemTotal-etiquetaTotal-adsTotal-impostoCalc;
   const percentual=c.percentual!=null?c.percentual:50;
   const repasseMargem=margemLiquida*(percentual/100);
   const itensCusto=[
@@ -4887,7 +4891,7 @@ function calcularLinhaAmauriProduto(p,resumo){
   ];
   const reembolsoAmauri=itensCusto.filter(x=>x.quemPagou==='amauri').reduce((s,x)=>s+x.valor,0);
   const repasseTotal=repasseMargem+reembolsoAmauri;
-  return {p,c,qtd,faturamento,vendasConcluidas,custoProdutoTotal,freteTotal,embalagemTotal,etiquetaTotal,adsTotal,aliquota,impostoCalc,margemLiquida,percentual,repasseMargem,reembolsoAmauri,repasseTotal};
+  return {p,c,qtd,faturamento,vendasConcluidas,tarifaMlTotal,custoProdutoTotal,freteTotal,embalagemTotal,etiquetaTotal,adsTotal,aliquota,impostoCalc,margemLiquida,percentual,repasseMargem,reembolsoAmauri,repasseTotal};
 }
 /* tenta achar sozinho quanto foi gasto de ads com esse produto no período, casando o SKU com o
    nome da campanha nos dados já sincronizados na aba Ads. Só funciona pras janelas fixas que a
@@ -5008,6 +5012,7 @@ function renderAmauri(){
       <h3 style="margin-top:0">📊 Período do fechamento</h3>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
         <label>Período<select id="amPeriodo">
+          <option value="" disabled ${amauriResumoPeriodo?'':'selected'}>Selecione o período...</option>
           <option value="hoje" ${amauriResumoPeriodo==='hoje'?'selected':''}>Hoje</option>
           <option value="7d" ${amauriResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
           <option value="15d" ${amauriResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
@@ -5022,19 +5027,20 @@ function renderAmauri(){
       </div>
       <p class="hint" style="margin:8px 0 0">Essa é a mesma alíquota configurada em Finanças → Resumo Financeiro (TorvStore) — mudar aqui atualiza lá também. É ela que desconta o imposto de cada produto antes de calcular a margem líquida e o repasse do Amauri.</p>
       <div class="acoes-linha" style="margin-top:10px">
-        <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
+        <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando||!amauriResumoPeriodo?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
       </div>
       ${amauriResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(amauriResumoErro)}</p>`:''}
       ${amauriResumoResultado?`
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)}</p>
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Custo produto</th><th class="num">Frete</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
+          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Custo produto</th><th class="num">Frete</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
         </tr></thead><tbody>
           ${linhas.map(l=>`<tr>
             <td class="mono">${esc(l.p.sku)}</td>
             <td class="num">${fmtInt(l.qtd)}</td>
             <td class="num">${fmtInt(l.vendasConcluidas)}</td>
             <td class="num">${fmtMoney(l.faturamento)}</td>
+            <td class="num">${fmtMoney(l.tarifaMlTotal)}</td>
             <td class="num">${fmtMoney(l.custoProdutoTotal)}</td>
             <td class="num">${fmtMoney(l.freteTotal)}</td>
             <td class="num">${fmtMoney(l.embalagemTotal)}</td>
@@ -5046,6 +5052,7 @@ function renderAmauri(){
             <td class="num"><b>${fmtMoney(l.repasseTotal)}</b></td>
           </tr>`).join('')}
         </tbody></table></div>
+        <p class="hint" style="margin-top:6px">Tarifa ML = comissão de venda do Mercado Livre daquele item no período (sale_fee), descontada automático — não precisa configurar nada. Requer o backend atualizado (server_v57 ou mais novo); num backend antigo essa coluna aparece zerada.</p>
         <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
           ${cel('MARGEM LÍQUIDA TOTAL (SOMA DOS PRODUTOS)',totalMargem,totalMargem>=0?'okv':'pend')}
           ${cel('REEMBOLSO TOTAL (custos que o Amauri pagou)',totalReembolso)}
