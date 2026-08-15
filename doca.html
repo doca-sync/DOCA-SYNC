@@ -4901,37 +4901,32 @@ function calcularLinhaAmauriProduto(p,resumo){
   const repasseTotal=repasseMargem+reembolsoAmauri;
   return {p,c,qtd,faturamento,vendasConcluidas,tarifaMlTotal,freteMlTotal,custoProdutoTotal,coletaTotal,embalagemTotal,etiquetaTotal,adsTotal,aliquota,impostoCalc,margemLiquida,percentual,repasseMargem,reembolsoAmauri,repasseTotal};
 }
-/* tenta achar sozinho quanto foi gasto de ads com esse produto no período, casando o SKU com o
-   nome da campanha nos dados já sincronizados na aba Ads. Só funciona pras janelas fixas que a
-   API de Ads oferece (7/15/30 dias) - "mês corrente" e "personalizado" usam a janela de 30 dias
-   como aproximação (fica mais perto do real quanto mais parecido o período for de 30 dias), e
-   "hoje" não tem equivalente, então fica só manual mesmo. Devolve null quando não consegue achar
-   (ainda não sincronizou Ads, ou nenhuma campanha com o SKU no nome) - nesse caso o campo continua
-   editável na mão. */
-function adsGastoAutoProduto(p,periodoAmauri){
+/* tenta achar sozinho quanto foi gasto de ads com esse produto EXATAMENTE no período calculado,
+   casando o SKU com o nome da campanha. Usa resumo.ads.campanhas, que o backend busca com o MESMO
+   de/ate do fechamento (o mesmo endpoint que alimenta o painel de Publicidade do Mercado Livre
+   quando você escolhe um intervalo personalizado por lá) - nada de aproximar por janela fixa de
+   7/15/30 dias. Devolve null quando não consegue achar (backend antigo sem esse dado, ou nenhuma
+   campanha com o SKU no nome) - nesse caso o campo continua editável na mão. */
+function adsGastoAutoProduto(p,resumo){
   if(!p.sku) return null;
-  const chave=periodoAmauri==='7d'?'d7':periodoAmauri==='15d'?'d15':(periodoAmauri==='30d'||periodoAmauri==='mes_corrente'||periodoAmauri==='personalizado')?'d30':null;
-  if(!chave) return null;
-  const dados=adsApiLoja('TorvStore');
-  const per=dados.periodos&&dados.periodos[chave];
-  const resultados=(per&&per.results)||[];
-  if(!resultados.length) return null;
+  const campanhas=(resumo&&resumo.ads&&resumo.ads.campanhas)||[];
+  if(!campanhas.length) return null;
   const skuUp=p.sku.toUpperCase();
-  const camp=resultados.find(cc=>(cc.name||'').toUpperCase().includes(skuUp));
-  return camp?((camp.metrics&&camp.metrics.cost)||0):null;
+  const camp=campanhas.find(cc=>(cc.name||'').toUpperCase().includes(skuUp));
+  return camp?(camp.cost||0):null;
 }
 /* preenche o custo de ads sozinho, disparado toda vez que o período é calculado (sem precisar de
    botão à parte) - silencioso quando não acha nada (fica só o valor manual de antes), só avisa com
    um toast discreto quando consegue achar pra pelo menos 1 produto. */
 function autoPreencherAdsAmauri(){
   const marcados=amauriProdutosMarcados();
-  if(!marcados.length) return;
+  if(!marcados.length||!amauriResumoResultado) return;
   let achados=0;
   marcados.forEach(p=>{
-    const v=adsGastoAutoProduto(p,amauriResumoPeriodo);
+    const v=adsGastoAutoProduto(p,amauriResumoResultado);
     if(v!=null){ amauriCustos(p.id).ads=v; achados++; }
   });
-  if(achados){ persist(); toast(`Ads puxado automático pra ${achados} produto(s).`); }
+  if(achados){ persist(); toast(`Ads puxado automático (período exato) pra ${achados} produto(s).`); }
 }
 /* Os campos de custo/quem-paga/percentual só gravam no estado quando o campo perde o foco
    (onchange) - igual todo campo de valor no Doca. Só que "Calcular", trocar o período e "Puxar
@@ -5066,7 +5061,7 @@ function renderAmauri(){
           ${linhaCusto('Coleta (por un.)',idb+'|coleta',c.coleta,idb+'|coletaQuemPagou',c.coletaQuemPagou,'Custo de levar a mercadoria até o ponto de despacho/coleta — não é o frete do Mercado Livre (esse entra automático).')}
           ${linhaCusto('Embalagem (por un.)',idb+'|embalagem',c.embalagem,idb+'|embalagemQuemPagou',c.embalagemQuemPagou)}
           ${linhaCusto('Etiqueta (por un.)',idb+'|etiqueta',c.etiqueta,idb+'|etiquetaQuemPagou',c.etiquetaQuemPagou)}
-          ${linhaCusto('Publicidade / Ads (no período)',idb+'|ads',c.ads,idb+'|adsQuemPagou',c.adsQuemPagou,'Preenchido automático ao calcular o período (abaixo) — casa o SKU com a campanha em Ads. Edite se estiver errado.')}
+          ${linhaCusto('Publicidade / Ads (no período)',idb+'|ads',c.ads,idb+'|adsQuemPagou',c.adsQuemPagou,'Preenchido automático ao calcular o período (abaixo), com o gasto exato de ads nesse intervalo — casa o SKU com a campanha em Ads. Edite se estiver errado ou não achar.')}
         </tbody></table></div>
         <div class="form-grid" style="grid-template-columns:1fr;margin-top:8px">
           <label>% da margem líquida repassado ao Amauri<input type="number" min="0" max="100" step="1" style="width:80px" value="${c.percentual!=null?c.percentual:50}" data-amauripct="${p.id}"></label>
@@ -5109,7 +5104,7 @@ function renderAmauri(){
             <td class="num"><b>${fmtMoney(l.repasseTotal)}</b></td>
           </tr>`).join('')}
         </tbody></table></div>
-        <p class="hint" style="margin-top:6px">Tarifa ML = comissão de venda do Mercado Livre. Frete ML = o frete que o Mercado Livre encara como frete (o frete grátis que sai do seu bolso), rateado por produto quando o envio teve mais de um item. Os dois vêm automático do backend — não precisa configurar nada. Requer o backend atualizado (server_v58 ou mais novo); num backend antigo essas colunas aparecem zeradas.</p>
+        <p class="hint" style="margin-top:6px">Tarifa ML = comissão de venda do Mercado Livre. Frete ML = o frete que o Mercado Livre encara como frete (o frete grátis que sai do seu bolso), rateado por produto quando o envio teve mais de um item. Ads (na tabela de custos acima) também é puxado automático, com o gasto exato desse mesmo período — mesma fonte de dado do painel de Publicidade do Mercado Livre quando você escolhe um intervalo personalizado por lá. Tudo isso vem automático do backend — não precisa configurar nada. Requer o backend atualizado (server_v59 ou mais novo); num backend antigo essas colunas/preenchimentos aparecem zerados.</p>
         <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
           ${cel('MARGEM LÍQUIDA TOTAL (SOMA DOS PRODUTOS)',totalMargem,totalMargem>=0?'okv':'pend')}
           ${cel('REEMBOLSO TOTAL (custos que o Amauri pagou)',totalReembolso)}
