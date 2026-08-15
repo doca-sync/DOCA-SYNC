@@ -4959,15 +4959,27 @@ function calcularLinhaAmauriProduto(p,resumo){
    quando você escolhe um intervalo personalizado por lá) - nada de aproximar por janela fixa de
    7/15/30 dias. Devolve null quando não consegue achar (backend antigo sem esse dado, ou nenhuma
    campanha com o SKU no nome) - nesse caso o campo continua editável na mão. */
-/* tira acento, espaço, hífen, underline etc e deixa maiúsculo - assim "CABO MICKEY" (nome da
-   campanha) casa com o SKU "CABOMICKEY" mesmo com espaço/acentuação diferente entre os dois. */
+/* tira acento, espaço, hífen, underline etc e deixa maiúsculo - usado so' no fallback por nome
+   (quando o backend antigo nao mandou o gasto por item_id ainda) */
 function normalizarParaMatch(s){
   return String(s||'')
-    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .toUpperCase()
     .replace(/[^A-Z0-9]/g,'');
 }
+/* v78: acha o gasto de Ads do produto casando pelo item_id do Mercado Livre (resumo.ads.itens,
+   devolvido pelo backend a partir do endpoint que lista TODOS os anuncios do advertiser com custo
+   ja calculado por item) - exato, nao depende do nome da campanha ter o SKU dentro (ex.: a
+   campanha podia se chamar "ALHO VALECOM" pro produto Amassadoralho, e o casamento por texto nunca
+   ia achar isso). So cai pro casamento por nome de campanha (mais fragil) se o backend for uma
+   versao antiga que ainda nao manda resumo.ads.itens. */
 function adsGastoAutoProduto(p,resumo){
+  const itens=(resumo&&resumo.ads&&resumo.ads.itens)||[];
+  if(itens.length){
+    if(!p.mlItemId) return null;
+    const achado=itens.find(it=>it.itemId===p.mlItemId);
+    return achado?(achado.cost||0):null;
+  }
   if(!p.sku) return null;
   const campanhas=(resumo&&resumo.ads&&resumo.ads.campanhas)||[];
   if(!campanhas.length) return null;
