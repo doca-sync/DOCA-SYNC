@@ -5082,7 +5082,7 @@ function renderAmauri(){
       </div>
       ${amauriResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(amauriResumoErro)}</p>`:''}
       ${amauriResumoResultado?`
-        <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)}</p>
+        <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · ${fmtInt(amauriResumoResultado.pedidosValidos)} pedido(s) válido(s)${amauriResumoResultado.pedidosCancelados?' · '+fmtInt(amauriResumoResultado.pedidosCancelados)+' cancelado(s) (loja toda, não só os produtos do Amauri)':''}</p>
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
           <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo produto</th><th class="num">Coleta</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
         </tr></thead><tbody>
