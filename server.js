@@ -1685,8 +1685,13 @@ async function buscarResumoFinanceiro(loja, de, ate) {
 
   let faturamento = 0, tarifas = 0, cancelamentosValor = 0, reembolsosValor = 0;
   let pedidosValidos = 0, pedidosCancelados = 0;
-  const itensVendidos = new Map(); // itemId -> { qtd, valor, pedidos, tarifa }
+  const itensVendidos = new Map(); // itemId -> { qtd, valor, pedidos, tarifa, freteMl }
   const shippingIds = new Set();
+  // pra cada shipment, guarda os itens (e o valor de cada um) que vieram naquele envio - depois de
+  // buscar o custo de frete DO SHIPMENT (nao existe custo de frete por item na API do ML, so' por
+  // envio), rateia esse custo entre os itens proporcional ao valor de cada um dentro do pedido -
+  // isso e' o que o Mercado Livre "encara como frete" (o frete grátis que sai do seu bolso).
+  const itensPorShipping = new Map(); // shippingId -> [{ itemId, valor }]
 
   for (const pedido of pedidos) {
     if (pedido.status === 'invalid') continue; // nunca chegou a valer nada
@@ -1703,12 +1708,17 @@ async function buscarResumoFinanceiro(loja, de, ate) {
         tarifas += saleFee;
         const itemId = oi.item && oi.item.id;
         if (itemId) {
-          const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0 };
+          const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0 };
           atual.qtd += oi.quantity || 0;
           atual.valor += (Number(oi.unit_price) || 0) * (oi.quantity || 0);
           atual.pedidos += 1;
           atual.tarifa += saleFee;
           itensVendidos.set(itemId, atual);
+          if (pedido.shipping && pedido.shipping.id) {
+            const lista = itensPorShipping.get(pedido.shipping.id) || [];
+            lista.push({ itemId, valor: (Number(oi.unit_price) || 0) * (oi.quantity || 0) });
+            itensPorShipping.set(pedido.shipping.id, lista);
+          }
         }
       }
       if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
@@ -1763,7 +1773,18 @@ async function buscarResumoFinanceiro(loja, de, ate) {
         const receivers = j.receivers || [];
         const senders = j.senders || [];
         freteComprador += receivers.reduce((s, r) => s + (Number(r.cost) || 0), 0);
-        freteVendedor += senders.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        const custoVendedorShipment = senders.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        freteVendedor += custoVendedorShipment;
+        if (custoVendedorShipment) {
+          const itensDoShipment = itensPorShipping.get(shippingId) || [];
+          const totalValorShipment = itensDoShipment.reduce((s, it) => s + it.valor, 0);
+          if (totalValorShipment > 0) {
+            itensDoShipment.forEach(it => {
+              const atual = itensVendidos.get(it.itemId);
+              if (atual) atual.freteMl = (atual.freteMl || 0) + custoVendedorShipment * (it.valor / totalValorShipment);
+            });
+          }
+        }
       } catch (e) {
         freteFalhas++;
       }
@@ -1802,7 +1823,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // titulo de cada item vendido (pro ranking de produtos mostrar o nome, nao so' o item_id cru) -
   // em lotes de 20 (teto da API pra /items?ids=), tolerante a item que nao respondeu (ex.: anuncio
   // ja' apagado) - nesse caso o Doca mostra so' o item_id no lugar do titulo
-  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, v]) => ({ itemId, qtd: v.qtd, valor: v.valor, pedidos: v.pedidos, tarifa: v.tarifa, titulo: null }));
+  const itensVendidosArr = [...itensVendidos.entries()].map(([itemId, v]) => ({ itemId, qtd: v.qtd, valor: v.valor, pedidos: v.pedidos, tarifa: v.tarifa, freteMl: v.freteMl || 0, titulo: null }));
   try {
     const idsUnicos = itensVendidosArr.map(x => x.itemId);
     const titulos = {};
