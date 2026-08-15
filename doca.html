@@ -5104,7 +5104,6 @@ function renderAmauri(){
             <td class="num"><b>${fmtMoney(l.repasseTotal)}</b></td>
           </tr>`).join('')}
         </tbody></table></div>
-        <p class="hint" style="margin-top:6px">Tarifa ML = comissão de venda do Mercado Livre. Frete ML = o frete que o Mercado Livre encara como frete (o frete grátis que sai do seu bolso), rateado por produto quando o envio teve mais de um item. Ads (na tabela de custos acima) também é puxado automático, com o gasto exato desse mesmo período — mesma fonte de dado do painel de Publicidade do Mercado Livre quando você escolhe um intervalo personalizado por lá. Tudo isso vem automático do backend — não precisa configurar nada. Requer o backend atualizado (server_v59 ou mais novo); num backend antigo essas colunas/preenchimentos aparecem zerados.</p>
         <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
           ${cel('MARGEM LÍQUIDA TOTAL (SOMA DOS PRODUTOS)',totalMargem,totalMargem>=0?'okv':'pend')}
           ${cel('REEMBOLSO TOTAL (custos que o Amauri pagou)',totalReembolso)}
