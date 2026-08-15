@@ -4476,10 +4476,12 @@ function calcularMargensResumo(resumo,loja){
   const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
   const aliquota=finLoja(loja).aliquotaImposto||0;
   const impostoCalc=resumo.faturamento*(aliquota/100);
-  const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.ads.custo||0)-(resumo.frete.vendedor||0)-resumo.cancelamentosValor-resumo.reembolsosValor;
+  // regra: Ads NAO entra na Margem de Contribuicao - so' vira custo depois, na Margem Liquida
+  // (junto com despesas do periodo e fatura ML pendente), igual ja' funcionava no ranking por produto.
+  const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.cancelamentosValor-resumo.reembolsosValor;
   const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
   const faturaMlAtual=faturaMlPendenteLoja(loja);
-  const margemLiquida=margem-custosPeriodo-faturaMlAtual;
+  const margemLiquida=margem-(resumo.ads.custo||0)-custosPeriodo-faturaMlAtual;
   return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida};
 }
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
@@ -4518,7 +4520,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente</div>
+        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(resumo.ads.custo||0)} de Ads, ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente</div>
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
