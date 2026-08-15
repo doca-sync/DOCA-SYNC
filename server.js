@@ -1693,6 +1693,15 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // isso e' o que o Mercado Livre "encara como frete" (o frete grátis que sai do seu bolso).
   const itensPorShipping = new Map(); // shippingId -> [{ itemId, valor }]
 
+  // diagnostico: quanto de tarifa (sale_fee) ficou "presa" em pedidos cancelados - o Doca exclui
+  // pedido cancelado 100% do calculo de tarifa/frete (correto pra faturamento, que nao deve contar
+  // venda cancelada), mas se o Mercado Livre NAO devolveu a tarifa/frete desse cancelamento (comum
+  // quando o cancelamento acontece depois do produto ja despachado), o painel deles continua
+  // mostrando esse valor em "Tarifas e investimentos" - so' que o Doca some com ele. Isso nao muda
+  // o calculo (ainda incerto se e' sempre assim), so' avisa pra confirmar a hipotese comparando com
+  // o painel do Mercado Livre.
+  let tarifaCancelados = 0;
+
   for (const pedido of pedidos) {
     if (pedido.status === 'invalid') continue; // nunca chegou a valer nada
     const cancelado = pedido.status === 'cancelled';
@@ -1700,6 +1709,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     if (cancelado) {
       pedidosCancelados++;
       cancelamentosValor += total;
+      for (const oi of (pedido.order_items || [])) { tarifaCancelados += Number(oi.sale_fee) || 0; }
     } else {
       pedidosValidos++;
       faturamento += total;
@@ -1792,6 +1802,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
   if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
+  if (tarifaCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo tinham R$ ${tarifaCancelados.toFixed(2)} em tarifa de venda que NAO entrou no total de Tarifa ML (cancelamento e' excluido do calculo) - se o Mercado Livre nao devolveu essa tarifa no cancelamento, e' provavel que seja essa a causa da Tarifa ML/Frete ML aparecerem abaixo do painel deles.`);
 
   // Ads: reusa o mesmo endpoint de campanhas ja' confirmado funcionando, so' com o intervalo
   // personalizado no lugar do preset de 7/15/30 dias. Guarda tambem o gasto POR CAMPANHA (nao so'
