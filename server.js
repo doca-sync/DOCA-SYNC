@@ -597,6 +597,71 @@ app.get('/debug/mp/relatorio/baixar', async (req, res) => {
     res.status(200).type('text/plain').send(`HTTP ${r.status}\n\n${texto.slice(0, 20000)}`);
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* rota de diagnostico - v67 testou a hipotese de que o rateio por VALOR (em vez de peso) explicava
+   o Frete ML do Substrato ficar abaixo do painel do Mercado Livre - testado com dado real e a
+   hipotese caiu (o numero quase nao mudou), porque a maioria dos pedidos do Substrato tem SO' ELE
+   no envio (rateio nao faz diferenca quando so' tem 1 item). Entao o que falta nao e' erro de
+   rateio - e' um tipo de cobranca INTEIRO que nunca aparece em /shipments/{id}/costs (que so' devolve
+   o custo de TRANSPORTE de um envio especifico). Suspeita nova: tarifa de ARMAZENAGEM do Mercado
+   Envios Full (cobrada periodicamente pelo estoque parado no CD deles, NAO ligada a nenhum envio
+   especifico) ou alguma outra cobranca agregada. Em vez de abrir pedido por pedido (caro, ja
+   descartado), essa rota reusa o relatorio de Liberacoes (JA' baixado via /debug/mp/relatorio/*)
+   que tem TODA movimentacao da conta, e agrupa por DESCRICAO - revela de uma vez SO' quais tipos de
+   cobranca existem na conta no periodo, sem chutar. Ex.:
+   /debug/mp/relatorio/categorias?loja=TorvStore&arquivo=reserve-release-....csv */
+app.get('/debug/mp/relatorio/categorias', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const arquivo = req.query.arquivo;
+    const de = req.query.de, ate = req.query.ate; // opcional - filtra por DATE (AAAA-MM-DD) se vier
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!arquivo) return res.status(400).json({ ok: false, erro: 'Parametro "arquivo" obrigatorio (ver o campo do relatorio em /debug/mp/relatorio/listar).' });
+    const r = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(arquivo)}`, { method: 'GET' });
+    const texto = await r.text();
+    const { cabecalho, linhas } = parseCsvPontoEVirgula(texto);
+    if (!linhas.length) return res.status(200).json({ ok: false, erro: 'Relatorio vazio ou nao processado ainda.', http_status: r.status, cabecalho });
+    const filtradas = (de && ate)
+      ? linhas.filter(l => { const d = (l.DATE || '').slice(0, 10); return d >= de && d <= ate; })
+      : linhas;
+    // acha uma coluna de valor plausivel (nomes variam entre relatorios do MP)
+    const colValor = ['NET_CREDIT_AMOUNT', 'GROSS_AMOUNT', 'AMOUNT', 'TRANSACTION_AMOUNT', 'SETTLEMENT_NET_AMOUNT', 'BALANCE_AMOUNT']
+      .find(c => cabecalho.includes(c));
+    const colDescricao = ['DESCRIPTION', 'TRANSACTION_TYPE', 'SOURCE_ID'].find(c => cabecalho.includes(c));
+    const porCategoria = new Map();
+    filtradas.forEach(l => {
+      const chave = colDescricao ? (l[colDescricao] || '(sem descricao)') : '(sem coluna de descricao)';
+      const valor = colValor ? (parseFloat(l[colValor]) || 0) : 0;
+      const atual = porCategoria.get(chave) || { total: 0, linhas: 0 };
+      atual.total += valor;
+      atual.linhas += 1;
+      porCategoria.set(chave, atual);
+    });
+    // percentual de cada categoria sobre o total DEBITADO (soma so' dos valores negativos - o
+    // que efetivamente saiu da conta) - e' a mesma logica que o painel do Mercado Livre usa pra
+    // mostrar "R$ 4.410 (63,2%)" dentro de "Tarifas e investimentos", entao usar a mesma base
+    // ajuda a comparar categoria por categoria com o que aparece la'.
+    const totalDebitado = [...porCategoria.values()].reduce((s, v) => s + (v.total < 0 ? Math.abs(v.total) : 0), 0);
+    const categorias = [...porCategoria.entries()]
+      .map(([chave, v]) => ({
+        categoria: chave,
+        total: Math.round(v.total * 100) / 100,
+        percentual_do_debitado: (totalDebitado > 0 && v.total < 0) ? Math.round((Math.abs(v.total) / totalDebitado) * 1000) / 10 : null,
+        linhas: v.linhas
+      }))
+      .sort((a, b) => a.total - b.total);
+    res.json({
+      ok: true, loja, arquivo, filtro: { de: de || null, ate: ate || null },
+      colunas_disponiveis: cabecalho,
+      coluna_valor_usada: colValor || null,
+      coluna_descricao_usada: colDescricao || null,
+      total_linhas_no_relatorio: linhas.length,
+      total_linhas_no_filtro: filtradas.length,
+      total_debitado_da_conta: Math.round(totalDebitado * 100) / 100,
+      categorias,
+      amostra_3_linhas: filtradas.slice(0, 3)
+    });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 /* le um CSV separado por ";" (formato dos relatorios do Mercado Pago) e devolve como lista de
    objetos {coluna: valor}, usando a 1a linha como cabecalho. Ignora linhas vazias no fim. */
 function parseCsvPontoEVirgula(texto) {
@@ -1886,7 +1951,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
 
   let faturamento = 0, tarifas = 0, cancelamentosValor = 0, reembolsosValor = 0;
   let pedidosValidos = 0, pedidosCancelados = 0;
-  const itensVendidos = new Map(); // itemId -> { qtd, valor, pedidos, tarifa, freteMl }
+  const itensVendidos = new Map(); // itemId -> { qtd, valor, pedidos, tarifa, freteMl, faturamentoTotal, tarifaDeclarada }
   const shippingIds = new Set();
   // pra cada shipment, guarda os itens (e a QUANTIDADE de cada um) que vieram naquele envio -
   // depois de buscar o custo de frete DO SHIPMENT (nao existe custo de frete por item na API do
@@ -1933,19 +1998,30 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     }
     const itensDoPedido = [];
     for (const oi of (pedido.order_items || [])) {
+      // v70: o sale_fee DECLARADO no pedido nem sempre bate com o que o Mercado Livre de fato
+      // debita da conta (confirmado com dado real - GET /v1/payments/{id} - varios pedidos com
+      // sale_fee bem diferente da cobranca real "ml_sale_fee"). Fonte mais confiavel: a % de
+      // comissao da CATEGORIA do produto (API /sites/{site}/listing_prices), aplicada sobre o
+      // faturamento do produto - bate muito mais perto do painel do Mercado Livre (testado no
+      // Substrato: 14.624,25 x 11,5% = 1.681,79, quase igual ao R$1.683,75 do painel, contra
+      // R$1.511,73 que a soma de sale_fee dava). Por isso agora so' ACUMULA sale_fee aqui pra
+      // guardar de FALLBACK (caso a API de comissao falhe pra algum item) - o total real de
+      // Tarifa e' recalculado por produto mais abaixo, depois de buscar o percentual de cada um.
       const saleFee = Number(oi.sale_fee) || 0;
-      tarifas += saleFee;
       if (cancelado) tarifaCancelados += saleFee;
       const itemId = oi.item && oi.item.id;
       const valorItem = (Number(oi.unit_price) || 0) * (oi.quantity || 0);
       if (itemId) {
-        const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0 };
+        const atual = itensVendidos.get(itemId) || { qtd: 0, valor: 0, pedidos: 0, tarifa: 0, freteMl: 0, faturamentoTotal: 0, tarifaDeclarada: 0 };
         if (!cancelado) {
           atual.qtd += oi.quantity || 0;
           atual.valor += valorItem;
           atual.pedidos += 1;
         }
-        atual.tarifa += saleFee;
+        // faturamentoTotal conta CANCELADO tambem - a comissao por percentual incide sobre toda
+        // venda faturada, cancelada ou nao (mesmo raciocinio que ja' valia pro sale_fee antes).
+        atual.faturamentoTotal += valorItem;
+        atual.tarifaDeclarada += saleFee;
         itensVendidos.set(itemId, atual);
         if (pedido.shipping && pedido.shipping.id) {
           const lista = itensPorShipping.get(pedido.shipping.id) || [];
@@ -2008,6 +2084,59 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o peso dos itens vendidos (rateio de frete entre produtos de um mesmo envio caiu pra 1g cada, quando nao achar o peso real): ' + e.message); }
 
+  // Tarifa (comissao) por PRODUTO - v70: em vez de somar sale_fee (declarado no pedido, que
+  // confirmado com dado real as vezes NAO bate com o que o Mercado Livre de fato cobra), busca a
+  // % de comissao da CATEGORIA de cada produto (API /sites/{site}/listing_prices) e aplica sobre
+  // o faturamento total do produto no periodo (cancelado incluso, mesmo raciocinio de antes).
+  // So' 1 chamada extra POR PRODUTO (nao por pedido) - leve mesmo numa loja com milhares de
+  // vendas. Se a API falhar pra algum item especifico, cai pro sale_fee somado (tarifaDeclarada)
+  // como fallback, em vez de zerar a tarifa dele.
+  let itensSemComissao = 0;
+  try {
+    const idsParaComissao = [...itensVendidos.keys()];
+    const dadosItem = new Map(); // itemId -> { price, category_id, listing_type_id }
+    for (let i = 0; i < idsParaComissao.length; i += 20) {
+      const lote = idsParaComissao.slice(i, i + 20).join(',');
+      const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,price,category_id,listing_type_id,site_id`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const j2 = await r.json();
+      (j2 || []).forEach(entry => { if (entry.code === 200) dadosItem.set(entry.body.id, entry.body); });
+    }
+    const CONCORRENCIA_COMISSAO = 8;
+    const idsComDados = [...dadosItem.keys()];
+    let cursorComissao = 0;
+    async function workerComissao() {
+      while (cursorComissao < idsComDados.length) {
+        const itemId = idsComDados[cursorComissao++];
+        const dados = dadosItem.get(itemId);
+        const atual = itensVendidos.get(itemId);
+        if (!atual || !dados || !dados.price || !dados.category_id || !dados.listing_type_id) { itensSemComissao++; continue; }
+        try {
+          const url = `https://api.mercadolibre.com/sites/${dados.site_id || 'MLB'}/listing_prices?price=${dados.price}&category_id=${dados.category_id}&listing_type_id=${dados.listing_type_id}`;
+          const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const j3 = await r.json();
+          const percentual = j3 && j3.sale_fee_details && typeof j3.sale_fee_details.percentage_fee === 'number' ? j3.sale_fee_details.percentage_fee : null;
+          if (percentual != null) {
+            atual.tarifa = atual.faturamentoTotal * (percentual / 100);
+          } else {
+            atual.tarifa = atual.tarifaDeclarada; // fallback
+            itensSemComissao++;
+          }
+        } catch (e) {
+          atual.tarifa = atual.tarifaDeclarada; // fallback
+          itensSemComissao++;
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_COMISSAO, idsComDados.length) }, workerComissao));
+  } catch (e) {
+    log.avisos.push('Nao foi possivel buscar a comissao por categoria dos produtos - a Tarifa caiu pro sale_fee declarado no pedido (menos preciso): ' + e.message);
+    itensVendidos.forEach(atual => { atual.tarifa = atual.tarifaDeclarada; });
+  }
+  if (itensSemComissao) log.avisos.push(`${itensSemComissao} produto(s) sem comissao por categoria disponivel - Tarifa desses ficou no sale_fee declarado no pedido (fallback, menos preciso).`);
+  // tarifas (total da loja) agora e' a SOMA da tarifa por produto ja calculada acima (por
+  // percentual de categoria, com fallback pro sale_fee declarado quando a API falha)
+  tarifas = [...itensVendidos.values()].reduce((s, v) => s + v.tarifa, 0);
+
   // frete: comprador (o que o cliente pagou) vs vendedor (o que saiu do seu bolso) - via
   // /shipments/{id}/costs, que da' exatamente essa separacao. ANTES rodava sequencial com um
   // limite de seguranca de so' 400 envios - numa loja de volume real (ex: 2786 envios em 15 dias)
@@ -2066,7 +2195,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
   if (freteFalhas) log.avisos.push(`${freteFalhas} de ${idsParaBuscar.length} envio(s) nao respondeu(ram) o custo de frete (ignorados no total - pode subestimar levemente o frete).`);
-  if (tarifaCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo somaram R$ ${tarifaCancelados.toFixed(2)} em tarifa de venda - incluida no total de Tarifa ML (confirmado que o Mercado Livre normalmente nao devolve isso so' por causa do cancelamento).`);
+  if (pedidosCancelados > 0) log.avisos.push(`${pedidosCancelados} pedido(s) cancelado(s) no periodo - o faturamento deles continua entrando na base de calculo da Tarifa (confirmado que o Mercado Livre normalmente nao devolve a comissao so' por causa do cancelamento).`);
 
   // taxa de parcelamento (financing_fee) - busca o pagamento completo no Mercado Pago pra cada
   // pagamento parcelado encontrado acima (so' da' pra ver esse valor la', nao na API do Mercado
