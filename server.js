@@ -1888,11 +1888,18 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   let pedidosValidos = 0, pedidosCancelados = 0;
   const itensVendidos = new Map(); // itemId -> { qtd, valor, pedidos, tarifa, freteMl }
   const shippingIds = new Set();
-  // pra cada shipment, guarda os itens (e o valor de cada um) que vieram naquele envio - depois de
-  // buscar o custo de frete DO SHIPMENT (nao existe custo de frete por item na API do ML, so' por
-  // envio), rateia esse custo entre os itens proporcional ao valor de cada um dentro do pedido -
-  // isso e' o que o Mercado Livre "encara como frete" (o frete grátis que sai do seu bolso).
-  const itensPorShipping = new Map(); // shippingId -> [{ itemId, valor }]
+  // pra cada shipment, guarda os itens (e a QUANTIDADE de cada um) que vieram naquele envio -
+  // depois de buscar o custo de frete DO SHIPMENT (nao existe custo de frete por item na API do
+  // ML, so' por envio), rateia esse custo entre os itens.
+  // v67: o rateio ERA proporcional ao VALOR (receita) de cada item dentro do envio - descoberto
+  // (comparando Substrato com o painel do proprio Mercado Livre: 527 unid. deviam custar
+  // 527 x R$6,95 = R$3.662,65 pelo peso, mas o painel mostra R$4.410) que isso rateia ERRADO
+  // quando um produto PESADO e BARATO (caso do Substrato, ~1kg, R$27,75) divide envio com um
+  // produto LEVE e mais CARO - o rateio por receita "rouba" frete do produto pesado pra dar pro
+  // mais caro, mesmo o frete do Mercado Livre sendo cobrado por PESO, nao por preco. Trocado pra
+  // ratear por PESO (peso do pacote x quantidade) - muito mais fiel a como o Mercado Envios cobra
+  // de verdade. O peso de cada item e' buscado em lote ANTES do rateio (ver pesosPorItem abaixo).
+  const itensPorShipping = new Map(); // shippingId -> [{ itemId, qtd }]
 
   // tarifa (sale_fee) e frete de pedido CANCELADO: confirmado comparando com o painel do Mercado
   // Livre (aviso de diagnostico de uma versao anterior) que o ML normalmente NAO devolve a tarifa
@@ -1942,7 +1949,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
         itensVendidos.set(itemId, atual);
         if (pedido.shipping && pedido.shipping.id) {
           const lista = itensPorShipping.get(pedido.shipping.id) || [];
-          lista.push({ itemId, valor: valorItem || 1 }); // >0 sempre, pra nao ficar com peso zero no rateio
+          lista.push({ itemId, qtd: oi.quantity || 1 });
           itensPorShipping.set(pedido.shipping.id, lista);
         }
         itensDoPedido.push({ itemId, valor: valorItem || 1 });
@@ -1970,6 +1977,36 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       }
     }
   }
+
+  // peso de cada item (em gramas) - usado pra ratear o custo de um envio com VARIOS produtos
+  // diferentes proporcional ao PESO (o que o Mercado Envios realmente cobra), nao ao valor.
+  // Busca em lote (ate 20 por chamada, igual o lote de titulos mais abaixo), lendo o atributo
+  // SELLER_PACKAGE_WEIGHT (peso que o proprio vendedor declarou pro pacote) e, se nao tiver, cai
+  // pro PACKAGE_WEIGHT (peso "de fabrica" cadastrado no catalogo). Item sem nenhum peso cadastrado
+  // fica de fora do mapa - o rateio usa 1g como peso minimo pra ele (evita dividir por zero e nao
+  // deixa ele ficar de fora do rateio, so' com peso desprezível).
+  const pesosPorItem = new Map(); // itemId -> gramas
+  try {
+    const idsParaPeso = [...itensVendidos.keys()];
+    for (let i = 0; i < idsParaPeso.length; i += 20) {
+      const lote = idsParaPeso.slice(i, i + 20).join(',');
+      const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,attributes`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const j2 = await r.json();
+      (j2 || []).forEach(entry => {
+        if (entry.code !== 200) return;
+        const atributos = (entry.body && entry.body.attributes) || [];
+        const acharPeso = (id) => {
+          const attr = atributos.find(a => a.id === id);
+          const struct = attr && attr.value_struct;
+          if (!struct || typeof struct.number !== 'number') return null;
+          const unidade = (struct.unit || 'g').toLowerCase();
+          return unidade === 'kg' ? struct.number * 1000 : struct.number;
+        };
+        const peso = acharPeso('SELLER_PACKAGE_WEIGHT') ?? acharPeso('PACKAGE_WEIGHT');
+        if (peso != null && peso > 0) pesosPorItem.set(entry.body.id, peso);
+      });
+    }
+  } catch (e) { log.avisos.push('Nao foi possivel buscar o peso dos itens vendidos (rateio de frete entre produtos de um mesmo envio caiu pra 1g cada, quando nao achar o peso real): ' + e.message); }
 
   // frete: comprador (o que o cliente pagou) vs vendedor (o que saiu do seu bolso) - via
   // /shipments/{id}/costs, que da' exatamente essa separacao. ANTES rodava sequencial com um
@@ -2011,11 +2048,14 @@ async function buscarResumoFinanceiro(loja, de, ate) {
         freteVendedor += custoVendedorShipment;
         if (custoVendedorShipment) {
           const itensDoShipment = itensPorShipping.get(shippingId) || [];
-          const totalValorShipment = itensDoShipment.reduce((s, it) => s + it.valor, 0);
-          if (totalValorShipment > 0) {
+          // rateia por PESO (peso do item x quantidade), nao por valor - ver comentario acima de
+          // pesosPorItem sobre o achado real que motivou essa troca (v67)
+          const pesoDoItem = (it) => (pesosPorItem.get(it.itemId) || 1) * it.qtd;
+          const pesoTotalShipment = itensDoShipment.reduce((s, it) => s + pesoDoItem(it), 0);
+          if (pesoTotalShipment > 0) {
             itensDoShipment.forEach(it => {
               const atual = itensVendidos.get(it.itemId);
-              if (atual) atual.freteMl = (atual.freteMl || 0) + custoVendedorShipment * (it.valor / totalValorShipment);
+              if (atual) atual.freteMl = (atual.freteMl || 0) + custoVendedorShipment * (pesoDoItem(it) / pesoTotalShipment);
             });
           }
         }
