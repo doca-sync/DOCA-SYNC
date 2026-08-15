@@ -489,6 +489,7 @@ tr.l-env{background:rgba(139,92,246,.07)}
       <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
       <button data-tab="full" aria-selected="false">FULL</button>
+      <button data-tab="amauri" aria-selected="false">Amauri</button>
     </nav>
   </div>
 </header>
@@ -524,6 +525,7 @@ tr.l-env{background:rgba(139,92,246,.07)}
     <div id="tab-envio" class="hidden"></div>
     <div id="tab-ruptura" class="hidden"></div>
   </section>
+  <section id="tab-amauri" class="tabpanel hidden"></section>
 </main>
 
 <div class="modal-overlay hidden" id="modalOverlay"><div class="modal" id="modalBody"></div></div>
@@ -947,7 +949,7 @@ function desfazer(){
 /* ---------- persistência ---------- */
 function loadFromLocalStorage(){
   const raw=localStorage.getItem('estoque_full_data');
-  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{}}; }catch(e){} }
+  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}}; }catch(e){} }
   migrar();
 }
 function saveToLocalStorage(){ localStorage.setItem('estoque_full_data',JSON.stringify(state)); }
@@ -1361,7 +1363,7 @@ async function conectarNuvem(usuario,senha){
   }catch(e){ nuvemAuth=antigo; throw e; }
 }
 function aplicarEstadoNuvem(d,atualizadoEmIso){
-  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{}};
+  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
   migrar(); saveToLocalStorage();
   nuvemAtualizadoEm=atualizadoEmIso?new Date(atualizadoEmIso).getTime():Date.now();
   alteracaoLocal=false; undoStack=[];
@@ -3000,9 +3002,9 @@ function renderProdutos(){
         const mestreVinc=p.vinculadoA?prodById(p.vinculadoA):null;
         const vinculados=membrosVinculados(p);
         return `
-        <tr class="${estoqueBaixo(p)?'row-baixo':''}">
+        <tr>
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
-          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${estoqueBaixo(p)?' <span title="Estoque abaixo do mínimo">⚠</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
+          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
           <td class="num">${mestreVinc?'<span class="muted" title="Vendas somadas no SKU mestre">—</span>':(m!=null?m.toFixed(2):'<span class="muted">—</span>')}</td>
           <td class="num">${fmtInt(p.qtd.comprar)}</td>
@@ -3135,7 +3137,7 @@ function openProdutoModal(id,lojaPadrao){
       <label>Código do produto<input id="fCodigo" type="text" value="${p?esc(p.codigo):''}" placeholder="Ex: JIIK92165"></label>
       <label>Fornecedor<input id="fFornecedor" type="text" value="${p?esc(p.fornecedor):''}" placeholder="Ex: Distribuidora XYZ"></label>
       <label>Custo unitário (R$)<input id="fCusto" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${p&&p.custo?String(p.custo).replace('.',','):''}"></label>
-      <label>Unidades por caixa <small>(opcional)</small><input id="fUnidCaixa" type="number" min="1" step="1" placeholder="Ex: 12" value="${p&&p.unidPorCaixa?p.unidPorCaixa:''}"></label>
+      <label>Unidades por caixa<input id="fUnidCaixa" type="number" min="1" step="1" placeholder="Ex: 12" value="${p&&p.unidPorCaixa?p.unidPorCaixa:''}"></label>
     </div>
     ${sug!=null?`<p class="hint" style="margin-top:-8px">Estoque mínimo automático pelas vendas do FULL: <b>${fmtInt(sug)} un.</b> (média diária ponderada 7/15/30d × 30 dias de cobertura${vinculadosDeP.length?', somando '+vinculadosDeP.map(v=>esc(v.sku)).join(' + '):''}).</p>`:''}
     ${!editing?`<div class="form-grid">
@@ -4770,6 +4772,234 @@ function renderFinancas(){
   if(btnFecharSocios) btnFecharSocios.onclick=calcularFechamentoSocios;
 }
 
+/* ================= Amauri: fechamento dos produtos em parceria (TorvStore) =================
+   3 produtos da TorvStore têm sociedade com o Amauri. Cada produto tem seus próprios custos
+   (frete, embalagem, etiqueta e ads — editáveis, guardados por produto) e um percentual de
+   repasse (padrão 50%). Pra cada período escolhido: puxa unidades vendidas/faturamento de cada
+   produto marcado (via /financas/resumo, igual o Resumo Financeiro), calcula a margem líquida
+   de cada um (faturamento − CMV − frete − embalagem − etiqueta − ads − imposto) e o repasse
+   devido a ele, e soma tudo no final. Um log de pagamentos já feitos permite acompanhar quanto
+   ainda falta pagar. */
+function amauriState(){
+  if(!state.amauri||typeof state.amauri!=='object') state.amauri={};
+  if(!Array.isArray(state.amauri.produtoIds)) state.amauri.produtoIds=[];
+  if(!state.amauri.custos||typeof state.amauri.custos!=='object') state.amauri.custos={};
+  if(!Array.isArray(state.amauri.pagamentos)) state.amauri.pagamentos=[];
+  return state.amauri;
+}
+function amauriCustos(produtoId){
+  const a=amauriState();
+  if(!a.custos[produtoId]||typeof a.custos[produtoId]!=='object') a.custos[produtoId]={frete:0,embalagem:0,etiqueta:0,ads:0,percentual:50};
+  const c=a.custos[produtoId];
+  if(c.frete==null) c.frete=0; if(c.embalagem==null) c.embalagem=0; if(c.etiqueta==null) c.etiqueta=0; if(c.ads==null) c.ads=0; if(c.percentual==null) c.percentual=50;
+  return c;
+}
+function amauriProdutosMarcados(){
+  const a=amauriState();
+  return a.produtoIds.map(id=>prodById(id)).filter(Boolean);
+}
+function toggleAmauriProduto(produtoId){
+  const a=amauriState();
+  snapshot('produto em parceria com Amauri');
+  if(a.produtoIds.includes(produtoId)) a.produtoIds=a.produtoIds.filter(id=>id!==produtoId);
+  else a.produtoIds.push(produtoId);
+  persist();
+}
+function atualizarCustoAmauri(produtoId,patch){
+  snapshot('custo da parceria com Amauri');
+  Object.assign(amauriCustos(produtoId),patch);
+  persist();
+}
+function addPagamentoAmauri(valor,descricao,data){
+  snapshot('pagamento pra Amauri');
+  amauriState().pagamentos.push({id:gerarId('am'),valor:Number(valor)||0,descricao:(descricao||'').trim(),data:data||hoje()});
+  persist();
+}
+function removerPagamentoAmauri(id){
+  const a=amauriState();
+  snapshot('remoção de pagamento pra Amauri');
+  a.pagamentos=a.pagamentos.filter(x=>x.id!==id);
+  persist();
+}
+let amauriResumoPeriodo='30d', amauriResumoDe='', amauriResumoAte='';
+let amauriResumoResultado=null, amauriResumoCarregando=false, amauriResumoErro=null;
+async function pesquisarResumoAmauri(){
+  amauriResumoCarregando=true; amauriResumoErro=null; renderAmauri();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const params=new URLSearchParams({loja:'TorvStore',periodo:amauriResumoPeriodo});
+    if(amauriResumoPeriodo==='personalizado'){
+      if(!amauriResumoDe||!amauriResumoAte) throw new Error('Informe as duas datas do período personalizado.');
+      params.set('de',amauriResumoDe); params.set('ate',amauriResumoAte);
+    }
+    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo (status '+r.status+').'));
+    amauriResumoResultado=j.resumo;
+  }catch(e){ amauriResumoErro=e.message; }
+  finally{ amauriResumoCarregando=false; renderAmauri(); }
+}
+/* linha de cálculo de um produto: casa pelo mlItemId (igual o Resumo Financeiro), usando valor e
+   pedidos por item que o backend manda desde a v56 (antes só mandava a quantidade). */
+function calcularLinhaAmauriProduto(p,resumo){
+  const c=amauriCustos(p.id);
+  const it=(resumo.itensVendidos||[]).find(x=>x.itemId===p.mlItemId);
+  const qtd=it?(it.qtd||0):0;
+  const faturamento=it?(it.valor||0):0;
+  const vendasConcluidas=it?(it.pedidos||0):0;
+  const cmv=(p.custo||0)*qtd;
+  const freteTotal=(c.frete||0)*qtd;
+  const embalagemTotal=(c.embalagem||0)*qtd;
+  const etiquetaTotal=(c.etiqueta||0)*qtd;
+  const adsTotal=c.ads||0;
+  const aliquota=finLoja('TorvStore').aliquotaImposto||0;
+  const impostoCalc=faturamento*(aliquota/100);
+  const margemLiquida=faturamento-cmv-freteTotal-embalagemTotal-etiquetaTotal-adsTotal-impostoCalc;
+  const percentual=c.percentual!=null?c.percentual:50;
+  const repasse=margemLiquida*(percentual/100);
+  return {p,c,qtd,faturamento,vendasConcluidas,cmv,freteTotal,embalagemTotal,etiquetaTotal,adsTotal,aliquota,impostoCalc,margemLiquida,percentual,repasse};
+}
+function renderAmauri(){
+  const el=document.getElementById('tab-amauri'); if(!el) return;
+  const todosTorvStore=state.produtos.filter(p=>p.loja==='TorvStore').sort((a,b)=>(a.sku||'').localeCompare(b.sku||''));
+  const a=amauriState();
+  const marcados=amauriProdutosMarcados();
+  const linhas=amauriResumoResultado?marcados.map(p=>calcularLinhaAmauriProduto(p,amauriResumoResultado)):[];
+  const totalMargem=linhas.reduce((s,l)=>s+l.margemLiquida,0);
+  const totalRepasse=linhas.reduce((s,l)=>s+l.repasse,0);
+  const pagamentos=a.pagamentos.slice().sort((x,y)=>(y.data||'').localeCompare(x.data||''));
+  const totalPago=pagamentos.reduce((s,x)=>s+(Number(x.valor)||0),0);
+  const cel=(titulo,valor,cls)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px" class="${cls||''}">${fmtMoney(valor)}</b></div>`;
+  el.innerHTML=`
+    <h1 class="page-title">Amauri</h1>
+    <p class="hint" style="margin:0 0 16px">Fechamento dos produtos da TorvStore em sociedade com o Amauri: marque os produtos, ajuste os custos de cada um e puxe o período pra calcular a margem líquida e o repasse devido a ele.</p>
+    <div class="card">
+      <h3 style="margin-top:0">Produtos em parceria</h3>
+      <p class="hint" style="margin:0 0 10px">Marque quais produtos da TorvStore são em sociedade com o Amauri.</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px"></th><th>SKU</th><th class="num">Custo unit.</th></tr></thead><tbody>
+        ${todosTorvStore.length?todosTorvStore.map(p=>`<tr>
+          <td><input type="checkbox" data-amauriprod="${p.id}" ${a.produtoIds.includes(p.id)?'checked':''}></td>
+          <td class="mono">${esc(p.sku)}</td>
+          <td class="num">${fmtMoney(p.custo||0)}</td>
+        </tr>`).join(''):'<tr><td colspan="3" class="empty">Nenhum produto cadastrado na TorvStore.</td></tr>'}
+      </tbody></table></div>
+    </div>
+    ${marcados.length?`
+    <div class="card">
+      <h3 style="margin-top:0">Custos de cada produto</h3>
+      <p class="hint" style="margin:0 0 10px">Frete, embalagem e etiqueta são por unidade vendida; ads é o total gasto no período. O percentual é a fatia da margem líquida que vai pro Amauri.</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>SKU</th><th class="num">Frete/un.</th><th class="num">Embalagem/un.</th><th class="num">Etiqueta/un.</th><th class="num">Ads (período)</th><th class="num">% repasse</th>
+      </tr></thead><tbody>
+        ${marcados.map(p=>{ const c=amauriCustos(p.id); return `<tr>
+          <td class="mono">${esc(p.sku)}</td>
+          <td class="num"><input type="number" min="0" step="0.01" style="width:80px" value="${c.frete||0}" data-amauricusto="${p.id}|frete"></td>
+          <td class="num"><input type="number" min="0" step="0.01" style="width:80px" value="${c.embalagem||0}" data-amauricusto="${p.id}|embalagem"></td>
+          <td class="num"><input type="number" min="0" step="0.01" style="width:80px" value="${c.etiqueta||0}" data-amauricusto="${p.id}|etiqueta"></td>
+          <td class="num"><input type="number" min="0" step="0.01" style="width:90px" value="${c.ads||0}" data-amauricusto="${p.id}|ads"></td>
+          <td class="num"><input type="number" min="0" max="100" step="1" style="width:70px" value="${c.percentual!=null?c.percentual:50}" data-amauricusto="${p.id}|percentual"></td>
+        </tr>`; }).join('')}
+      </tbody></table></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">📊 Período do fechamento</h3>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+        <label>Período<select id="amPeriodo">
+          <option value="hoje" ${amauriResumoPeriodo==='hoje'?'selected':''}>Hoje</option>
+          <option value="7d" ${amauriResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
+          <option value="15d" ${amauriResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
+          <option value="30d" ${amauriResumoPeriodo==='30d'?'selected':''}>Últimos 30 dias</option>
+          <option value="mes_corrente" ${amauriResumoPeriodo==='mes_corrente'?'selected':''}>Mês corrente</option>
+          <option value="personalizado" ${amauriResumoPeriodo==='personalizado'?'selected':''}>Personalizado</option>
+        </select></label>
+        ${amauriResumoPeriodo==='personalizado'?`
+          <label>De<input type="date" id="amDe" value="${esc(amauriResumoDe)}"></label>
+          <label>Até<input type="date" id="amAte" value="${esc(amauriResumoAte)}"></label>`:'<span></span><span></span>'}
+      </div>
+      <div class="acoes-linha" style="margin-top:10px">
+        <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
+      </div>
+      ${amauriResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(amauriResumoErro)}</p>`:''}
+      ${amauriResumoResultado?`
+        <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)}</p>
+        <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Custo produto</th><th class="num">Frete</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto</th><th class="num">Margem líquida</th><th class="num">Repasse Amauri</th>
+        </tr></thead><tbody>
+          ${linhas.map(l=>`<tr>
+            <td class="mono">${esc(l.p.sku)}</td>
+            <td class="num">${fmtInt(l.qtd)}</td>
+            <td class="num">${fmtInt(l.vendasConcluidas)}</td>
+            <td class="num">${fmtMoney(l.faturamento)}</td>
+            <td class="num">${fmtMoney(l.cmv)}</td>
+            <td class="num">${fmtMoney(l.freteTotal)}</td>
+            <td class="num">${fmtMoney(l.embalagemTotal)}</td>
+            <td class="num">${fmtMoney(l.etiquetaTotal)}</td>
+            <td class="num">${fmtMoney(l.adsTotal)}</td>
+            <td class="num">${fmtMoney(l.impostoCalc)}</td>
+            <td class="num"><b class="${l.margemLiquida>=0?'okv':'pend'}">${fmtMoney(l.margemLiquida)}</b></td>
+            <td class="num"><b>${fmtMoney(l.repasse)}</b></td>
+          </tr>`).join('')}
+        </tbody></table></div>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+          ${cel('MARGEM LÍQUIDA TOTAL (SOMA DOS PRODUTOS)',totalMargem,totalMargem>=0?'okv':'pend')}
+          ${cel('REPASSE TOTAL DEVIDO AO AMAURI NO PERÍODO',totalRepasse)}
+        </div>
+      `:''}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">💸 Pagamentos já feitos ao Amauri</h3>
+      <p class="hint" style="margin:0 0 10px">Registre aqui os repasses já pagos, pra acompanhar o quanto ainda falta.</p>
+      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr auto">
+        <label>Descrição<input id="amPagDescricao" type="text" placeholder="Ex: repasse de agosto"></label>
+        <label>Valor (R$)<input id="amPagValor" type="number" min="0" step="0.01"></label>
+        <label>Data<input id="amPagData" type="date" value="${esc(hoje())}"></label>
+        <button class="btn gold" id="btnAddPagAmauri" style="align-self:end">+ Adicionar</button>
+      </div>
+      ${pagamentos.length?`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><tbody>
+        ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-rempagamauri="${x.id}">✕</button></td></tr>`).join('')}
+      </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhum pagamento registrado ainda.</p>'}
+      <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+        ${cel('TOTAL JÁ PAGO',totalPago)}
+        ${cel('SALDO A PAGAR (repasse do período − já pago)',totalRepasse-totalPago,(totalRepasse-totalPago)>0?'pend':'okv')}
+      </div>
+    </div>
+    `:'<p class="empty-inline">Marque ao menos um produto acima pra começar o fechamento.</p>'}
+  `;
+  el.querySelectorAll('[data-amauriprod]').forEach(c=>c.onchange=()=>{ toggleAmauriProduto(c.dataset.amauriprod); });
+  el.querySelectorAll('[data-amauricusto]').forEach(inp=>inp.onchange=()=>{
+    const [produtoId,campo]=inp.dataset.amauricusto.split('|');
+    atualizarCustoAmauri(produtoId,{[campo]:Number(inp.value)||0});
+  });
+  const amPeriodo=document.getElementById('amPeriodo');
+  if(amPeriodo) amPeriodo.onchange=e=>{
+    amauriResumoPeriodo=e.target.value;
+    amauriResumoResultado=null;
+    if(amauriResumoPeriodo==='personalizado'){ renderAmauri(); return; }
+    pesquisarResumoAmauri();
+  };
+  const amDe=document.getElementById('amDe'), amAte=document.getElementById('amAte');
+  if(amDe) amDe.onchange=e=>{ amauriResumoDe=e.target.value; };
+  if(amAte) amAte.onchange=e=>{ amauriResumoAte=e.target.value; };
+  const amPesquisar=document.getElementById('amPesquisar');
+  if(amPesquisar) amPesquisar.onclick=pesquisarResumoAmauri;
+  const btnAddPagAmauri=document.getElementById('btnAddPagAmauri');
+  if(btnAddPagAmauri) btnAddPagAmauri.onclick=()=>{
+    const descricao=document.getElementById('amPagDescricao').value.trim();
+    const valor=Number(document.getElementById('amPagValor').value);
+    const data=document.getElementById('amPagData').value||hoje();
+    if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+    addPagamentoAmauri(valor,descricao,data);
+    toast('Pagamento registrado.');
+    renderAmauri();
+  };
+  el.querySelectorAll('[data-rempagamauri]').forEach(b=>b.onclick=()=>{
+    removerPagamentoAmauri(b.dataset.rempagamauri);
+    toast('Pagamento removido.');
+    renderAmauri();
+  });
+}
+
 /* ---------- listas de tarefas ---------- */
 function addLista(nome){
   snapshot('nova lista de tarefas');
@@ -6004,7 +6234,7 @@ function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],
-   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
+   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
