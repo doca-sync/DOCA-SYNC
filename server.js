@@ -662,6 +662,56 @@ app.get('/debug/mp/relatorio/categorias', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* rota de diagnostico - o /debug/mp/relatorio/categorias (acima) agrupou por DESCRIPTION usando
+   NET_CREDIT_AMOUNT (dinheiro ENTRANDO), que nao serve pra achar o que foi DEDUZIDO. Dado real
+   (3 linhas de amostra da categoria "payment") mostrou que cada linha de pagamento tem
+   GROSS_AMOUNT (valor bruto da venda), MP_FEE_AMOUNT (taxa do Mercado Pago) e NET_CREDIT_AMOUNT
+   (o que realmente caiu na conta) - a diferenca entre eles e' TUDO que foi deduzido daquela
+   venda (comissao do ML + frete + financiamento + imposto retido, o que for), sem precisar abrir
+   pedido por pedido - e' o extrato real, ja' agregado. Essa rota soma isso pra TODAS as linhas
+   "payment" do periodo, pra comparar com o que o Doca calcula. Ex.:
+   /debug/mp/relatorio/pagamentos-resumo?loja=TorvStore&arquivo=reserve-release-....csv&de=2026-07-01&ate=2026-07-31 */
+app.get('/debug/mp/relatorio/pagamentos-resumo', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const arquivo = req.query.arquivo;
+    const de = req.query.de, ate = req.query.ate;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!arquivo) return res.status(400).json({ ok: false, erro: 'Parametro "arquivo" obrigatorio (ver o campo do relatorio em /debug/mp/relatorio/listar).' });
+    const r = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(arquivo)}`, { method: 'GET' });
+    const texto = await r.text();
+    const { cabecalho, linhas } = parseCsvPontoEVirgula(texto);
+    if (!linhas.length) return res.status(200).json({ ok: false, erro: 'Relatorio vazio ou nao processado ainda.', http_status: r.status, cabecalho });
+    const filtradas = linhas.filter(l => {
+      if (l.DESCRIPTION !== 'payment') return false;
+      if (!de || !ate) return true;
+      const d = (l.DATE || '').slice(0, 10);
+      return d >= de && d <= ate;
+    });
+    let totalGross = 0, totalMpFee = 0, totalTaxes = 0, totalNet = 0;
+    filtradas.forEach(l => {
+      totalGross += parseFloat(l.GROSS_AMOUNT) || 0;
+      totalMpFee += parseFloat(l.MP_FEE_AMOUNT) || 0;
+      totalTaxes += parseFloat(l.TAXES_AMOUNT) || 0;
+      totalNet += parseFloat(l.NET_CREDIT_AMOUNT) || 0;
+    });
+    // tudo que foi deduzido do bruto ALEM da taxa do Mercado Pago e do imposto retido -
+    // comissao do Mercado Livre + frete (Full/free shipping) + financiamento, o que for, tudo
+    // junto (esse extrato nao separa por tipo dentro de cada linha de pagamento).
+    const outrasDeducoes = totalGross - totalNet - Math.abs(totalMpFee) - Math.abs(totalTaxes);
+    const arred = (n) => Math.round(n * 100) / 100;
+    res.json({
+      ok: true, loja, arquivo, filtro: { de: de || null, ate: ate || null },
+      total_linhas_payment_no_filtro: filtradas.length,
+      total_gross_amount: arred(totalGross),
+      total_mp_fee_amount: arred(totalMpFee),
+      total_taxes_amount: arred(totalTaxes),
+      total_net_credit_amount: arred(totalNet),
+      outras_deducoes_alem_mp_fee_e_taxes: arred(outrasDeducoes),
+      percentual_outras_deducoes_sobre_gross: totalGross > 0 ? arred((outrasDeducoes / totalGross) * 100) : null
+    });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 /* le um CSV separado por ";" (formato dos relatorios do Mercado Pago) e devolve como lista de
    objetos {coluna: valor}, usando a 1a linha como cabecalho. Ignora linhas vazias no fim. */
 function parseCsvPontoEVirgula(texto) {
