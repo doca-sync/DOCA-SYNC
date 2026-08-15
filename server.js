@@ -289,6 +289,76 @@ app.get('/debug/pagamento-mp', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* rota de diagnostico - suspeita: pra produto enviado por FULL (fulfillment), o custo de
+   /shipments/{id}/costs (o que o Doca usa hoje pro Frete ML) pode NAO incluir a taxa de
+   separacao/armazenagem do FULL - essa taxa aparece nos charges_details do PAGAMENTO como um
+   item separado tipo "shp_fulfillment" (visto num pagamento de teste, R$ 6,55, com metadata
+   source:"shipping-account-movements"), debitada direto da conta, fora do fluxo normal de
+   frete do pedido. Essa rota pega pedidos de um produto (filtra pelo TITULO, sem precisar do
+   item_id de cor) num periodo e mostra, pedido por pedido: o custo de frete pelo metodo atual
+   (/shipments/{id}/costs) ao lado de TODAS as cobrancas reais que saíram da conta do vendedor
+   nesse pagamento (charges_details onde accounts.from==="collector"), pra achar visualmente se
+   sobra alguma cobranca de frete/fulfillment que hoje NAO entra no calculo. Ex.:
+   /debug/frete-fulfillment?loja=TorvStore&titulo=substrato&de=2026-07-01&ate=2026-07-31&limite=5 */
+app.get('/debug/frete-fulfillment', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const titulo = (req.query.titulo || '').toLowerCase();
+    const de = req.query.de, ate = req.query.ate;
+    const limite = parseInt(req.query.limite || '5', 10);
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    if (!titulo) return res.status(400).json({ ok: false, erro: 'Parametro "titulo" obrigatorio (trecho do titulo do anuncio, ex: "substrato").' });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const log = { avisos: [] };
+    const deIso = `${de}T00:00:00-03:00`, ateIso = `${ate}T23:59:59-03:00`;
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+    const combinam = pedidos.filter(p => (p.order_items || []).some(oi => oi.item && (oi.item.title || '').toLowerCase().includes(titulo)));
+    const amostra = combinam.slice(0, limite);
+    const resultado = [];
+    for (const p of amostra) {
+      const item = { shipment_costs: null, pagamento: null };
+      if (p.shipping && p.shipping.id) {
+        try {
+          const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${p.shipping.id}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const senders = j.senders || [];
+          item.shipment_costs = { shipping_id: p.shipping.id, total_senders: senders.reduce((s, r) => s + (Number(r.cost) || 0), 0), raw: j };
+        } catch (e) { item.shipment_costs = { erro: e.message }; }
+      }
+      const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved') || (p.payments || [])[0];
+      if (pgAprovado && pgAprovado.id && tokenMpDaLoja(loja)) {
+        try {
+          const r = await mpFetch(loja, `/v1/payments/${pgAprovado.id}`, { method: 'GET' });
+          const jp = await r.json();
+          const cobrancasDoVendedor = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
+          item.pagamento = {
+            payment_id: pgAprovado.id,
+            total_cobrado_do_vendedor: cobrancasDoVendedor.reduce((s, c) => s + ((c.amounts && Number(c.amounts.original)) || 0), 0),
+            cobrancas: cobrancasDoVendedor.map(c => ({ nome: c.name, tipo: c.type, valor: c.amounts && c.amounts.original, destino: c.accounts.to, detalhe: c.metadata && c.metadata.source_detail }))
+          };
+        } catch (e) { item.pagamento = { erro: e.message }; }
+      }
+      resultado.push({
+        pedido_id: p.id, status: p.status, total_amount: p.total_amount,
+        itens: (p.order_items || []).map(oi => ({ item_id: oi.item && oi.item.id, titulo: oi.item && oi.item.title, sale_fee: oi.sale_fee })),
+        ...item
+      });
+    }
+    res.json({
+      ok: true, loja, titulo, periodo: { de, ate },
+      total_pedidos_no_periodo: pedidos.length,
+      total_combinando_titulo: combinam.length,
+      mostrando: resultado.length,
+      pedidos: resultado,
+      avisos: log.avisos
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 /* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
    auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.
    Devolve o objeto completo (status, status_detail, tags, pack_id, date_last_updated, etc). Ex.:
