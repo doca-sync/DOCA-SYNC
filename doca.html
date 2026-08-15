@@ -4915,6 +4915,32 @@ function puxarAdsAutoAmauri(){
   if(achados) toast(`Ads puxado automático pra ${achados} produto(s).`+(naoAchados?` ${naoAchados} sem campanha encontrada — confira/edite na mão.`:''));
   else alert('Não achei campanha de Ads com o SKU no nome pra nenhum produto marcado. Sincronize a aba Ads primeiro (ou informe o valor de ads na mão).');
 }
+/* Os campos de custo/quem-paga/percentual só gravam no estado quando o campo perde o foco
+   (onchange) - igual todo campo de valor no Doca. Só que "Calcular", trocar o período e "Puxar
+   ads automático" redesenham a aba na hora, e se o cursor ainda estivesse num campo de custo sem
+   ter saído dele (sem clicar fora/apertar Tab), a edição se perdia - a margem líquida parecia não
+   descontar os custos porque o valor digitado nunca tinha sido salvo. Por isso, antes de qualquer
+   uma dessas ações, "força" a leitura de tudo que estiver na tela pro estado, mesmo sem o campo ter
+   perdido o foco. */
+function salvarCustosAmauriPendentes(){
+  const el=document.getElementById('tab-amauri'); if(!el) return;
+  el.querySelectorAll('[data-amauricusto]').forEach(inp=>{
+    const [produtoId,campo]=inp.dataset.amauricusto.split('|');
+    amauriCustos(produtoId)[campo]=parseMoeda(inp.value);
+  });
+  el.querySelectorAll('[data-amauriquem]').forEach(sel=>{
+    const [produtoId,campo]=sel.dataset.amauriquem.split('|');
+    amauriCustos(produtoId)[campo]=sel.value;
+  });
+  el.querySelectorAll('[data-amauripct]').forEach(inp=>{
+    amauriCustos(inp.dataset.amauripct).percentual=Number(inp.value)||0;
+  });
+}
+function commitCustosAmauri(){
+  snapshot('custos da parceria com Amauri');
+  salvarCustosAmauriPendentes();
+  persist();
+}
 function renderAmauri(){
   const el=document.getElementById('tab-amauri'); if(!el) return;
   const todosTorvStore=state.produtos.filter(p=>p.loja==='TorvStore').sort((a,b)=>(a.sku||'').localeCompare(b.sku||''));
@@ -4972,7 +4998,7 @@ function renderAmauri(){
     </div>
     <div class="card">
       <h3 style="margin-top:0">📊 Período do fechamento</h3>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
         <label>Período<select id="amPeriodo">
           <option value="hoje" ${amauriResumoPeriodo==='hoje'?'selected':''}>Hoje</option>
           <option value="7d" ${amauriResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
@@ -4984,7 +5010,9 @@ function renderAmauri(){
         ${amauriResumoPeriodo==='personalizado'?`
           <label>De<input type="date" id="amDe" value="${esc(amauriResumoDe)}"></label>
           <label>Até<input type="date" id="amAte" value="${esc(amauriResumoAte)}"></label>`:'<span></span><span></span>'}
+        <label>Alíquota de imposto da TorvStore (%)<input type="text" inputmode="decimal" placeholder="0,0" id="amAliquota" value="${finLoja('TorvStore').aliquotaImposto?String(finLoja('TorvStore').aliquotaImposto).replace('.',','):''}"></label>
       </div>
+      <p class="hint" style="margin:8px 0 0">Essa é a mesma alíquota configurada em Finanças → Resumo Financeiro (TorvStore) — mudar aqui atualiza lá também. É ela que desconta o imposto de cada produto antes de calcular a margem líquida e o repasse do Amauri.</p>
       <div class="acoes-linha" style="margin-top:10px">
         <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
       </div>
@@ -4992,7 +5020,7 @@ function renderAmauri(){
       ${amauriResumoResultado?`
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)}</p>
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Custo produto</th><th class="num">Frete</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
+          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Vendas concluídas</th><th class="num">Faturamento</th><th class="num">Custo produto</th><th class="num">Frete</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
         </tr></thead><tbody>
           ${linhas.map(l=>`<tr>
             <td class="mono">${esc(l.p.sku)}</td>
@@ -5036,22 +5064,15 @@ function renderAmauri(){
     </div>
     `:'<p class="empty-inline">Marque ao menos um produto acima pra começar o fechamento.</p>'}
   `;
-  el.querySelectorAll('[data-amauriprod]').forEach(c=>c.onchange=()=>{ toggleAmauriProduto(c.dataset.amauriprod); });
-  el.querySelectorAll('[data-amauricusto]').forEach(inp=>inp.onchange=()=>{
-    const [produtoId,campo]=inp.dataset.amauricusto.split('|');
-    atualizarCustoAmauri(produtoId,{[campo]:parseMoeda(inp.value)});
-  });
-  el.querySelectorAll('[data-amauriquem]').forEach(sel=>sel.onchange=()=>{
-    const [produtoId,campo]=sel.dataset.amauriquem.split('|');
-    atualizarCustoAmauri(produtoId,{[campo]:sel.value});
-  });
-  el.querySelectorAll('[data-amauripct]').forEach(inp=>inp.onchange=()=>{
-    atualizarCustoAmauri(inp.dataset.amauripct,{percentual:Number(inp.value)||0});
-  });
+  el.querySelectorAll('[data-amauriprod]').forEach(c=>c.onchange=()=>{ salvarCustosAmauriPendentes(); toggleAmauriProduto(c.dataset.amauriprod); });
+  el.querySelectorAll('[data-amauricusto]').forEach(inp=>inp.onchange=commitCustosAmauri);
+  el.querySelectorAll('[data-amauriquem]').forEach(sel=>sel.onchange=commitCustosAmauri);
+  el.querySelectorAll('[data-amauripct]').forEach(inp=>inp.onchange=commitCustosAmauri);
   const btnAdsAuto=document.getElementById('btnAdsAutoAmauri');
-  if(btnAdsAuto) btnAdsAuto.onclick=puxarAdsAutoAmauri;
+  if(btnAdsAuto) btnAdsAuto.onclick=()=>{ commitCustosAmauri(); puxarAdsAutoAmauri(); };
   const amPeriodo=document.getElementById('amPeriodo');
   if(amPeriodo) amPeriodo.onchange=e=>{
+    commitCustosAmauri();
     amauriResumoPeriodo=e.target.value;
     amauriResumoResultado=null;
     if(amauriResumoPeriodo==='personalizado'){ renderAmauri(); return; }
@@ -5060,14 +5081,17 @@ function renderAmauri(){
   const amDe=document.getElementById('amDe'), amAte=document.getElementById('amAte');
   if(amDe) amDe.onchange=e=>{ amauriResumoDe=e.target.value; };
   if(amAte) amAte.onchange=e=>{ amauriResumoAte=e.target.value; };
+  const amAliquota=document.getElementById('amAliquota');
+  if(amAliquota) amAliquota.onchange=e=>{ salvarCustosAmauriPendentes(); atualizarFinanceiro('TorvStore',{aliquotaImposto:e.target.value}); };
   const amPesquisar=document.getElementById('amPesquisar');
-  if(amPesquisar) amPesquisar.onclick=pesquisarResumoAmauri;
+  if(amPesquisar) amPesquisar.onclick=()=>{ commitCustosAmauri(); pesquisarResumoAmauri(); };
   const btnAddPagAmauri=document.getElementById('btnAddPagAmauri');
   if(btnAddPagAmauri) btnAddPagAmauri.onclick=()=>{
     const descricao=document.getElementById('amPagDescricao').value.trim();
     const valor=parseMoeda(document.getElementById('amPagValor').value);
     const data=document.getElementById('amPagData').value||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+    salvarCustosAmauriPendentes();
     addPagamentoAmauri(valor,descricao,data);
     toast('Pagamento registrado.');
     renderAmauri();
