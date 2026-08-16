@@ -486,7 +486,7 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     job.progresso = { feito: 0, total: auditaveis.length };
 
     let faturamento = 0, cancelamentosValor = 0;
-    let tarifaAssumida = 0, tarifaReal = 0, freteReal = 0;
+    let tarifaAssumida = 0, tarifaReal = 0, freteViaShipments = 0, custoFullNaoCapturado = 0;
     let pedidosPendentesRepasse = 0, valorPendenteRepasse = 0;
     const anomalias = [];
     const agora = Date.now();
@@ -495,11 +495,22 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     // (pack_id), o Mercado Livre cria um pedido por item/vendedor mas o PAGAMENTO no Mercado Pago e'
     // UM SO, compartilhado entre os pedidos irmaos (confirmado no proprio codigo do /financas/resumo,
     // que ja tinha itensPorPagamento por causa disso). O loop antigo buscava o pagamento por PEDIDO
-    // sem checar se aquele payment.id ja tinha sido contado - resultado: o Frete (e a Tarifa) real de
-    // um carrinho com N pedidos irmaos era somado N vezes, inflando o total. Corrigido: so soma a
-    // cobranca de cada payment.id UMA vez (no primeiro pedido em que aparece), mesmo que outros
-    // pedidos irmaos do carrinho reapareçam depois - e nem chama o Mercado Pago de novo pra eles.
+    // sem checar se aquele payment.id ja tinha sido contado - resultado: a Tarifa real de um carrinho
+    // com N pedidos irmaos era somada N vezes, inflando o total. Corrigido: so soma a cobranca de
+    // cada payment.id UMA vez (no primeiro pedido em que aparece).
+    // v83: BUG CONCEITUAL encontrado (usuario desconfiou com razao do Frete real ter vindo MAIOR que
+    // ate o painel do Mercado Livre) - "shp_fulfillment" no charges_details do pagamento NAO e' o
+    // mesmo frete que /shipments/{id}/costs devolve (o que o card FRETE do Resumo Financeiro usa
+    // hoje) - e' a taxa de SEPARACAO/ARMAZENAGEM do Mercado Envios Full, cobrada a parte, fora do
+    // fluxo normal de frete do pedido (ja suspeitado antes em /debug/frete-fulfillment, nunca
+    // confirmado com dado ao vivo por causa do timeout do endpoint - mas a diferenca gigante contra
+    // o painel do ML bate com essa hipotese, e a loja usa Mercado Envios Full). Corrigido: agora
+    // busca o frete real pelo MESMO metodo do dia a dia (/shipments/{id}/costs, comparavel de
+    // verdade com o card FRETE), e mostra a taxa de separacao do Full (shp_fulfillment) SEPARADA,
+    // como um custo que hoje nao aparece em NENHUM lugar do Doca (nem no Resumo, nem na Auditoria
+    // antiga) - achado novo, nao um erro de medicao do frete.
     const pagamentosContados = new Set();
+    const shipmentsContados = new Set();
     let pedidosMesmoCarrinho = 0;
 
     for (const p of auditaveis) {
@@ -511,6 +522,16 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       for (const oi of (p.order_items || [])) saleFeeDoPedido += (Number(oi.sale_fee) || 0) * (oi.quantity || 1);
       tarifaAssumida += saleFeeDoPedido;
 
+      // frete "de verdade" (comparavel ao card FRETE) - mesmo metodo do dia a dia, deduplicado por
+      // shipping.id (pedidos irmaos de um mesmo carrinho podem compartilhar o mesmo envio tambem).
+      if (p.shipping && p.shipping.id && !shipmentsContados.has(p.shipping.id)) {
+        shipmentsContados.add(p.shipping.id);
+        try {
+          const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${p.shipping.id}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          freteViaShipments += (j.senders || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        } catch (e) { /* ignora falha pontual - mesmo comportamento tolerante do dia a dia */ }
+      }
+
       const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved' || pg.status === 'refunded' || pg.status === 'partially_refunded') || (p.payments || [])[0];
       if (!pgAprovado || !pgAprovado.id) {
         anomalias.push({ pedido_id: p.id, motivo: 'Sem pagamento associado pra conferir', total: totalPedido });
@@ -519,7 +540,7 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       }
       if (pagamentosContados.has(pgAprovado.id)) {
         // pedido em carrinho (pack) cujo pagamento ja foi contado via um pedido irmao - nao soma de
-        // novo (evita duplicar Frete/Tarifa) e nao gasta chamada ao Mercado Pago com ele.
+        // novo (evita duplicar Tarifa/taxa Full) e nao gasta chamada ao Mercado Pago com ele.
         pedidosMesmoCarrinho++;
         job.progresso.feito++;
         continue;
@@ -531,9 +552,9 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
         const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
         const temComissaoReal = cobrancas.some(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee');
         const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
-        const valorFreteReal = cobrancas.filter(c => c.name === 'shp_fulfillment').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
+        const valorFull = cobrancas.filter(c => c.name === 'shp_fulfillment').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
         tarifaReal += valorComissaoReal;
-        freteReal += valorFreteReal;
+        custoFullNaoCapturado += valorFull;
 
         if (cancelado && !temComissaoReal && saleFeeDoPedido > 0.009) {
           anomalias.push({ pedido_id: p.id, motivo: 'Pedido cancelado: comissao NAO foi cobrada de verdade (devolvida) - o calculo do dia a dia estava contando indevidamente', total: totalPedido, sale_fee_assumido: round2(saleFeeDoPedido) });
@@ -566,7 +587,8 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       tarifa_assumida: round2(tarifaAssumida),
       tarifa_real: round2(tarifaReal),
       diferenca_tarifa: round2(tarifaAssumida - tarifaReal),
-      frete_real: round2(freteReal),
+      frete_real: round2(freteViaShipments),
+      custo_full_nao_capturado: round2(custoFullNaoCapturado),
       pedidos_pendentes_repasse: pedidosPendentesRepasse,
       valor_pendente_repasse: round2(valorPendenteRepasse),
       anomalias,
