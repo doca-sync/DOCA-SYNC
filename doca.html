@@ -4616,12 +4616,12 @@ function renderAuditoriaMes(){
         <div><span class="muted" style="font-size:11px">DIFERENÇA</span><br><b style="font-size:16px" class="${res.diferenca_tarifa>0?'pend':'okv'}">${fmtMoney(res.diferenca_tarifa)}</b></div>
       </div>
       <p class="hint" style="margin-top:10px">Frete de cancelados confirmado (real, via MP): ${fmtMoney(res.frete_cancelados_confirmado)}</p>
-      ${res.avisos&&res.avisos.length?`<p class="hint" style="color:#e6a23c;margin-top:6px">${res.avisos.map(a=>esc(a)).join('<br>')}</p>`:''}
+      ${(res.avisos||[]).filter(a=>!/^intervalo /.test(a)).length?`<p class="hint" style="color:#e6a23c;margin-top:6px">${res.avisos.filter(a=>!/^intervalo /.test(a)).map(a=>esc(a)).join('<br>')}</p>`:''}
       <h4 style="margin:16px 0 6px">Anomalias encontradas (${(res.anomalias||[]).length})</h4>
       ${(res.anomalias||[]).length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-        <th>Pedido</th><th>Tipo</th><th>Descrição</th><th class="num">Valor</th>
+        <th>Pedido</th><th>Motivo</th><th class="num">Valor do pedido</th>
       </tr></thead><tbody>
-        ${res.anomalias.map(a=>`<tr><td>${esc(a.pedidoId||'')}</td><td>${esc(a.tipo||'')}</td><td>${esc(a.descricao||'')}</td><td class="num">${fmtMoney(a.valor||0)}</td></tr>`).join('')}
+        ${res.anomalias.map(a=>`<tr><td>${esc(String(a.pedido_id||''))}</td><td>${esc(a.motivo||'')}${a.sale_fee_assumido!=null?`<div class="hint" style="margin:2px 0 0;font-size:11px">Tarifa que estava sendo contada indevidamente: ${fmtMoney(a.sale_fee_assumido)}</div>`:''}</td><td class="num">${fmtMoney(a.total||0)}</td></tr>`).join('')}
       </tbody></table></div>`:`<p class="empty-inline">Nenhuma anomalia encontrada nesse período.</p>`}
       `:''}
     </div>
