@@ -4560,6 +4560,73 @@ async function pesquisarResumoFinanceiro(){
 }
 let financasSubAba='resumo'; // 'resumo' | 'despesas' | 'retiradas' - sub-abas dentro de Financas
 let financasFechTodasCarregando=false, financasFechTodasErro=null;
+let auditoriaLoja=STORES[0];
+let auditoriaDe='', auditoriaAte='';
+let auditoriaJobId=null, auditoriaStatus=null, auditoriaProgresso=null, auditoriaResultado=null, auditoriaErro=null;
+let auditoriaPollTimer=null;
+async function iniciarAuditoriaMes(){
+  auditoriaErro=null; auditoriaResultado=null; auditoriaStatus=null; auditoriaProgresso=null;
+  if(!auditoriaDe||!auditoriaAte){ auditoriaErro='Informe as duas datas do período.'; renderFinancas(); return; }
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const params=new URLSearchParams({loja:auditoriaLoja,de:auditoriaDe,ate:auditoriaAte});
+    const r=await fetch(`${base}/auditoria/mes/iniciar?${params.toString()}`,{method:'POST'});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+'). Confira se o server_v77.js atualizado já está publicado no Render.'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao iniciar a auditoria (status '+r.status+').'));
+    auditoriaJobId=j.jobId; auditoriaStatus='rodando';
+    if(auditoriaPollTimer) clearInterval(auditoriaPollTimer);
+    auditoriaPollTimer=setInterval(pollAuditoriaMes,3000);
+    renderFinancas();
+  }catch(e){ auditoriaErro=e.message; renderFinancas(); }
+}
+async function pollAuditoriaMes(){
+  if(!auditoriaJobId) return;
+  try{
+    const base=backendUrl();
+    const r=await fetch(`${base}/auditoria/mes/status?id=${encodeURIComponent(auditoriaJobId)}`);
+    const j=await r.json();
+    if(!j.ok){ auditoriaErro=j.erro||'Falha ao consultar status.'; auditoriaStatus='erro'; if(auditoriaPollTimer){clearInterval(auditoriaPollTimer);auditoriaPollTimer=null;} renderFinancas(); return; }
+    auditoriaStatus=j.status; auditoriaProgresso=j.progresso;
+    if(j.status==='concluido'){ auditoriaResultado=j.resultado; if(auditoriaPollTimer){clearInterval(auditoriaPollTimer);auditoriaPollTimer=null;} }
+    if(j.status==='erro'){ auditoriaErro=j.erro||'A auditoria falhou.'; if(auditoriaPollTimer){clearInterval(auditoriaPollTimer);auditoriaPollTimer=null;} }
+    renderFinancas();
+  }catch(e){ /* falha de rede pontual - tenta de novo no proximo poll */ }
+}
+function renderAuditoriaMes(){
+  const res=auditoriaResultado;
+  return `
+    <div class="card">
+      <h3 style="margin-top:0">🔍 Auditoria Financeira Mensal</h3>
+      <p class="hint" style="margin:0 0 10px">Busca TODOS os pedidos do período (não é amostra) e, pra cada pedido cancelado, confere direto no Mercado Pago se a comissão e o frete foram realmente retidos ou devolvidos — em vez de assumir sempre retido. Período grande pode levar alguns minutos, pois é uma chamada extra por pedido cancelado. Requer o backend atualizado (server_v77.js) publicado no Render.</p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+        <label>Loja<select id="audLoja">${optsLojas(auditoriaLoja)}</select></label>
+        <label>De<input type="date" id="audDe" value="${esc(auditoriaDe)}"></label>
+        <label>Até<input type="date" id="audAte" value="${esc(auditoriaAte)}"></label>
+      </div>
+      <div class="acoes-linha" style="margin-top:10px">
+        <button class="btn gold" id="audIniciar" ${auditoriaStatus==='rodando'?'disabled':''}>${auditoriaStatus==='rodando'?'Rodando...':'▶ Rodar auditoria'}</button>
+      </div>
+      ${auditoriaErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(auditoriaErro)}</p>`:''}
+      ${auditoriaStatus==='rodando'?`<p class="hint" style="margin-top:10px">${auditoriaProgresso?esc(auditoriaProgresso):'Buscando pedidos...'}</p>`:''}
+      ${res?`
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;margin-top:14px">
+        <div><span class="muted" style="font-size:11px">TARIFA DE CANCELADOS (assumida)</span><br><b style="font-size:16px">${fmtMoney(res.tarifa_cancelados_assumida)}</b></div>
+        <div><span class="muted" style="font-size:11px">TARIFA DE CANCELADOS (confirmada no MP)</span><br><b style="font-size:16px">${fmtMoney(res.tarifa_cancelados_confirmada)}</b></div>
+        <div><span class="muted" style="font-size:11px">DIFERENÇA</span><br><b style="font-size:16px" class="${res.diferenca_tarifa>0?'pend':'okv'}">${fmtMoney(res.diferenca_tarifa)}</b></div>
+      </div>
+      <p class="hint" style="margin-top:10px">Frete de cancelados confirmado (real, via MP): ${fmtMoney(res.frete_cancelados_confirmado)}</p>
+      ${res.avisos&&res.avisos.length?`<p class="hint" style="color:#e6a23c;margin-top:6px">${res.avisos.map(a=>esc(a)).join('<br>')}</p>`:''}
+      <h4 style="margin:16px 0 6px">Anomalias encontradas (${(res.anomalias||[]).length})</h4>
+      ${(res.anomalias||[]).length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>Pedido</th><th>Tipo</th><th>Descrição</th><th class="num">Valor</th>
+      </tr></thead><tbody>
+        ${res.anomalias.map(a=>`<tr><td>${esc(a.pedidoId||'')}</td><td>${esc(a.tipo||'')}</td><td>${esc(a.descricao||'')}</td><td class="num">${fmtMoney(a.valor||0)}</td></tr>`).join('')}
+      </tbody></table></div>`:`<p class="empty-inline">Nenhuma anomalia encontrada nesse período.</p>`}
+      `:''}
+    </div>
+  `;
+}
 /* fechamento de todas as lojas de uma vez, no MESMO periodo escolhido no Resumo Financeiro acima -
    busca /financas/resumo loja por loja (com uma pequena pausa entre elas pra nao estourar limite
    de chamadas por segundo) e monta um relatorio pra impressao comparando faturamento, margem de
@@ -4834,6 +4901,7 @@ function renderFinancas(){
       <button data-finsub="resumo" aria-selected="${financasSubAba==='resumo'?'true':'false'}">📊 Resumo Financeiro</button>
       <button data-finsub="despesas" aria-selected="${financasSubAba==='despesas'?'true':'false'}">💵 Despesas</button>
       <button data-finsub="retiradas" aria-selected="${financasSubAba==='retiradas'?'true':'false'}">💸 Retiradas e Reembolso</button>
+      <button data-finsub="auditoria" aria-selected="${financasSubAba==='auditoria'?'true':'false'}">🔍 Auditoria</button>
     </div>
     ${financasSubAba==='resumo'?`
     <div class="card">
@@ -4936,6 +5004,7 @@ function renderFinancas(){
     </tbody></table></div>`:`<p class="empty-inline">Sem histórico ainda.</p>`}
     `:''}
     ${financasSubAba==='retiradas'?renderSociosCard():''}
+    ${financasSubAba==='auditoria'?renderAuditoriaMes():''}
   `;
   el.querySelectorAll('[data-finsub]').forEach(b=>b.onclick=()=>{ financasSubAba=b.dataset.finsub; renderFinancas(); });
   const btnAddDespesa=document.getElementById('btnAddDespesa');
@@ -5001,6 +5070,14 @@ function renderFinancas(){
   if(frAliquota) frAliquota.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{aliquotaImposto:e.target.value}); renderFinancas(); };
   const btnFecharTodasLojas=document.getElementById('btnFecharTodasLojas');
   if(btnFecharTodasLojas) btnFecharTodasLojas.onclick=calcularFechamentoTodasLojas;
+  const audLoja=document.getElementById('audLoja');
+  if(audLoja) audLoja.onchange=e=>{ auditoriaLoja=e.target.value; };
+  const audDe=document.getElementById('audDe');
+  if(audDe) audDe.onchange=e=>{ auditoriaDe=e.target.value; };
+  const audAte=document.getElementById('audAte');
+  if(audAte) audAte.onchange=e=>{ auditoriaAte=e.target.value; };
+  const audIniciar=document.getElementById('audIniciar');
+  if(audIniciar) audIniciar.onclick=iniciarAuditoriaMes;
   const btnAddSocio=document.getElementById('btnAddSocio');
   if(btnAddSocio) btnAddSocio.onclick=()=>{
     const socio=document.getElementById('socQuem').value;
