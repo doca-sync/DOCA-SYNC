@@ -443,20 +443,25 @@ app.get('/debug/tarifa/comparar', async (req, res) => {
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 
-/* ================= Auditoria financeira mensal (v80) =================
-   Motivo: o calculo do dia-a-dia (/financas/resumo) SEMPRE conta a tarifa (sale_fee) de um pedido
-   CANCELADO, baseado na suposicao de que "o Mercado Livre normalmente nao devolve a comissao de
-   um cancelamento". Comparando Doca x painel do Mercado Livre x Metrify em julho/2026, a Tarifa do
-   Doca ficou ~5% ACIMA dos outros dois (que batem entre si) - sinal de que essa suposicao nao vale
-   pra TODO cancelamento: quando cancela ANTES de despachar, o Mercado Livre normalmente DEVOLVE a
-   comissao (e o frete); só quando cancela DEPOIS de despachado é que costuma ficar retida.
-   Essa rota confere, pedido cancelado por pedido cancelado, a cobranca REAL no pagamento (Mercado
-   Pago, charges_details - mesmo caminho ja validado em /debug/tarifa/comparar e
-   /debug/frete-fulfillment) em vez de assumir. Como isso é 1 chamada extra ao Mercado Pago por
-   pedido cancelado, rodar isso pra um mes inteiro é lento (minutos, não segundos) - por isso roda
-   em BACKGROUND (job assíncrono) em vez de dentro do /financas/resumo normal, que precisa ser
-   rápido pra abrir a tela toda vez. O resultado NÃO é aplicado automaticamente no cálculo do dia a
-   dia (esse continua rápido e aproximado) - é uma conferência sob demanda pro fechamento do mês.
+/* ================= Auditoria financeira mensal (v81 - cobre TODOS os pedidos) =================
+   Motivo original: o calculo do dia-a-dia (/financas/resumo) SEMPRE conta a tarifa (sale_fee) de
+   um pedido CANCELADO, baseado na suposicao de que "o Mercado Livre normalmente nao devolve a
+   comissao de um cancelamento". A v80 conferia SO os cancelados e achou uma diferenca pequena
+   (ex.: R$13,70 numa loja em julho/2026) - muito menor que o gap de ~5% visto contra o painel do
+   Mercado Livre e o Metrify. Ou seja, cancelamento NAO e' a causa principal do gap.
+   v81: audita TODOS os pedidos do periodo (validos + cancelados, pedido por pedido, sem amostragem)
+   contra a cobranca REAL no Mercado Pago (charges_details - mesmo caminho ja validado em
+   /debug/tarifa/comparar e /debug/frete-fulfillment), pra achar o gap de verdade em qualquer
+   pedido, nao so' nos cancelados. Tambem confere, pra pedido valido ja antigo, se o dinheiro
+   (money_release_status) ja foi liberado pro vendedor - pra pegar o caso "vendeu e foi cobrado mas
+   nao foi repassado" que o usuario pediu especificamente.
+   E' 1 chamada extra ao Mercado Pago por pedido do periodo inteiro (nao so' cancelado) - rodar isso
+   pra um mes inteiro com milhares de pedidos pode levar VARIOS minutos. Por isso roda em
+   BACKGROUND (job assincrono) em vez de dentro do /financas/resumo normal, que precisa ser rapido
+   pra abrir a tela toda vez. O resultado NAO e' aplicado automaticamente no calculo do dia a dia
+   (esse continua rapido e aproximado) - e' uma conferencia sob demanda pro fechamento do mes, com
+   os MESMOS rotulos (Faturamento/Tarifas/Frete/Cancelamentos) do Resumo Financeiro, so' que com
+   valores confirmados pedido a pedido em vez de assumidos.
    Uso:
    1) POST /auditoria/mes/iniciar?loja=X&de=Y&ate=Z  -> devolve {jobId} na hora, começa a rodar
    2) GET  /auditoria/mes/status?id=JOBID            -> {status:'rodando'|'concluido'|'erro', progresso, resultado}
@@ -464,9 +469,12 @@ app.get('/debug/tarifa/comparar', async (req, res) => {
    free tier apos inatividade) - por isso é pra rodar e acompanhar na hora, não é histórico. */
 const auditoriaJobs = new Map(); // jobId -> {status, progresso:{feito,total}, resultado, erro, criadoEm}
 function gerarJobId() { return 'aud_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const DIAS_LIMITE_REPASSE = 35; // depois disso, esperamos o dinheiro ja liberado pro vendedor
 async function rodarAuditoriaMes(jobId, loja, de, ate) {
   const job = auditoriaJobs.get(jobId);
   try {
+    if (!tokenMpDaLoja(loja)) { job.status = 'erro'; job.erro = 'Essa loja nao tem Mercado Pago configurado - a auditoria precisa dele pra confirmar as cobrancas reais.'; return; }
     const accessToken = await tokenValido(loja);
     const conta = await pegarConta(loja);
     const log = { avisos: [] };
@@ -474,25 +482,24 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
     const cancelados = pedidos.filter(p => p.status === 'cancelled');
     const validos = pedidos.filter(p => p.status !== 'cancelled' && p.status !== 'invalid');
-    job.progresso = { feito: 0, total: cancelados.length };
+    const auditaveis = pedidos.filter(p => p.status !== 'invalid'); // tudo que entra no fechamento
+    job.progresso = { feito: 0, total: auditaveis.length };
 
-    let tarifaCanceladosAssumida = 0;   // como o /financas/resumo hoje calcula (sempre conta)
-    let tarifaCanceladosConfirmada = 0; // so conta quando a cobranca real confirma que ficou retida
-    let freteCanceladosConfirmado = 0;
+    let faturamento = 0, cancelamentosValor = 0;
+    let tarifaAssumida = 0, tarifaReal = 0, freteReal = 0;
+    let pedidosPendentesRepasse = 0, valorPendenteRepasse = 0;
     const anomalias = [];
-    const temMp = !!tokenMpDaLoja(loja);
+    const agora = Date.now();
 
-    for (const p of cancelados) {
+    for (const p of auditaveis) {
+      const cancelado = p.status === 'cancelled';
       const totalPedido = Number(p.total_amount) || 0;
+      if (cancelado) cancelamentosValor += totalPedido; else faturamento += totalPedido;
+
       let saleFeeDoPedido = 0;
       for (const oi of (p.order_items || [])) saleFeeDoPedido += (Number(oi.sale_fee) || 0) * (oi.quantity || 1);
-      tarifaCanceladosAssumida += saleFeeDoPedido;
+      tarifaAssumida += saleFeeDoPedido;
 
-      if (!temMp) {
-        anomalias.push({ pedido_id: p.id, motivo: 'Loja sem Mercado Pago configurado - nao deu pra confirmar', total: totalPedido });
-        job.progresso.feito++;
-        continue;
-      }
       const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved' || pg.status === 'refunded' || pg.status === 'partially_refunded') || (p.payments || [])[0];
       if (!pgAprovado || !pgAprovado.id) {
         anomalias.push({ pedido_id: p.id, motivo: 'Sem pagamento associado pra conferir', total: totalPedido });
@@ -504,17 +511,25 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
         const jp = await r.json();
         const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
         const temComissaoReal = cobrancas.some(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee');
-        const temFreteReal = cobrancas.some(c => c.name === 'shp_fulfillment');
         const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
         const valorFreteReal = cobrancas.filter(c => c.name === 'shp_fulfillment').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
-        if (temComissaoReal) tarifaCanceladosConfirmada += valorComissaoReal;
-        if (temFreteReal) freteCanceladosConfirmado += valorFreteReal;
-        if (!temComissaoReal && saleFeeDoPedido > 0.009) {
-          anomalias.push({
-            pedido_id: p.id,
-            motivo: 'Comissao NAO foi cobrada de verdade (devolvida) - o calculo do dia a dia estava contando indevidamente',
-            total: totalPedido, sale_fee_assumido: Math.round(saleFeeDoPedido * 100) / 100
-          });
+        tarifaReal += valorComissaoReal;
+        freteReal += valorFreteReal;
+
+        if (cancelado && !temComissaoReal && saleFeeDoPedido > 0.009) {
+          anomalias.push({ pedido_id: p.id, motivo: 'Pedido cancelado: comissao NAO foi cobrada de verdade (devolvida) - o calculo do dia a dia estava contando indevidamente', total: totalPedido, sale_fee_assumido: round2(saleFeeDoPedido) });
+        } else if (!cancelado && Math.abs(valorComissaoReal - saleFeeDoPedido) > 1) {
+          anomalias.push({ pedido_id: p.id, motivo: 'Comissao cobrada de verdade veio diferente do sale_fee declarado no pedido (diferenca > R$1 - pode ser cupom, financiamento etc)', total: totalPedido, sale_fee_assumido: round2(saleFeeDoPedido), sale_fee_real: round2(valorComissaoReal) });
+        }
+
+        if (!cancelado) {
+          const dataAprovacao = pgAprovado.date_approved ? new Date(pgAprovado.date_approved).getTime() : null;
+          const diasDesde = dataAprovacao ? (agora - dataAprovacao) / 86400000 : null;
+          const statusRepasse = jp.money_release_status;
+          if (diasDesde != null && diasDesde > DIAS_LIMITE_REPASSE && statusRepasse && statusRepasse !== 'released') {
+            pedidosPendentesRepasse++; valorPendenteRepasse += totalPedido;
+            anomalias.push({ pedido_id: p.id, motivo: `Vendeu e foi cobrado ha ${Math.round(diasDesde)} dias mas o dinheiro AINDA NAO foi liberado pro vendedor (status: ${statusRepasse})`, total: totalPedido });
+          }
         }
       } catch (e) {
         anomalias.push({ pedido_id: p.id, motivo: 'Erro ao consultar o pagamento: ' + e.message, total: totalPedido });
@@ -526,10 +541,14 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     job.resultado = {
       loja, periodo: { de, ate },
       pedidos_no_periodo: pedidos.length, pedidos_validos: validos.length, pedidos_cancelados: cancelados.length,
-      tarifa_cancelados_assumida: Math.round(tarifaCanceladosAssumida * 100) / 100,
-      tarifa_cancelados_confirmada: Math.round(tarifaCanceladosConfirmada * 100) / 100,
-      diferenca_tarifa: Math.round((tarifaCanceladosAssumida - tarifaCanceladosConfirmada) * 100) / 100,
-      frete_cancelados_confirmado: Math.round(freteCanceladosConfirmado * 100) / 100,
+      faturamento: round2(faturamento),
+      cancelamentos: round2(cancelamentosValor),
+      tarifa_assumida: round2(tarifaAssumida),
+      tarifa_real: round2(tarifaReal),
+      diferenca_tarifa: round2(tarifaAssumida - tarifaReal),
+      frete_real: round2(freteReal),
+      pedidos_pendentes_repasse: pedidosPendentesRepasse,
+      valor_pendente_repasse: round2(valorPendenteRepasse),
       anomalias,
       avisos: log.avisos
     };
