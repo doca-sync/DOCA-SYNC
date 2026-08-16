@@ -4321,8 +4321,8 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
-            <div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${!adsLucroResultado?'<span class="muted">calcule o Lucro acima</span>':(margemContrib==null?'<span class="muted">sem venda desse produto no período calculado</span>':fmtMoney(margemContrib))}</div>
-            <div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br>${!adsLucroResultado?'<span class="muted">calcule o Lucro acima</span>':(lucroBruto==null?'<span class="muted">sem venda desse produto no período calculado</span>':`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>`)}</div>
+            ${margemContrib!=null?`<div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${fmtMoney(margemContrib)}</div>`:''}
+            ${lucroBruto!=null?`<div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br><b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b></div>`:''}
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
@@ -5101,7 +5101,7 @@ function removerPagamentoAmauri(id){
 let amauriResumoPeriodo='personalizado', amauriResumoDe='', amauriResumoAte='';
 let amauriResumoResultado=null, amauriResumoCarregando=false, amauriResumoErro=null;
 let amauriCustosAberto=new Set();
-let amauriSubAba='produtos'; // 'produtos' | 'periodo' - sub-abas dentro de Amauri
+let amauriSubAba='periodo'; // 'produtos' | 'periodo' - sub-abas dentro de Amauri (periodo primeiro)
 async function pesquisarResumoAmauri(){
   if(!amauriResumoDe||!amauriResumoAte) return;
   amauriResumoCarregando=true; amauriResumoErro=null; renderAmauri();
@@ -5321,11 +5321,11 @@ function renderAmauri(){
     <h1 class="page-title">Amauri</h1>
     <p class="hint" style="margin:0 0 16px">Fechamento dos produtos da TorvStore em sociedade com o Amauri: marque os produtos, ajuste os custos de cada um (e quem pagou cada um) e puxe o período pra calcular a margem líquida e o repasse devido a ele.</p>
     <div class="subnav">
-      <button data-amsub="produtos" aria-selected="${amauriSubAba==='produtos'?'true':'false'}">📦 Produtos</button>
       <button data-amsub="periodo" aria-selected="${amauriSubAba==='periodo'?'true':'false'}">📊 Período do fechamento</button>
+      <button data-amsub="produtos" aria-selected="${amauriSubAba==='produtos'?'true':'false'}">📦 Produtos</button>
     </div>
     ${amauriSubAba==='produtos'?`
-    <details class="card" open>
+    <details class="card">
       <summary style="cursor:pointer;font-weight:600">Produtos em parceria (${a.produtoIds.length} selecionado${a.produtoIds.length===1?'':'s'})</summary>
       <p class="hint" style="margin:10px 0 10px">Marque quais produtos da TorvStore são em sociedade com o Amauri.</p>
       <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px"></th><th>SKU</th><th class="num">Custo unit.</th></tr></thead><tbody>
