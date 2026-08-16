@@ -4661,7 +4661,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
   return `
     <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)} · ${fmtInt(resumo.pedidosValidos)} pedido(s) válido(s) · ${fmtInt(unidadesVendidas)} unidade(s) vendida(s)${resumo.pedidosCancelados?' · '+fmtInt(resumo.pedidosCancelados)+' cancelado(s)':''}</p>
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
-      ${cartao('FATURAMENTO',resumo.faturamento)}
+      ${cartao('FATURAMENTO',resumo.faturamento,resumo.cancelamentosValor?'bruto (com cancelados): '+fmtMoney(resumo.faturamento+resumo.cancelamentosValor):'')}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
       ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'comissão real declarada em cada pedido — cai pra % da categoria só quando não tem declarada')}
       ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
