@@ -911,6 +911,8 @@ function migrar(){
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
     if(p.mlTransferencia===undefined) p.mlTransferencia=null;
+    if(p.mlAusente===undefined) p.mlAusente=false;
+    if(p.mlAusenteDesde===undefined) p.mlAusenteDesde=null;
     /* vinculadoA: id de outro produto (o "mestre") quando este SKU é um segundo anúncio do
        MESMO produto físico (ex: 1 anúncio de catálogo + 1 anúncio normal, mesmo estoque no
        galpão). Quando setado, este produto para de contar como estoque/valor próprio (fica
@@ -2844,7 +2846,23 @@ function aplicarItemSincronizado(p,item,loja){
   p.mlConcorrenciaPreco=(typeof item.concorrencia_preco==='number')?item.concorrencia_preco:null;
   p.mlPerguntas=item.perguntas_sem_resposta||0;
   p.mlTransferencia=(typeof item.transferencia_full==='number')?item.transferencia_full:null;
+  p.mlAusente=false; p.mlAusenteDesde=null;
   mlAtualizarFullDoSinc(p,item,loja);
+}
+/* depois de aplicar a sincronização, marca como "ausente no ML" todo produto desta loja que já
+   teve um anúncio vinculado (mlItemId) mas não veio na resposta desta sincronização - ou seja,
+   o anúncio foi excluído/encerrado no Mercado Livre. Não apaga o cadastro (custo, fornecedor,
+   histórico de compra continuam), só marca pra sumir das listas ativas (Produtos, Previsão etc)
+   até você decidir o que fazer. Se o produto reaparecer numa sincronização futura, a marca sai
+   sozinha (ver aplicarItemSincronizado acima). */
+function marcarAusentesNoML(loja,itensDoResultado){
+  const encontrados=new Set((itensDoResultado||[]).map(it=>it.ml_item_id));
+  let mudou=false;
+  state.produtos.filter(p=>p.loja===loja&&p.mlItemId).forEach(p=>{
+    const ausenteAgora=!encontrados.has(p.mlItemId);
+    if(ausenteAgora&&!p.mlAusente){ p.mlAusente=true; p.mlAusenteDesde=Date.now(); mudou=true; }
+  });
+  return mudou;
 }
 
 /* cadastra no Doca, sozinho, um anúncio do ML que ainda não tem SKU correspondente — usa o
@@ -2876,7 +2894,8 @@ function aplicarSincronizacaoAutomatica(resultado){
     if(p){ aplicarItemSincronizado(p,item,resultado.loja); vinculados++; }
     else { p=importarProdutoAutomatico(item,resultado.loja); produtosDaLoja.push(p); importados++; }
   });
-  if(vinculados>0||importados>0) persist();
+  const mudouAusentes=marcarAusentesNoML(resultado.loja,resultado.produtos);
+  if(vinculados>0||importados>0||mudouAusentes) persist();
   return {vinculados,importados};
 }
 
@@ -2906,6 +2925,7 @@ function abrirSincronizacaoML(){
           <td><span class="okv">✓ ${esc(p.sku)} (${esc(p.loja)})</span>${importadoAgora?` <span class="pend" title="Cadastro criado automaticamente pela sincronização — confira/edite custo e fornecedor na aba Produtos">🆕 novo SKU</span>`:''}<br><span class="muted" style="font-size:11px">Disponível no Doca: ${fmtInt(disponivel(p))}</span></td>
         </tr>`;
       }).join('');
+      if(marcarAusentesNoML(resultado.loja,resultado.produtos)) mudouAlgo=true;
       if(mudouAlgo) persist();
     }
     body.innerHTML=`<h3>🔄 Sincronizar com o Mercado Livre</h3>
@@ -2970,8 +2990,10 @@ function abrirSincronizacaoML(){
 
 function renderProdutos(){
   const el=document.getElementById('tab-produtos');
+  const totalAusentes=state.produtos.filter(p=>(filtro.loja==='todas'||p.loja===filtro.loja)&&p.mlAusente).length;
   const filtrados=state.produtos.filter(p=>{
     if(filtro.loja!=='todas'&&p.loja!==filtro.loja) return false;
+    if(!filtro.mostrarAusentes&&p.mlAusente) return false;
     if(filtro.busca){ const q=filtro.busca.toLowerCase();
       if(!((p.sku||'').toLowerCase().includes(q)||(p.codigo||'').toLowerCase().includes(q)||(p.fornecedor||'').toLowerCase().includes(q))) return false; }
     return true;
@@ -2987,6 +3009,7 @@ function renderProdutos(){
     <div class="toolbar-produtos">
       <select id="filtroLoja"><option value="todas" ${filtro.loja==='todas'?'selected':''}>Todas as lojas</option>${optsLojas(filtro.loja==='todas'?null:filtro.loja)}</select>
       <input id="filtroBusca" class="grow" type="text" placeholder="Buscar por SKU, código ou fornecedor..." value="${esc(filtro.busca)}">
+      ${totalAusentes?`<label class="chk" style="font-size:12px"><input type="checkbox" id="filtroMostrarAusentes" ${filtro.mostrarAusentes?'checked':''}> Mostrar ${totalAusentes} excluído(s) no ML</label>`:''}
       <button class="btn" id="btnConferencia">🖨 Conferência de estoque</button>
       <button class="btn" id="btnSyncML">🔄 Atualizar (Mercado Livre)</button>
       <button class="btn gold" id="btnNovoSku">+ Novo SKU</button>
@@ -3004,7 +3027,7 @@ function renderProdutos(){
         return `
         <tr>
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
-          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
+          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
           <td class="num">${mestreVinc?'<span class="muted" title="Vendas somadas no SKU mestre">—</span>':(m!=null?m.toFixed(2):'<span class="muted">—</span>')}</td>
           <td class="num">${fmtInt(p.qtd.comprar)}</td>
@@ -3024,6 +3047,8 @@ function renderProdutos(){
     </table></div>
     <p class="hint"><b>Coletar</b> e <b>Local</b> mostram o total físico (no fornecedor e no galpão). <b>Reservado</b> é a parte disso que já tem destino num envio — ele não soma, se sobrepõe. *<b>Disponível</b> = o que ainda está livre pra ser reservado num próximo envio.</p>`;
   document.getElementById('filtroLoja').onchange=e=>{ filtro.loja=e.target.value; renderProdutos(); };
+  const filtroMostrarAusentes=document.getElementById('filtroMostrarAusentes');
+  if(filtroMostrarAusentes) filtroMostrarAusentes.onchange=e=>{ filtro.mostrarAusentes=e.target.checked; renderProdutos(); };
   document.getElementById('filtroBusca').oninput=e=>{
     filtro.busca=e.target.value;
     const pos=e.target.selectionStart;
@@ -3882,6 +3907,66 @@ async function adsBuscarPersonalizado(loja){
   }catch(e){ adsPersonalizadoErro=e.message; }
   finally{ adsPersonalizadoCarregando=false; renderAds(); }
 }
+/* "Lucro" em Ads: pra cada campanha, Margem de Contribuição do produto (mesma fórmula do
+   ranking em Finanças → Resumo Financeiro: faturamento − custo do produto − tarifa − frete −
+   imposto) menos o gasto de Ads = Lucro Bruto. Precisa do resumo financeiro EXATO do mesmo
+   período que está selecionado em Ads (não aproximado) — por isso o botão "Calcular Lucro"
+   chama /financas/resumo de novo, igual ao padrão já usado no Amauri e no Personalizado acima. */
+let adsLucroResultado=null, adsLucroCarregando=false, adsLucroErro=null, adsLucroPeriodoCalculado=null;
+async function calcularLucroAdsPeriodo(loja,periodoApi){
+  const personalizado=periodoApi==='personalizado';
+  if(personalizado&&(!adsPersonalizadoDe||!adsPersonalizadoAte)) return;
+  adsLucroCarregando=true; adsLucroErro=null; renderAds();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const mapaPeriodo={d1:'hoje',d7:'7d',d15:'15d',d30:'30d'};
+    const params=new URLSearchParams({loja,periodo:personalizado?'personalizado':(mapaPeriodo[periodoApi]||'7d')});
+    if(personalizado){ params.set('de',adsPersonalizadoDe); params.set('ate',adsPersonalizadoAte); }
+    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao calcular (HTTP '+r.status+').'));
+    adsLucroResultado=j.resumo;
+    adsLucroPeriodoCalculado=periodoApi;
+  }catch(e){ adsLucroErro=e.message; }
+  finally{ adsLucroCarregando=false; renderAds(); }
+}
+/* itens de resumo.ads.itens (gasto de Ads calculado por item_id, ver buscarItensAdsPeriodo no
+   backend) que pertencem a esta campanha - normalmente 1, mas soma se vier mais de um */
+function itensDaCampanhaAds(camp){
+  const itens=(adsLucroResultado&&adsLucroResultado.ads&&adsLucroResultado.ads.itens)||[];
+  return itens.filter(it=>String(it.campaignId)===String(camp.id));
+}
+/* Margem de Contribuição do(s) produto(s) desta campanha, no período calculado em Lucro — mesma
+   fórmula usada no ranking do Resumo Financeiro. Retorna null se ainda não calculou ou não achou
+   o produto no período (sem vendas). */
+function margemContribuicaoCampanha(camp,loja){
+  if(!adsLucroResultado) return null;
+  const itensAds=itensDaCampanhaAds(camp);
+  if(!itensAds.length) return null;
+  const aliquota=finLoja(loja).aliquotaImposto||0;
+  let margemTotal=0, achou=false;
+  itensAds.forEach(ia=>{
+    const iv=((adsLucroResultado.itensVendidos)||[]).find(x=>x.itemId===ia.itemId);
+    if(!iv) return;
+    achou=true;
+    const p=state.produtos.find(x=>x.mlItemId===ia.itemId);
+    const custoUnit=p&&p.custo?p.custo:0;
+    const custoProdutoItem=custoUnit*iv.qtd;
+    const impostoItem=iv.valor*(aliquota/100);
+    margemTotal+=iv.valor-custoProdutoItem-(iv.tarifa||0)-(iv.freteMl||0)-impostoItem;
+  });
+  return achou?margemTotal:null;
+}
+/* custo de Ads desta campanha no período EXATO calculado em Lucro (resumo.ads.campanhas) - usa
+   o mesmo valor pra bater com a Margem de Contribuição de cima, em vez de misturar com o custo
+   mostrado na tabela (que pode ser de um período de comparação levemente diferente) */
+function custoAdsCampanhaCalculado(camp){
+  if(!adsLucroResultado) return null;
+  const campanhas=(adsLucroResultado.ads&&adsLucroResultado.ads.campanhas)||[];
+  const achada=campanhas.find(cc=>String(cc.id)===String(camp.id));
+  return achada?(achada.cost||0):null;
+}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -4126,7 +4211,10 @@ function renderAds(){
   let linhas=campanhas.map(camp=>{
     const m=camp.metrics||{};
     const tacos=calcTacos(m);
-    return {camp,m,tacos};
+    const margemContrib=margemContribuicaoCampanha(camp,c.loja);
+    const custoAdsCalc=custoAdsCampanhaCalculado(camp);
+    const lucroBruto=(margemContrib!=null&&custoAdsCalc!=null)?(margemContrib-custoAdsCalc):null;
+    return {camp,m,tacos,margemContrib,custoAdsCalc,lucroBruto};
   });
   if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacos-a.tacos);
   else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacos-b.tacos);
@@ -4134,6 +4222,14 @@ function renderAds(){
   else if(adsFiltro==='roas_score'){
     const nota=x=>{ const av=avalAtual.get(x.camp.id); return av?av.score:-1; };
     linhas=linhas.slice().sort((a,b)=>nota(b)-nota(a));
+  }
+  else if(adsFiltro==='lucro'){
+    linhas=linhas.slice().sort((a,b)=>{
+      if(a.lucroBruto==null&&b.lucroBruto==null) return 0;
+      if(a.lucroBruto==null) return 1;
+      if(b.lucroBruto==null) return -1;
+      return b.lucroBruto-a.lucroBruto;
+    });
   }
   else if(adsFiltro==='mais_vendidos'){
     /* média de vendas/dia (ads + orgânicas ÷ dias do período escolhido) — comparável mesmo se
@@ -4174,6 +4270,7 @@ function renderAds(){
       `:''}
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         ${personalizado?'':`<button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>`}
+        <button class="btn" id="adCalcularLucro" ${adsLucroCarregando?'disabled':''}>${adsLucroCarregando?'Calculando...':(adsLucroResultado?'💰 Recalcular Lucro':'💰 Calcular Lucro')}</button>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Filtro
           <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px">
             <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
@@ -4181,18 +4278,21 @@ function renderAds(){
             <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
             <option value="roas_score" ${adsFiltro==='roas_score'?'selected':''}>Subir ROAS</option>
             <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos</option>
+            <option value="lucro" ${adsFiltro==='lucro'?'selected':''}>Lucro</option>
           </select>
         </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${personalizado?'':(dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.')}</span>
       </div>
-      <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}</p>
+      ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
+      ${adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ O Lucro mostrado abaixo foi calculado pra um período diferente do que está selecionado agora — clique em "Recalcular Lucro" pra atualizar.</p>`:''}
+      <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Campanha</th>
       <th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
-      ${linhas.map(({camp,m,tacos})=>{
+      ${linhas.map(({camp,m,tacos,margemContrib,custoAdsCalc,lucroBruto})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
@@ -4202,8 +4302,9 @@ function renderAds(){
           ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
           `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
         ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
+        const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
         return `<tr>
-          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}</td>
+          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -4220,6 +4321,8 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
+            <div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${margemContrib==null?'<span class="muted">calcule o Lucro acima</span>':fmtMoney(margemContrib)}</div>
+            <div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br>${lucroBruto==null?'<span class="muted">calcule o Lucro acima</span>':`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>`}</div>
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
@@ -4250,6 +4353,8 @@ function renderAds(){
   if(elPersAte) elPersAte.onchange=e=>{ adsPersonalizadoAte=e.target.value; renderAds(); };
   const btnPersCalc=document.getElementById('adPersonalizadoCalcular');
   if(btnPersCalc) btnPersCalc.onclick=()=>adsBuscarPersonalizado(c.loja);
+  const btnCalcularLucro=document.getElementById('adCalcularLucro');
+  if(btnCalcularLucro) btnCalcularLucro.onclick=()=>calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
@@ -4506,7 +4611,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
       ${cartao('FATURAMENTO',resumo.faturamento)}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
-      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'% de comissão da categoria de cada produto sobre o faturamento')}
+      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'comissão real declarada em cada pedido — cai pra % da categoria só quando não tem declarada')}
       ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
       ${cartao('ADS',resumo.ads.custo,pct(resumo.ads.custo))}
       ${cartao('FRETE (VENDEDOR)',resumo.frete.vendedor,pct(resumo.frete.vendedor))}
@@ -4865,6 +4970,7 @@ function amauriState(){
   if(!Array.isArray(state.amauri.produtoIds)) state.amauri.produtoIds=[];
   if(!state.amauri.custos||typeof state.amauri.custos!=='object') state.amauri.custos={};
   if(!Array.isArray(state.amauri.pagamentos)) state.amauri.pagamentos=[];
+  if(typeof state.amauri.aliquotaImposto!=='number') state.amauri.aliquotaImposto=Number(state.amauri.aliquotaImposto)||0;
   return state.amauri;
 }
 /* cada custo tem um valor E um "quem pagou" (torvstore ou amauri) - só o custo do produto não
@@ -4923,6 +5029,7 @@ function removerPagamentoAmauri(id){
    com as duas datas. */
 let amauriResumoPeriodo='personalizado', amauriResumoDe='', amauriResumoAte='';
 let amauriResumoResultado=null, amauriResumoCarregando=false, amauriResumoErro=null;
+let amauriCustosAberto=new Set();
 async function pesquisarResumoAmauri(){
   if(!amauriResumoDe||!amauriResumoAte) return;
   amauriResumoCarregando=true; amauriResumoErro=null; renderAmauri();
@@ -4967,7 +5074,7 @@ function calcularLinhaAmauriProduto(p,resumo){
   const embalagemTotal=(c.embalagem||0)*qtd;
   const etiquetaTotal=(c.etiqueta||0)*qtd;
   const adsTotal=c.ads||0;
-  const aliquota=finLoja('TorvStore').aliquotaImposto||0;
+  const aliquota=amauriState().aliquotaImposto||0;
   const impostoCalc=faturamento*(aliquota/100);
   const margemLiquida=faturamento-tarifaMlTotal-freteMlTotal-custoProdutoTotal-coletaTotal-embalagemTotal-etiquetaTotal-adsTotal-impostoCalc;
   const percentual=c.percentual!=null?c.percentual:50;
@@ -5155,10 +5262,17 @@ function renderAmauri(){
     ${marcados.length?`
     <div class="card">
       <h3 style="margin-top:0">Custos de cada produto</h3>
-      <p class="hint" style="margin:0 0 10px">Custo do produto, coleta, embalagem e etiqueta são por unidade vendida; ads é o total gasto no período. Em cada linha, marque quem pagou aquele custo — se foi o Amauri, o valor é somado ao repasse dele como reembolso (além da fatia percentual da margem líquida). A tarifa e o frete que o Mercado Livre cobra na venda entram à parte, automático, mais abaixo.</p>
-      ${marcados.map(p=>{ const c=amauriCustos(p.id); const idb=esc(p.id); return `
+      <p class="hint" style="margin:0 0 10px">Custo do produto, coleta, embalagem e etiqueta são por unidade vendida; ads é o total gasto no período. Em cada linha, marque quem pagou aquele custo — se foi o Amauri, o valor é somado ao repasse dele como reembolso (além da fatia percentual da margem líquida). A tarifa e o frete que o Mercado Livre cobra na venda entram à parte, automático, mais abaixo. Clique em "Custos" pra abrir e editar cada produto.</p>
+      ${marcados.map(p=>{ const c=amauriCustos(p.id); const idb=esc(p.id); const abertoC=amauriCustosAberto.has(p.id); return `
       <div class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))">
-        <b class="mono">${esc(p.sku)}</b>
+        <div class="acoes-linha" style="justify-content:space-between;align-items:center">
+          <b class="mono">${esc(p.sku)}</b>
+          <span style="display:flex;align-items:center;gap:10px">
+            <span class="muted" style="font-size:11.5px">${c.percentual!=null?c.percentual:50}% pro Amauri</span>
+            <button class="btn sm" data-amauritoggle="${p.id}">${abertoC?'▲ Ocultar':'✎ Custos'}</button>
+          </span>
+        </div>
+        ${abertoC?`
         <div class="table-wrap" style="margin-top:8px"><table class="tbl-produtos"><thead><tr><th>Custo</th><th class="num">Valor</th><th>Quem paga</th></tr></thead><tbody>
           ${linhaCustoFixo('Custo do produto (por un.)',p.custo||0,idb+'|custoProdutoQuemPagou',c.custoProdutoQuemPagou,'Puxado direto do custo unitário cadastrado em Produtos — pra mudar o valor, edite lá.')}
           ${linhaCusto('Coleta (por un.)',idb+'|coleta',c.coleta,idb+'|coletaQuemPagou',c.coletaQuemPagou,'Custo de levar a mercadoria até o ponto de despacho/coleta — não é o frete do Mercado Livre (esse entra automático).')}
@@ -5169,6 +5283,7 @@ function renderAmauri(){
         <div class="form-grid" style="grid-template-columns:1fr;margin-top:8px">
           <label>% da margem líquida repassado ao Amauri<input type="number" min="0" max="100" step="1" style="width:80px" value="${c.percentual!=null?c.percentual:50}" data-amauripct="${p.id}"></label>
         </div>
+        `:''}
       </div>`; }).join('')}
     </div>
     <div class="card">
@@ -5176,9 +5291,9 @@ function renderAmauri(){
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
         <label>De<input type="date" id="amDe" value="${esc(amauriResumoDe)}"></label>
         <label>Até<input type="date" id="amAte" value="${esc(amauriResumoAte)}"></label>
-        <label>Alíquota de imposto da TorvStore (%)<input type="text" inputmode="decimal" placeholder="0,0" id="amAliquota" value="${finLoja('TorvStore').aliquotaImposto?String(finLoja('TorvStore').aliquotaImposto).replace('.',','):''}"></label>
+        <label>Alíquota de imposto do fechamento Amauri (%)<input type="text" inputmode="decimal" placeholder="0,0" id="amAliquota" value="${a.aliquotaImposto?String(a.aliquotaImposto).replace('.',','):''}"></label>
       </div>
-      <p class="hint" style="margin:8px 0 0">Essa é a mesma alíquota configurada em Finanças → Resumo Financeiro (TorvStore) — mudar aqui atualiza lá também. É ela que desconta o imposto de cada produto antes de calcular a margem líquida e o repasse do Amauri.</p>
+      <p class="hint" style="margin:8px 0 0">Alíquota própria deste fechamento — independente da alíquota configurada em Finanças → Resumo Financeiro (TorvStore). Mudar aqui não mexe lá, e vice-versa. É ela que desconta o imposto de cada produto antes de calcular a margem líquida e o repasse do Amauri.</p>
       <div class="acoes-linha" style="margin-top:10px">
         <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando||!amauriResumoDe||!amauriResumoAte?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
         ${amauriResumoResultado?'<button class="btn" id="btnImprimirAmauri">🖨️ Imprimir relatório</button>':''}
@@ -5187,7 +5302,7 @@ function renderAmauri(){
       ${amauriResumoResultado?`
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · ${fmtInt(amauriResumoResultado.pedidosValidos)} pedido(s) válido(s)${amauriResumoResultado.pedidosCancelados?' · '+fmtInt(amauriResumoResultado.pedidosCancelados)+' cancelado(s) (loja toda, não só os produtos do Amauri)':''}</p>
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo produto</th><th class="num">Coleta</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${finLoja('TorvStore').aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
+          <th>SKU</th><th class="num">Unid. vendidas</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo produto</th><th class="num">Coleta</th><th class="num">Embalagem</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto (${a.aliquotaImposto||0}%)</th><th class="num">Margem líquida</th><th class="num">Reembolso Amauri</th><th class="num">Repasse total</th>
         </tr></thead><tbody>
           ${linhas.map(l=>`<tr>
             <td class="mono">${esc(l.p.sku)}</td>
@@ -5236,11 +5351,24 @@ function renderAmauri(){
   el.querySelectorAll('[data-amauricusto]').forEach(inp=>inp.onchange=commitCustosAmauri);
   el.querySelectorAll('[data-amauriquem]').forEach(sel=>sel.onchange=commitCustosAmauri);
   el.querySelectorAll('[data-amauripct]').forEach(inp=>inp.onchange=commitCustosAmauri);
+  el.querySelectorAll('[data-amauritoggle]').forEach(b=>b.onclick=()=>{
+    salvarCustosAmauriPendentes();
+    const id=b.dataset.amauritoggle;
+    if(amauriCustosAberto.has(id)) amauriCustosAberto.delete(id); else amauriCustosAberto.add(id);
+    renderAmauri();
+  });
   const amDe=document.getElementById('amDe'), amAte=document.getElementById('amAte');
   if(amDe) amDe.onchange=e=>{ amauriResumoDe=e.target.value; amauriResumoResultado=null; renderAmauri(); };
   if(amAte) amAte.onchange=e=>{ amauriResumoAte=e.target.value; amauriResumoResultado=null; renderAmauri(); };
   const amAliquota=document.getElementById('amAliquota');
-  if(amAliquota) amAliquota.onchange=e=>{ salvarCustosAmauriPendentes(); atualizarFinanceiro('TorvStore',{aliquotaImposto:e.target.value}); };
+  if(amAliquota) amAliquota.onchange=e=>{
+    salvarCustosAmauriPendentes();
+    snapshot('alíquota de imposto do fechamento Amauri');
+    const v=Number(String(e.target.value).replace(',','.'));
+    amauriState().aliquotaImposto=isNaN(v)?0:Math.min(100,Math.max(0,v));
+    persist();
+    renderAmauri();
+  };
   const amPesquisar=document.getElementById('amPesquisar');
   if(amPesquisar) amPesquisar.onclick=()=>{ commitCustosAmauri(); pesquisarResumoAmauri(); };
   const btnImprimirAmauri=document.getElementById('btnImprimirAmauri');
@@ -6290,8 +6418,8 @@ function renderPrevisao(){
       <span class="cont">${lv.length} de ${l.length} SKU(s)</span>
     </div>
     ${lv.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-      <th>SKU</th><th class="num">Estoque FULL</th><th class="num">Valor</th><th class="num">Vendas/dia</th>
-      <th class="num">Cobertura</th><th class="num">A enviar</th><th></th></tr></thead><tbody>
+      <th>SKU</th><th class="num">Estoque</th><th class="num">Vendas/dia</th>
+      <th class="num">Cobertura</th><th class="num">Comprar</th><th class="num">Coletar</th><th class="num">Disponível</th><th class="num">A enviar</th><th></th></tr></thead><tbody>
       ${lv.map(({i,k})=>{
         const p=fullProduto(i);
         const flash=p&&flashFull[p.id]&&(Date.now()-flashFull[p.id]<2600);
@@ -6309,7 +6437,6 @@ function renderPrevisao(){
           <span class="ln tot"><span>Total</span><b>${fmtInt(k.full)}</b></span>
           ${k.proximosProgramados?`<span class="obs">Próximos programados conta na quantidade acima, mas não entra no valor em R$ da coluna Valor — o dinheiro deles já está contado no estoque Local (Reservado). Sai daqui quando você confirmar o envio como FULL, e volta a aparecer em "Aptas"/"Em transferência" assim que o Mercado Livre receber de verdade.</span>`:''}
           <span class="obs">7d ${fmtInt(i.v7)} · 15d ${fmtInt(i.v15)} · 30d ${fmtInt(i.v30)} un. vendidas${i.produtoNome?'<br>'+esc(i.produtoNome):''}${i.codigo?'<br>Código ML: '+esc(i.codigo):''}</span></span></span></td>
-        <td class="num">${k.custo?fmtMoney(k.valor):'<span class="pend">sem custo</span>'}</td>
         <td class="num"><span class="det">${k.media.toFixed(2)}${(()=>{const t=tendencia(i); return t?`<span class="tend ${t.sobe?'up':(t.cai?'dn':'eq')}">${t.sobe?'▲':(t.cai?'▼':'=')}</span>`:'';})()}<span class="i">i</span><span class="pop">
           <span class="ln"><span>7d: ${fmtInt(i.v7)} ÷ 7</span><b>${k.r7.toFixed(2)} × ${c.p7}</b></span>
           <span class="ln"><span>15d: ${fmtInt(i.v15)} ÷ 15</span><b>${k.r15.toFixed(2)} × ${c.p15}</b></span>
@@ -6322,7 +6449,10 @@ function renderPrevisao(){
             if(h2.length>1) s+=`<span class="obs">Histórico: ${h2.slice(-6).map(x=>fmtData(x.data).slice(0,5)+' '+x.media.toFixed(1)).join(' · ')}</span>`;
             else s+='<span class="obs">O histórico começa a se formar a partir da segunda leitura do painel.</span>';
             return s;})()}</span></span></td>
-        <td class="num">${k.cob===Infinity?'∞':Math.round(k.cob)+' d'}</td>
+        <td class="num">${k.cob===Infinity?'∞':Math.round(k.cob)+' d'}${(()=>{ if(k.cob===Infinity) return ''; const dz=new Date(Date.now()+Math.max(0,Math.floor(k.cob))*864e5).toISOString().slice(0,10); return ' <small class="muted">('+fmtData(dz)+')</small>'; })()}</td>
+        <td class="num">${p?fmtInt(p.qtd.comprar||0):'<span class="muted">—</span>'}</td>
+        <td class="num">${p?fmtInt(p.qtd.coletar||0):'<span class="muted">—</span>'}</td>
+        <td class="num">${p?fmtInt(disponivel(p)):'<span class="muted">—</span>'}</td>
         <td>${p&&p.unidPorCaixa?`<div class="hint" style="margin:0 0 2px">${caixasTxt(k.qtd,p.unidPorCaixa)}</div>`:''}<span class="det"><input type="number" min="0" class="qty-acao" data-fq="${i.id}" value="${k.qtd}"><span class="pop">
           <span class="ln"><span>Demanda de ${c.cobertura} dias</span><b>${Math.round(k.dem)}</b></span>
           <span class="ln"><span>Estoque FULL hoje</span><b>−${fmtInt(k.full)}</b></span>
