@@ -4598,7 +4598,7 @@ function renderAuditoriaMes(){
   return `
     <div class="card">
       <h3 style="margin-top:0">🔍 Auditoria Financeira Mensal</h3>
-      <p class="hint" style="margin:0 0 10px">Busca TODOS os pedidos do período (não é amostra) e, pra cada pedido cancelado, confere direto no Mercado Pago se a comissão e o frete foram realmente retidos ou devolvidos — em vez de assumir sempre retido. Período grande pode levar alguns minutos, pois é uma chamada extra por pedido cancelado. Requer o backend atualizado (server_v77.js) publicado no Render.</p>
+      <p class="hint" style="margin:0 0 10px">Busca TODOS os pedidos do período (não é amostra, válidos e cancelados) e confere direto no Mercado Pago a comissão e o frete realmente cobrados de cada um, além de checar se o dinheiro de vendas antigas já foi liberado pro vendedor. Período grande pode levar vários minutos, pois é uma chamada extra por pedido. Requer o backend atualizado (server_v77.js) publicado no Render.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
         <label>Loja<select id="audLoja">${optsLojas(auditoriaLoja)}</select></label>
         <label>De<input type="date" id="audDe" value="${esc(auditoriaDe)}"></label>
@@ -4610,18 +4610,25 @@ function renderAuditoriaMes(){
       ${auditoriaErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(auditoriaErro)}</p>`:''}
       ${auditoriaStatus==='rodando'?`<p class="hint" style="margin-top:10px">${auditoriaProgresso?esc(auditoriaProgresso):'Buscando pedidos...'}</p>`:''}
       ${res?`
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;margin-top:14px">
-        <div><span class="muted" style="font-size:11px">TARIFA DE CANCELADOS (assumida)</span><br><b style="font-size:16px">${fmtMoney(res.tarifa_cancelados_assumida)}</b></div>
-        <div><span class="muted" style="font-size:11px">TARIFA DE CANCELADOS (confirmada no MP)</span><br><b style="font-size:16px">${fmtMoney(res.tarifa_cancelados_confirmada)}</b></div>
-        <div><span class="muted" style="font-size:11px">DIFERENÇA</span><br><b style="font-size:16px" class="${res.diferenca_tarifa>0?'pend':'okv'}">${fmtMoney(res.diferenca_tarifa)}</b></div>
+      <h4 style="margin:18px 0 6px">📋 Fechamento confirmado do período (${res.pedidos_validos} válidos, ${res.pedidos_cancelados} cancelados)</h4>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
+        <div><span class="muted" style="font-size:11px">FATURAMENTO</span><br><b style="font-size:16px">${fmtMoney(res.faturamento)}</b></div>
+        <div><span class="muted" style="font-size:11px">CANCELAMENTOS</span><br><b style="font-size:16px">${fmtMoney(res.cancelamentos)}</b></div>
+        <div><span class="muted" style="font-size:11px">TARIFA REAL (confirmada no MP)</span><br><b style="font-size:16px">${fmtMoney(res.tarifa_real)}</b></div>
+        <div><span class="muted" style="font-size:11px">FRETE REAL (confirmado no MP)</span><br><b style="font-size:16px">${fmtMoney(res.frete_real)}</b></div>
       </div>
-      <p class="hint" style="margin-top:10px">Frete de cancelados confirmado (real, via MP): ${fmtMoney(res.frete_cancelados_confirmado)}</p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;margin-top:10px">
+        <div><span class="muted" style="font-size:11px">TARIFA ASSUMIDA (cálculo do dia a dia)</span><br><b style="font-size:16px">${fmtMoney(res.tarifa_assumida)}</b></div>
+        <div><span class="muted" style="font-size:11px">DIFERENÇA (assumida − real)</span><br><b style="font-size:16px" class="${res.diferenca_tarifa>0?'pend':'okv'}">${fmtMoney(res.diferenca_tarifa)}</b></div>
+        <div><span class="muted" style="font-size:11px">PEDIDOS SEM REPASSE CONFIRMADO</span><br><b style="font-size:16px" class="${res.pedidos_pendentes_repasse>0?'pend':'okv'}">${res.pedidos_pendentes_repasse} (${fmtMoney(res.valor_pendente_repasse)})</b></div>
+      </div>
+      <p class="hint" style="margin-top:10px">Compare Tarifa real e Frete real acima com os cards TARIFAS e FRETE do Resumo Financeiro (mesma loja/período): é aí que aparece exatamente quanto o cálculo do dia a dia está errando. "Pedidos sem repasse confirmado" são vendas de mais de 35 dias cujo dinheiro ainda não aparece como liberado pro vendedor — confira uma a uma na tabela de Anomalias abaixo.</p>
       ${(res.avisos||[]).filter(a=>!/^intervalo /.test(a)).length?`<p class="hint" style="color:#e6a23c;margin-top:6px">${res.avisos.filter(a=>!/^intervalo /.test(a)).map(a=>esc(a)).join('<br>')}</p>`:''}
       <h4 style="margin:16px 0 6px">Anomalias encontradas (${(res.anomalias||[]).length})</h4>
       ${(res.anomalias||[]).length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
         <th>Pedido</th><th>Motivo</th><th class="num">Valor do pedido</th>
       </tr></thead><tbody>
-        ${res.anomalias.map(a=>`<tr><td>${esc(String(a.pedido_id||''))}</td><td>${esc(a.motivo||'')}${a.sale_fee_assumido!=null?`<div class="hint" style="margin:2px 0 0;font-size:11px">Tarifa que estava sendo contada indevidamente: ${fmtMoney(a.sale_fee_assumido)}</div>`:''}</td><td class="num">${fmtMoney(a.total||0)}</td></tr>`).join('')}
+        ${res.anomalias.map(a=>`<tr><td>${esc(String(a.pedido_id||''))}</td><td>${esc(a.motivo||'')}${a.sale_fee_assumido!=null?`<div class="hint" style="margin:2px 0 0;font-size:11px">Tarifa assumida: ${fmtMoney(a.sale_fee_assumido)}${a.sale_fee_real!=null?` · Tarifa real: ${fmtMoney(a.sale_fee_real)}`:''}</div>`:''}</td><td class="num">${fmtMoney(a.total||0)}</td></tr>`).join('')}
       </tbody></table></div>`:`<p class="empty-inline">Nenhuma anomalia encontrada nesse período.</p>`}
       `:''}
     </div>
