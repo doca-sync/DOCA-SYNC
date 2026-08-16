@@ -4636,7 +4636,7 @@ function calcularMargensResumo(resumo,loja){
   // regra: Ads NAO entra na Margem de Contribuicao - vira custo no Lucro Bruto (Margem de
   // Contribuicao - Ads), e so' depois a Margem Liquida desconta despesas do periodo e fatura ML
   // pendente por cima do Lucro Bruto.
-  const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.cancelamentosValor-resumo.reembolsosValor;
+  const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.reembolsosValor;
   const lucroBruto=margem-(resumo.ads.custo||0);
   const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
   const faturaMlAtual=faturaMlPendenteLoja(loja);
