@@ -490,6 +490,17 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     let pedidosPendentesRepasse = 0, valorPendenteRepasse = 0;
     const anomalias = [];
     const agora = Date.now();
+    // v82: BUG REAL encontrado (usuario desconfiou com razao do Frete real ter vindo maior que ate
+    // o painel do ML) - quando o comprador leva VARIOS itens de VARIOS pedidos no mesmo carrinho
+    // (pack_id), o Mercado Livre cria um pedido por item/vendedor mas o PAGAMENTO no Mercado Pago e'
+    // UM SO, compartilhado entre os pedidos irmaos (confirmado no proprio codigo do /financas/resumo,
+    // que ja tinha itensPorPagamento por causa disso). O loop antigo buscava o pagamento por PEDIDO
+    // sem checar se aquele payment.id ja tinha sido contado - resultado: o Frete (e a Tarifa) real de
+    // um carrinho com N pedidos irmaos era somado N vezes, inflando o total. Corrigido: so soma a
+    // cobranca de cada payment.id UMA vez (no primeiro pedido em que aparece), mesmo que outros
+    // pedidos irmaos do carrinho reapareçam depois - e nem chama o Mercado Pago de novo pra eles.
+    const pagamentosContados = new Set();
+    let pedidosMesmoCarrinho = 0;
 
     for (const p of auditaveis) {
       const cancelado = p.status === 'cancelled';
@@ -506,6 +517,14 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
         job.progresso.feito++;
         continue;
       }
+      if (pagamentosContados.has(pgAprovado.id)) {
+        // pedido em carrinho (pack) cujo pagamento ja foi contado via um pedido irmao - nao soma de
+        // novo (evita duplicar Frete/Tarifa) e nao gasta chamada ao Mercado Pago com ele.
+        pedidosMesmoCarrinho++;
+        job.progresso.feito++;
+        continue;
+      }
+      pagamentosContados.add(pgAprovado.id);
       try {
         const r = await mpFetch(loja, `/v1/payments/${pgAprovado.id}`, { method: 'GET' });
         const jp = await r.json();
@@ -541,6 +560,7 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     job.resultado = {
       loja, periodo: { de, ate },
       pedidos_no_periodo: pedidos.length, pedidos_validos: validos.length, pedidos_cancelados: cancelados.length,
+      pedidos_mesmo_carrinho: pedidosMesmoCarrinho,
       faturamento: round2(faturamento),
       cancelamentos: round2(cancelamentosValor),
       tarifa_assumida: round2(tarifaAssumida),
