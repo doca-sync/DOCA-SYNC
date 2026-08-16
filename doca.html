@@ -4321,8 +4321,8 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
-            <div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${margemContrib==null?'<span class="muted">calcule o Lucro acima</span>':fmtMoney(margemContrib)}</div>
-            <div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br>${lucroBruto==null?'<span class="muted">calcule o Lucro acima</span>':`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>`}</div>
+            <div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${!adsLucroResultado?'<span class="muted">calcule o Lucro acima</span>':(margemContrib==null?'<span class="muted">sem venda desse produto no período calculado</span>':fmtMoney(margemContrib))}</div>
+            <div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br>${!adsLucroResultado?'<span class="muted">calcule o Lucro acima</span>':(lucroBruto==null?'<span class="muted">sem venda desse produto no período calculado</span>':`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>`)}</div>
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
@@ -4558,6 +4558,58 @@ async function pesquisarResumoFinanceiro(){
   }catch(e){ financasResumoErro=e.message; }
   finally{ financasResumoCarregando=false; renderFinancas(); }
 }
+let financasSubAba='resumo'; // 'resumo' | 'despesas' | 'retiradas' - sub-abas dentro de Financas
+let financasFechTodasCarregando=false, financasFechTodasErro=null;
+/* fechamento de todas as lojas de uma vez, no MESMO periodo escolhido no Resumo Financeiro acima -
+   busca /financas/resumo loja por loja (com uma pequena pausa entre elas pra nao estourar limite
+   de chamadas por segundo) e monta um relatorio pra impressao comparando faturamento, margem de
+   contribuicao, lucro bruto e margem liquida entre as lojas. */
+async function calcularFechamentoTodasLojas(){
+  if(financasFechTodasCarregando) return;
+  financasFechTodasCarregando=true; financasFechTodasErro=null; renderFinancas();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
+    const resultados=[];
+    for(const loja of STORES){
+      const params=new URLSearchParams({loja,periodo:financasResumoPeriodo});
+      if(financasResumoPeriodo==='personalizado'){ params.set('de',financasResumoDe); params.set('ate',financasResumoAte); }
+      const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
+      let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend pra '+loja+'.'); }
+      if(!r.ok||!j.ok) throw new Error((j.erro||('Erro HTTP '+r.status))+' ('+loja+')');
+      resultados.push({loja,resumo:j.resumo,m:calcularMargensResumo(j.resumo,loja)});
+      await sleep(150);
+    }
+    imprimirRelatorioFechamentoTodasLojas(resultados);
+  }catch(e){ financasFechTodasErro=e.message; }
+  finally{ financasFechTodasCarregando=false; renderFinancas(); }
+}
+function imprimirRelatorioFechamentoTodasLojas(resultados){
+  const win=window.open('','_blank');
+  if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
+  const totalFat=resultados.reduce((s,r)=>s+r.resumo.faturamento,0);
+  const totalMargem=resultados.reduce((s,r)=>s+r.m.margem,0);
+  const totalLucroBruto=resultados.reduce((s,r)=>s+r.m.lucroBruto,0);
+  const totalMargemLiquida=resultados.reduce((s,r)=>s+r.m.margemLiquida,0);
+  const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
+  const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Fechamento — Todas as Lojas</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif;padding:28px;color:#111}h1{font-size:19px;margin:0 0 4px}
+    .sub{color:#555;font-size:12px;margin-bottom:22px}table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px}
+    th,td{border:1px solid #ccc;padding:8px 10px;text-align:left}th{background:#f2f2f2}td.n{text-align:right}
+    .tot{margin-top:10px;font-size:15px;font-weight:bold;border-top:2px solid #333;padding-top:10px;text-align:right}
+    @media print{.no-print{display:none}}</style></head><body>
+    <h1>Fechamento Financeiro — Todas as Lojas</h1>
+    <div class="sub">Período: ${esc(rotuloPeriodo)} · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <table><thead><tr><th>Loja</th><th class="n">Faturamento</th><th class="n">Margem de Contribuição</th><th class="n">Lucro Bruto</th><th class="n">Margem Líquida</th></tr></thead><tbody>
+    ${resultados.map(r=>`<tr><td>${esc(r.loja)}</td><td class="n">${fmtMoney(r.resumo.faturamento)}</td><td class="n">${fmtMoney(r.m.margem)}</td><td class="n">${fmtMoney(r.m.lucroBruto)}</td><td class="n">${fmtMoney(r.m.margemLiquida)}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="tot">Total: Faturamento ${fmtMoney(totalFat)} · Margem de Contribuição ${fmtMoney(totalMargem)} · Lucro Bruto ${fmtMoney(totalLucroBruto)} · Margem Líquida ${fmtMoney(totalMargemLiquida)}</div>
+    <button class="no-print" onclick="window.print()" style="margin-top:14px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
+    </body></html>`);
+  win.document.close();
+}
 /* CMV = soma de (custo cadastrado do produto × quantidade vendida no período), casando pelo
    mlItemId salvo em cada produto. Item vendido sem produto vinculado (ou sem custo cadastrado)
    entra em "semCusto" pra avisar que o CMV está subestimado, em vez de fingir que é zero. */
@@ -4778,7 +4830,12 @@ function renderFinancas(){
   const historico=Object.keys(porMes).sort().reverse();
   el.innerHTML=`
     <h1 class="page-title">Finanças</h1>
-    <p class="hint" style="margin:0 0 16px">Cadastre as despesas do negócio (fixas ou recorrentes) pra ter o total gasto por mês — base pra montar a DRE. Por enquanto é só o lado das despesas, sem receita/faturamento automático.</p>
+    <div class="subnav">
+      <button data-finsub="resumo" aria-selected="${financasSubAba==='resumo'?'true':'false'}">📊 Resumo Financeiro</button>
+      <button data-finsub="despesas" aria-selected="${financasSubAba==='despesas'?'true':'false'}">💵 Despesas</button>
+      <button data-finsub="retiradas" aria-selected="${financasSubAba==='retiradas'?'true':'false'}">💸 Retiradas e Reembolso</button>
+    </div>
+    ${financasSubAba==='resumo'?`
     <div class="card">
       <h3 style="margin-top:0">📊 Resumo Financeiro</h3>
       <p class="hint" style="margin:0 0 10px">Faturamento, custos e margem de contribuição puxados direto da API do Mercado Livre pro período escolhido — não usa as despesas cadastradas abaixo, é um cálculo à parte.</p>
@@ -4804,7 +4861,14 @@ function renderFinancas(){
       </div>
       ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
       ${financasResumoResultado?renderResumoFinanceiroResultado(financasResumoResultado,financasResumoLoja):''}
+      <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px">
+        <button class="btn" id="btnFecharTodasLojas" ${financasFechTodasCarregando?'disabled':''}>${financasFechTodasCarregando?'Calculando...':'📋 Calcular fechamento de todas as lojas'}</button>
+        <span class="hint" style="margin:0">Gera um relatório pra impressão com o mesmo período escolhido acima, comparando faturamento, margem de contribuição, lucro bruto e margem líquida das ${STORES.length} lojas.</span>
+      </div>
+      ${financasFechTodasErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasFechTodasErro)}</p>`:''}
     </div>
+    `:''}
+    ${financasSubAba==='despesas'?`
     <div class="card">
       <h3 style="margin-top:0">Nova despesa</h3>
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
@@ -4870,9 +4934,12 @@ function renderFinancas(){
     ${historico.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">Total de despesas</th></tr></thead><tbody>
       ${historico.map(m=>`<tr><td>${mesLabel(m)}</td><td class="num">${fmtMoney(porMes[m])}</td></tr>`).join('')}
     </tbody></table></div>`:`<p class="empty-inline">Sem histórico ainda.</p>`}
-    ${renderSociosCard()}
+    `:''}
+    ${financasSubAba==='retiradas'?renderSociosCard():''}
   `;
-  document.getElementById('btnAddDespesa').onclick=()=>{
+  el.querySelectorAll('[data-finsub]').forEach(b=>b.onclick=()=>{ financasSubAba=b.dataset.finsub; renderFinancas(); });
+  const btnAddDespesa=document.getElementById('btnAddDespesa');
+  if(btnAddDespesa) btnAddDespesa.onclick=()=>{
     const descricao=document.getElementById('fnDescricao').value.trim();
     const valor=Number(document.getElementById('fnValor').value);
     const dataPagamento=document.getElementById('fnData').value;
@@ -4886,8 +4953,10 @@ function renderFinancas(){
     financasFiltroMes=dataPagamento.slice(0,7);
     renderFinancas();
   };
-  document.getElementById('fnFiltroMes').onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
-  document.getElementById('fnFiltroLoja').onchange=e=>{ financasFiltroLoja=e.target.value; renderFinancas(); };
+  const fnFiltroMes=document.getElementById('fnFiltroMes');
+  if(fnFiltroMes) fnFiltroMes.onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
+  const fnFiltroLoja=document.getElementById('fnFiltroLoja');
+  if(fnFiltroLoja) fnFiltroLoja.onchange=e=>{ financasFiltroLoja=e.target.value; renderFinancas(); };
   el.querySelectorAll('[data-fnpago]').forEach(c=>c.onchange=()=>{
     marcarDespesaPaga(c.dataset.fnpago,c.checked);
     toast(c.checked?'Despesa marcada como paga.':'Despesa marcada como pendente.');
@@ -4930,6 +4999,8 @@ function renderFinancas(){
   if(frPesquisar) frPesquisar.onclick=pesquisarResumoFinanceiro;
   const frAliquota=document.getElementById('frAliquota');
   if(frAliquota) frAliquota.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{aliquotaImposto:e.target.value}); renderFinancas(); };
+  const btnFecharTodasLojas=document.getElementById('btnFecharTodasLojas');
+  if(btnFecharTodasLojas) btnFecharTodasLojas.onclick=calcularFechamentoTodasLojas;
   const btnAddSocio=document.getElementById('btnAddSocio');
   if(btnAddSocio) btnAddSocio.onclick=()=>{
     const socio=document.getElementById('socQuem').value;
@@ -5030,6 +5101,7 @@ function removerPagamentoAmauri(id){
 let amauriResumoPeriodo='personalizado', amauriResumoDe='', amauriResumoAte='';
 let amauriResumoResultado=null, amauriResumoCarregando=false, amauriResumoErro=null;
 let amauriCustosAberto=new Set();
+let amauriSubAba='produtos'; // 'produtos' | 'periodo' - sub-abas dentro de Amauri
 async function pesquisarResumoAmauri(){
   if(!amauriResumoDe||!amauriResumoAte) return;
   amauriResumoCarregando=true; amauriResumoErro=null; renderAmauri();
@@ -5248,7 +5320,12 @@ function renderAmauri(){
   el.innerHTML=`
     <h1 class="page-title">Amauri</h1>
     <p class="hint" style="margin:0 0 16px">Fechamento dos produtos da TorvStore em sociedade com o Amauri: marque os produtos, ajuste os custos de cada um (e quem pagou cada um) e puxe o período pra calcular a margem líquida e o repasse devido a ele.</p>
-    <details class="card">
+    <div class="subnav">
+      <button data-amsub="produtos" aria-selected="${amauriSubAba==='produtos'?'true':'false'}">📦 Produtos</button>
+      <button data-amsub="periodo" aria-selected="${amauriSubAba==='periodo'?'true':'false'}">📊 Período do fechamento</button>
+    </div>
+    ${amauriSubAba==='produtos'?`
+    <details class="card" open>
       <summary style="cursor:pointer;font-weight:600">Produtos em parceria (${a.produtoIds.length} selecionado${a.produtoIds.length===1?'':'s'})</summary>
       <p class="hint" style="margin:10px 0 10px">Marque quais produtos da TorvStore são em sociedade com o Amauri.</p>
       <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px"></th><th>SKU</th><th class="num">Custo unit.</th></tr></thead><tbody>
@@ -5286,6 +5363,9 @@ function renderAmauri(){
         `:''}
       </div>`; }).join('')}
     </div>
+    `:''}
+    `:''}
+    ${amauriSubAba==='periodo'?(marcados.length?`
     <div class="card">
       <h3 style="margin-top:0">📊 Período do fechamento</h3>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
@@ -5345,8 +5425,9 @@ function renderAmauri(){
         ${cel('SALDO A PAGAR (repasse do período − já pago)',totalRepasse-totalPago,(totalRepasse-totalPago)>0?'pend':'okv')}
       </div>
     </div>
-    `:'<p class="empty-inline">Marque ao menos um produto acima pra começar o fechamento.</p>'}
+    `:'<p class="empty-inline">Marque ao menos um produto na aba Produtos pra começar o fechamento.</p>'):''}
   `;
+  el.querySelectorAll('[data-amsub]').forEach(b=>b.onclick=()=>{ salvarCustosAmauriPendentes(); amauriSubAba=b.dataset.amsub; renderAmauri(); });
   el.querySelectorAll('[data-amauriprod]').forEach(c=>c.onchange=()=>{ salvarCustosAmauriPendentes(); toggleAmauriProduto(c.dataset.amauriprod); });
   el.querySelectorAll('[data-amauricusto]').forEach(inp=>inp.onchange=commitCustosAmauri);
   el.querySelectorAll('[data-amauriquem]').forEach(sel=>sel.onchange=commitCustosAmauri);
