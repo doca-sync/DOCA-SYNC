@@ -4610,7 +4610,7 @@ function renderAuditoriaMes(){
       ${auditoriaErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(auditoriaErro)}</p>`:''}
       ${auditoriaStatus==='rodando'?`<p class="hint" style="margin-top:10px">${auditoriaProgresso?esc(auditoriaProgresso):'Buscando pedidos...'}</p>`:''}
       ${res?`
-      <h4 style="margin:18px 0 6px">📋 Fechamento confirmado do período (${res.pedidos_validos} válidos, ${res.pedidos_cancelados} cancelados)</h4>
+      <h4 style="margin:18px 0 6px">📋 Fechamento confirmado do período (${res.pedidos_validos} válidos, ${res.pedidos_cancelados} cancelados${res.pedidos_mesmo_carrinho?`, ${res.pedidos_mesmo_carrinho} em carrinho compartilhado (não duplicados)`:''})</h4>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
         <div><span class="muted" style="font-size:11px">FATURAMENTO</span><br><b style="font-size:16px">${fmtMoney(res.faturamento)}</b></div>
         <div><span class="muted" style="font-size:11px">CANCELAMENTOS</span><br><b style="font-size:16px">${fmtMoney(res.cancelamentos)}</b></div>
