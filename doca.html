@@ -557,6 +557,7 @@ let flashFull={};
 let fileHandle=null;
 let filtro={loja:'todas',busca:'',ordem:'loja'};
 let confirmarLojaAtual='todas';
+let envioKitAberto=new Set(); // ids de item "guarda-chuva" de kit com o detalhe dos componentes expandido, na tela de Envios FULL
 let pendingConfirm=null;
 let pdfPreview=null;
 let undoStack=[];
@@ -677,6 +678,58 @@ function _renderSeletorPeriodo(){
     closeModal();
     onEscolher(de,ate);
   };
+}
+/* variante de 1 dia só (sem intervalo) do mesmo calendário - clicar no dia já confirma e fecha,
+   sem precisar de um 2º clique nem botão "Confirmar". Substitui os <input type="date"> nativos
+   (o calendário nativo do navegador não dá pra forçar português). */
+let _seletorData=null;
+function botaoData(id,atual,opts){
+  opts=opts||{};
+  const cls=opts.classe?`btn ${opts.classe}`:'btn';
+  const style=opts.style!==undefined?opts.style:'justify-content:flex-start;width:100%';
+  const extraAttr=opts.dataAttr?` ${opts.dataAttr}`:'';
+  return `<button type="button" class="${cls}"${style?` style="${style}"`:''} id="${id}"${extraAttr}>${opts.semIcone?'':'📅 '}${atual?fmtData(atual):(opts.placeholder||'Escolher data...')}</button>`;
+}
+function abrirSeletorData(atual,onEscolher){
+  const base=_pdParseISO(atual)||_pdParseISO(hoje());
+  _seletorData={ano:base.y,mes:base.m,atual:atual||null,onEscolher};
+  _renderSeletorData();
+}
+function _renderSeletorData(){
+  const s=_seletorData; if(!s) return;
+  const body=openModal(false);
+  const {ano,mes}=s;
+  const primeiroDia=new Date(ano,mes,1).getDay();
+  const diasNoMes=new Date(ano,mes+1,0).getDate();
+  const hj=hoje();
+  let celulas=[];
+  for(let i=0;i<primeiroDia;i++) celulas.push('<td></td>');
+  for(let d=1;d<=diasNoMes;d++){
+    const iso=_pdFmtISO(ano,mes,d);
+    const sel=iso===s.atual;
+    celulas.push(`<td style="padding:2px"><button type="button" data-caldiaunico="${iso}" style="width:32px;height:32px;border-radius:6px;border:1px solid ${sel?'var(--acc,#6c5ce7)':'transparent'};background:${sel?'var(--acc,#6c5ce7)':'transparent'};color:${sel?'#fff':'inherit'};cursor:pointer;font:inherit;${iso===hj&&!sel?'font-weight:700;text-decoration:underline':''}">${d}</button></td>`);
+  }
+  while(celulas.length%7!==0) celulas.push('<td></td>');
+  let linhas=''; for(let i=0;i<celulas.length;i+=7) linhas+='<tr>'+celulas.slice(i,i+7).join('')+'</tr>';
+  body.innerHTML=`<h3>Escolher data</h3>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <button type="button" class="btn sm" id="calPrev">‹</button>
+      <b>${MESES_PT[mes]} de ${ano}</b>
+      <button type="button" class="btn sm" id="calNext">›</button>
+    </div>
+    <table style="width:100%;text-align:center;border-collapse:collapse">
+      <thead><tr>${DIAS_SEMANA_PT.map(d=>`<th style="font-size:11px;color:var(--muted);padding:4px;font-weight:400">${d}</th>`).join('')}</tr></thead>
+      <tbody>${linhas}</tbody>
+    </table>
+    <div class="modal-actions"><button class="btn" id="calCancelar">Cancelar</button><button class="btn" id="calHoje">Hoje</button></div>`;
+  document.getElementById('calPrev').onclick=()=>{ s.mes--; if(s.mes<0){ s.mes=11; s.ano--; } _renderSeletorData(); };
+  document.getElementById('calNext').onclick=()=>{ s.mes++; if(s.mes>11){ s.mes=0; s.ano++; } _renderSeletorData(); };
+  document.getElementById('calCancelar').onclick=()=>{ _seletorData=null; closeModal(); };
+  document.getElementById('calHoje').onclick=()=>{ const {onEscolher}=s; _seletorData=null; closeModal(); onEscolher(hoje()); };
+  body.querySelectorAll('[data-caldiaunico]').forEach(b=>b.onclick=()=>{
+    const iso=b.dataset.caldiaunico, {onEscolher}=s;
+    _seletorData=null; closeModal(); onEscolher(iso);
+  });
 }
 function optsLojas(sel){ return STORES.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
 function optsColeta(sel){ return LOCAIS_COLETA.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
@@ -2068,26 +2121,29 @@ function editarEnvio(id,patch){
 }
 /* Reserva o que está no galpão (Local) e o que já foi comprado e está por coletar.
    O Coletar NÃO é descontado — o motorista continua vendo tudo que precisa buscar. */
-function alocarNoEnvio(envio,produtoEscolhido,solicitado){
+function alocarNoEnvio(envio,produtoEscolhido,solicitado,kitPaiId){
   const marcaEnvio='FULL '+(envio.nome||'')+(envio.loja?' · '+envio.loja:'');
   /* se o SKU escolhido e' um KIT (junta outros produtos, ex: Kit Pet = 1 luva + 1 Esponja Pet),
      ele nao tem estoque proprio pra alocar - explode a quantidade pedida em cada componente
      (qtd. por unidade x solicitado) e aloca/reserva/manda comprar CADA componente separado,
      recursivamente (cada componente passa de novo por essa mesma funcao, entao se um componente
      TAMBEM for vinculado a um mestre ou for ele mesmo um kit aninhado, resolve certo tambem).
-     Registra 1 item "guarda-chuva" do kit no envio so' pra aparecer na lista (0 em tudo, pra
-     nao somar 2x - quem realmente carrega os numeros sao os itens dos componentes). */
+     Registra 1 item "guarda-chuva" do kit no envio (0 em tudo, quem carrega os numeros de
+     verdade sao os itens dos componentes, marcados com kitDeItemId apontando pra esse guarda-
+     chuva) - a tela de Envios (renderEnvio) usa esse link pra CONSOLIDAR kit + componentes numa
+     linha só em vez de mostrar cada um separado. */
   const comps=componentesDe(produtoEscolhido);
   if(comps.length){
+    const idGuardaChuva=gerarId('it');
+    envio.itens.push({id:idGuardaChuva,produtoId:produtoEscolhido.id,solicitado,alocado:0,reservadoColeta:0,geradoCompra:0,kitGuardaChuva:true,kitDeItemId:kitPaiId||null});
     let alocadoTotal=0,aCaminhoTotal=0,geradoTotal=0;
     comps.forEach(c=>{
       const comp=prodById(c.produtoId); if(!comp) return;
-      const r=alocarNoEnvio(envio,comp,solicitado*c.qtdPorUnidade);
+      const r=alocarNoEnvio(envio,comp,solicitado*c.qtdPorUnidade,idGuardaChuva);
       alocadoTotal+=r.alocado; aCaminhoTotal+=r.aCaminho; geradoTotal+=r.gerado;
     });
-    envio.itens.push({id:gerarId('it'),produtoId:produtoEscolhido.id,solicitado,alocado:0,reservadoColeta:0,geradoCompra:0,kitGuardaChuva:true});
     produtoEscolhido.atualizadoEm=Date.now();
-    return {alocado:alocadoTotal,aCaminho:aCaminhoTotal,gerado:geradoTotal};
+    return {alocado:alocadoTotal,aCaminho:aCaminhoTotal,gerado:geradoTotal,itemId:idGuardaChuva};
   }
   /* se o SKU escolhido na tela e' um membro vinculado (estoque fisico compartilhado com outro
      anuncio), o estoque de verdade mora no mestre - aloca/decrementa/compra sempre por la',
@@ -2107,10 +2163,11 @@ function alocarNoEnvio(envio,produtoEscolhido,solicitado){
     produto.pedidos.push({...novoPedido(gerado),origem:marcaEnvio,envioId:envio.id});
     sincronizarPedidos(produto);
   }
-  envio.itens.push({id:gerarId('it'),produtoId:produto.id,skuEscolhidoId:produtoEscolhido.id!==produto.id?produtoEscolhido.id:null,solicitado,alocado:aloc,reservadoColeta:resCol,geradoCompra:gerado});
+  const idItem=gerarId('it');
+  envio.itens.push({id:idItem,produtoId:produto.id,skuEscolhidoId:produtoEscolhido.id!==produto.id?produtoEscolhido.id:null,solicitado,alocado:aloc,reservadoColeta:resCol,geradoCompra:gerado,kitDeItemId:kitPaiId||null});
   produto.atualizadoEm=Date.now();
   produtoEscolhido.atualizadoEm=Date.now();
-  return {alocado:aloc,aCaminho:resCol,gerado};
+  return {alocado:aloc,aCaminho:resCol,gerado,itemId:idItem};
 }
 /* puxa para a reserva o que estiver sobrando no Local */
 function alocarPendentes(envioId){
@@ -2157,6 +2214,53 @@ function cancelarEnvio(envioId){
   e.itens.forEach(i=>reverterItem(i,e.id));
   state.envios=state.envios.filter(x=>x.id!==envioId);
   persist();
+}
+/* todos os itens do envio que pertencem ao grupo de 1 kit (o guarda-chuva + todos os
+   componentes explodidos dele, recursivo pra suportar kit de kit) - usado pra Remover/Ajustar
+   tratarem o kit como 1 linha só na tela de Envios, mesmo internamente sendo N itens. */
+function itensDoGrupoKit(envio,kitItemId){
+  const grupo=[]; const fila=[kitItemId];
+  while(fila.length){
+    const alvo=fila.shift();
+    const item=envio.itens.find(i=>i.id===alvo); if(!item) continue;
+    grupo.push(item);
+    envio.itens.filter(i=>i.kitDeItemId===alvo).forEach(f=>fila.push(f.id));
+  }
+  return grupo;
+}
+/* remove o kit inteiro (guarda-chuva + componentes) de um envio - reverte cada peça pro
+   estoque/compra antes de tirar da lista, igual removerItemEnvio faria pra cada uma. */
+function removerGrupoKitEnvio(envioId,kitItemId){
+  const e=envioById(envioId); if(!e) return;
+  const grupo=itensDoGrupoKit(e,kitItemId);
+  const kit=grupo.find(i=>i.id===kitItemId), p=kit&&prodById(kit.produtoId);
+  snapshot('remoção do kit '+(p?p.sku:'')+' do envio '+e.nome);
+  grupo.forEach(it=>reverterItem(it,envioId));
+  const idsGrupo=new Set(grupo.map(i=>i.id));
+  e.itens=e.itens.filter(i=>!idsGrupo.has(i.id));
+  persist();
+}
+/* ajusta a quantidade de um kit já no envio - como a quantidade nova muda a explosão de TODOS
+   os componentes (nem sempre proporcional, por causa de estoque/coletar/comprar de cada um),
+   o jeito seguro é reverter o grupo inteiro e alocar de novo do zero com o novo total, reusando
+   a mesma lógica testada de alocarNoEnvio em vez de tentar calcular a diferença componente a
+   componente. */
+function ajustarGrupoKitEnvio(envioId,kitItemId,novoTotal){
+  const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
+  const grupo=itensDoGrupoKit(e,kitItemId);
+  const kit=grupo.find(i=>i.id===kitItemId); if(!kit) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(kit.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  novoTotal=parseInt(novoTotal);
+  if(isNaN(novoTotal)||novoTotal<0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  const totalAntes=kit.solicitado||0;
+  if(novoTotal===totalAntes) return {ok:true,dif:0};
+  snapshot(`ajuste do kit ${p.sku} no envio ${e.nome}`);
+  grupo.forEach(it=>reverterItem(it,envioId));
+  const idsGrupo=new Set(grupo.map(i=>i.id));
+  e.itens=e.itens.filter(i=>!idsGrupo.has(i.id));
+  if(novoTotal>0) alocarNoEnvio(e,p,novoTotal);
+  persist();
+  return {ok:true,dif:novoTotal-totalAntes};
 }
 function removerItemEnvio(envioId,itemId){
   const e=envioById(envioId); if(!e) return;
@@ -2413,6 +2517,7 @@ function renderOnboard(){
 /* ---------- tarefas (tela) ---------- */
 let arrastando=null,arrastandoLista=null,arrastandoSub=null;
 let novoRepetirMensal=false;
+let novaTarefaData='';
 /* avança uma data ISO em 1 mês, ajustando pro último dia quando o mês novo é mais curto */
 function proximoMes(iso){
   if(!iso) return '';
@@ -2446,7 +2551,7 @@ function renderTarefas(){
     </div>
     <div class="tarefa-nova">
       <input id="tfTitulo" type="text" placeholder="O que precisa ser feito?" autocomplete="off">
-      <input id="tfData" type="date" title="Data (opcional)">
+      ${botaoData('tfData',novaTarefaData,{placeholder:'Data (opcional)',style:'',classe:'sm'})}
       <input id="tfHora" type="time" title="Horário (opcional)">
       <button type="button" class="btn sm ${novoRepetirMensal?'acc':''}" id="tfRepetir" title="Repetir todo mês nesta data (ex: gestão de promoções e cupons)">🔁 Mensal</button>
       <button class="btn gold" id="btnAddTarefa">+ Adicionar</button>
@@ -2467,8 +2572,7 @@ function renderTarefas(){
             <input class="tarefa-tit" type="text" value="${esc(t.titulo)}" data-tit="${t.id}" placeholder="Sem título">
             <button type="button" class="tarefa-resumo" data-abrir="${t.id}" title="Data, horário, repetição e observação">${t.data?`📅 ${fmtData(t.data).slice(0,5)}`:''}${t.repetirMensal?' 🔁':''}${(!t.data&&!t.repetirMensal)?'⋯':''}</button>
             ${subs.length?`<span class="sub-cont ${feitas===subs.length?'ok':''}" title="Subtarefas concluídas">${feitas}/${subs.length}</span>`:''}
-            <input class="tarefa-data ${venc?'venc':(hj?'hoje':'')}" type="date" value="${esc(t.data)}" data-data="${t.id}"
-              title="${venc?'Atrasada':(hj?'Para hoje':'Data')}">
+            ${botaoData('data_'+t.id,t.data,{placeholder:'Data',style:'',classe:'tarefa-data '+(venc?'venc':(hj?'hoje':'')),dataAttr:`data-databtn="${t.id}"`})}
             <input class="tarefa-hora" type="time" value="${esc(t.hora||'')}" data-hora="${t.id}" title="Horário (opcional)">
             <button class="tarefa-repetir ${t.repetirMensal?'ativo':''}" data-repetir="${t.id}" title="${t.repetirMensal?'Repete todo mês nesta data — clique para desativar':'Repetir todo mês nesta data (ex: gestão de promoções e cupons)'}">🔁</button>
             <button class="tarefa-x" data-excluir="${t.id}" title="Excluir tarefa">✕</button>
@@ -2496,10 +2600,13 @@ function renderTarefas(){
     </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}
     <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. Ao concluir, a tarefa some (dá pra recuperar no <b>Desfazer</b>).</p>`;
 
+  const btnTfData=document.getElementById('tfData');
+  if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
   const add=()=>{
     const tit=document.getElementById('tfTitulo').value.trim();
     if(!tit){ alert('Escreva o que precisa ser feito.'); return; }
-    addTarefa(tit,document.getElementById('tfData').value,document.getElementById('tfHora').value,novoRepetirMensal,'');
+    addTarefa(tit,novaTarefaData,document.getElementById('tfHora').value,novoRepetirMensal,'');
+    novaTarefaData='';
     novoRepetirMensal=false;
     const c=document.getElementById('tfTitulo'); if(c) c.focus();
   };
@@ -2599,7 +2706,10 @@ function renderTarefas(){
       moverSubPara(tidA,sidA,sidB);
     };
   });
-  el.querySelectorAll('[data-data]').forEach(i=>i.onchange=()=>updateTarefa(i.dataset.data,{data:i.value}));
+  el.querySelectorAll('[data-databtn]').forEach(b=>b.onclick=()=>{
+    const t=state.tarefas.find(x=>x.id===b.dataset.databtn); if(!t) return;
+    abrirSeletorData(t.data,(iso)=>updateTarefa(t.id,{data:iso}));
+  });
   el.querySelectorAll('[data-repetir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.repetir); if(!t) return;
     const novo=!t.repetirMensal;
@@ -2864,7 +2974,7 @@ function renderDashboard(){
         const c=e.itens.reduce((x,i)=>x+(i.reservadoColeta||0),0);
         const g=e.itens.reduce((x,i)=>x+(i.geradoCompra||0),0);
         return `<tr><td class="mono">${fmtData(e.data)}</td>
-          <td><span class="loja-tag">${esc(e.loja)}</span></td><td>${esc(e.localColeta||'—')}</td><td class="num">${e.itens.length}</td>
+          <td><span class="loja-tag">${esc(e.loja)}</span></td><td>${esc(e.localColeta||'—')}</td><td class="num">${e.itens.filter(i=>!i.kitDeItemId).length}</td>
           <td class="num okv">${fmtInt(a)}</td><td class="num ${c?'cam':''}">${fmtInt(c)}</td>
           <td class="num ${g?'pend':''}">${fmtInt(g)}</td></tr>`;
       }).join('')}
@@ -2881,10 +2991,9 @@ function renderDashboard(){
             ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
             :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`:' — este SKU não tem nenhum FULL programado ainda');
           return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
-        }).join('')}</div></div>`).join('')}
-      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL). A data de ruptura já desconta aptas + em transferência + envios programados <b>desse SKU específico</b> que chegam a tempo — quando aparece o aviso de FULL programado tardio, é o envio desse próprio produto que chega tarde, não evita a parada, é preciso antecipá-lo ou criar um FULL de emergência. Clique no 🔕 pra parar de mostrar um SKU que vai sair de linha.</p></div>`:''}
+        }).join('')}</div></div>`).join('')}</div>`:''}
     ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
-    <p class="hint"><b>Comprar</b>, <b>Coletar</b> e <b>Local</b> mostram onde a mercadoria está fisicamente (a comprar, no fornecedor, no galpão). <b>Reservado</b> é quanto disso já tem destino num envio FULL — por isso ele se sobrepõe a Coletar e Local, não soma com eles. <b>Mercado Pago</b> e <b>A receber</b> são automáticos nas lojas já integradas (passe o mouse pro detalhe) e digitados à mão nas demais.</p>`;
+    `;
   el.querySelectorAll('[data-mpago]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.mpago,{mercadoPago:i.value});
     i.onchange=commit;
@@ -4192,7 +4301,7 @@ function margemContribuicaoCampanha(camp,loja){
   const itensAds=itensDaCampanhaAds(camp);
   if(!itensAds.length) return null;
   const aliquota=finLoja(loja).aliquotaImposto||0;
-  let margemTotal=0, achou=false;
+  let margemTotal=0, faturamentoTotal=0, achou=false;
   itensAds.forEach(ia=>{
     const iv=((adsLucroResultado.itensVendidos)||[]).find(x=>x.itemId===ia.itemId);
     if(!iv) return;
@@ -4202,8 +4311,9 @@ function margemContribuicaoCampanha(camp,loja){
     const custoProdutoItem=custoUnit*iv.qtd;
     const impostoItem=iv.valor*(aliquota/100);
     margemTotal+=iv.valor-custoProdutoItem-(iv.tarifa||0)-(iv.freteMl||0)-impostoItem;
+    faturamentoTotal+=iv.valor;
   });
-  return achou?margemTotal:null;
+  return achou?{margem:margemTotal,faturamento:faturamentoTotal}:null;
 }
 /* custo de Ads desta campanha no período EXATO calculado em Lucro (resumo.ads.campanhas) - usa
    o mesmo valor pra bater com a Margem de Contribuição de cima, em vez de misturar com o custo
@@ -4458,10 +4568,12 @@ function renderAds(){
   let linhas=campanhas.map(camp=>{
     const m=camp.metrics||{};
     const tacos=calcTacos(m);
-    const margemContrib=margemContribuicaoCampanha(camp,c.loja);
+    const mc=margemContribuicaoCampanha(camp,c.loja);
+    const margemContrib=mc?mc.margem:null;
+    const faturamentoContrib=mc?mc.faturamento:0;
     const custoAdsCalc=custoAdsCampanhaCalculado(camp);
     const lucroBruto=(margemContrib!=null&&custoAdsCalc!=null)?(margemContrib-custoAdsCalc):null;
-    return {camp,m,tacos,margemContrib,custoAdsCalc,lucroBruto};
+    return {camp,m,tacos,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto};
   });
   if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacos-a.tacos);
   else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacos-b.tacos);
@@ -4537,7 +4649,7 @@ function renderAds(){
       <th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
-      ${linhas.map(({camp,m,tacos,margemContrib,custoAdsCalc,lucroBruto})=>{
+      ${linhas.map(({camp,m,tacos,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
@@ -4566,8 +4678,8 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
-            ${lucroBruto!=null?`<div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br><b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b></div>`:''}
-            ${margemContrib!=null?`<div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${fmtMoney(margemContrib)}</div>`:''}
+            ${lucroBruto!=null?`<div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br><b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b> ${faturamentoContrib?`<span class="muted" style="font-size:11px">(${(lucroBruto/faturamentoContrib*100).toFixed(1)}%)</span>`:''}</div>`:''}
+            ${margemContrib!=null?`<div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${fmtMoney(margemContrib)} ${faturamentoContrib?`<span class="muted" style="font-size:11px">(${(margemContrib/faturamentoContrib*100).toFixed(1)}%)</span>`:''}</div>`:''}
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
@@ -4832,8 +4944,33 @@ let financasResumoDe='', financasResumoAte='';
 let financasResumoResultado=null; // último resumo buscado (guarda o objeto inteiro devolvido pelo backend)
 let financasResumoCarregando=false;
 let financasResumoErro=null;
+/* período anterior (mesmo tanto de dias, imediatamente antes) - pra mostrar ▲/▼ de crescimento
+   ou queda comparando com o período pesquisado. Busca sozinho, em segundo plano, logo depois do
+   período principal - se falhar, o resumo continua igual, só sem o indicativo. */
+let financasResumoAnterior=null;
+let financasResumoAnteriorCarregando=false;
+function _diasEntreISO(de,ate){ return Math.round((new Date(ate+'T00:00:00Z')-new Date(de+'T00:00:00Z'))/864e5)+1; }
+function _somaDiasISO(iso,dias){ const d=new Date(iso+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+dias); return d.toISOString().slice(0,10); }
+function periodoAnteriorEquivalente(de,ate){
+  const dias=_diasEntreISO(de,ate);
+  const anteAte=_somaDiasISO(de,-1);
+  const anteDe=_somaDiasISO(anteAte,-(dias-1));
+  return {de:anteDe,ate:anteAte};
+}
+async function buscarResumoAnteriorAutomatico(loja,de,ate){
+  financasResumoAnteriorCarregando=true;
+  try{
+    const base=backendUrl(); if(!base) return;
+    const {de:ande,ate:anate}=periodoAnteriorEquivalente(de,ate);
+    const params=new URLSearchParams({loja,periodo:'personalizado',de:ande,ate:anate});
+    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
+    const j=await r.json().catch(()=>null);
+    if(r.ok&&j&&j.ok) financasResumoAnterior=j.resumo; else financasResumoAnterior=null;
+  }catch(e){ financasResumoAnterior=null; }
+  finally{ financasResumoAnteriorCarregando=false; renderFinancas(); }
+}
 async function pesquisarResumoFinanceiro(){
-  financasResumoCarregando=true; financasResumoErro=null; renderFinancas();
+  financasResumoCarregando=true; financasResumoErro=null; financasResumoAnterior=null; renderFinancas();
   try{
     const base=backendUrl();
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -4846,6 +4983,7 @@ async function pesquisarResumoFinanceiro(){
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo financeiro (status '+r.status+').'));
     financasResumoResultado=j.resumo;
+    if(j.resumo&&j.resumo.periodo) buscarResumoAnteriorAutomatico(financasResumoLoja,j.resumo.periodo.de,j.resumo.periodo.ate);
   }catch(e){ financasResumoErro=e.message; }
   finally{ financasResumoCarregando=false; renderFinancas(); }
 }
@@ -5020,12 +5158,27 @@ function renderResumoFinanceiroResultado(resumo,loja){
   const margemLiquidaPct=resumo.faturamento>0?(margemLiquida/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
+  /* badge ▲/▼ comparando com o período anterior equivalente (mesmo tanto de dias, logo antes) -
+     verde quando melhora (ou piora um custo/despesa, se inverterBom=true), vermelho quando piora.
+     null enquanto ainda não buscou ou não achou dado válido pra comparar (não mostra nada, não
+     inventa 0% quando não sabe). */
+  const comparAnt=financasResumoAnterior;
+  const badge=(atual,anteriorValor,inverterBom)=>{
+    if(financasResumoAnteriorCarregando) return ' <span class="muted" style="font-size:11px">(comparando com período anterior...)</span>';
+    if(anteriorValor==null||!comparAnt) return '';
+    if(anteriorValor===0) return atual>0?' <span class="okv" style="font-size:11px">▲ novo (era R$ 0,00 no período anterior)</span>':'';
+    const variacao=(atual-anteriorValor)/Math.abs(anteriorValor)*100;
+    const melhorou=inverterBom?variacao<0:variacao>0;
+    const seta=variacao>=0?'▲':'▼';
+    return ` <span class="${melhorou?'okv':'pend'}" style="font-size:11px" title="Período anterior (${fmtData(comparAnt.periodo.de)} a ${fmtData(comparAnt.periodo.ate)}): ${fmtMoney(anteriorValor)}">${seta} ${Math.abs(variacao).toFixed(1)}% vs. período anterior</span>`;
+  };
+  const margensAnt=comparAnt?calcularMargensResumo(comparAnt,loja):null;
   const itensOrdenados=(resumo.itensVendidos||[]).slice().sort((a,b)=>b.qtd-a.qtd);
   const unidadesVendidas=itensOrdenados.reduce((s,it)=>s+it.qtd,0);
   return `
     <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(resumo.periodo.de)} a ${fmtData(resumo.periodo.ate)} · ${fmtInt(resumo.pedidosValidos)} pedido(s) válido(s) · ${fmtInt(unidadesVendidas)} unidade(s) vendida(s)${resumo.pedidosCancelados?' · '+fmtInt(resumo.pedidosCancelados)+' cancelado(s)':''}</p>
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
-      ${cartao('FATURAMENTO',resumo.faturamento,resumo.cancelamentosValor?'bruto (com cancelados): '+fmtMoney(resumo.faturamento+resumo.cancelamentosValor):'')}
+      ${cartao('FATURAMENTO',resumo.faturamento,(resumo.cancelamentosValor?'bruto (com cancelados): '+fmtMoney(resumo.faturamento+resumo.cancelamentosValor):'')+badge(resumo.faturamento,comparAnt?comparAnt.faturamento:null,false))}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
       ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'comissão real declarada em cada pedido — cai pra % da categoria só quando não tem declarada')}
       ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
@@ -5039,28 +5192,28 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
         <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento</div>
+        <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento${badge(margem,margensAnt?margensAnt.margem:null,false)}</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">LUCRO BRUTO</div>
         <b style="font-size:22px" class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>
-        <div class="hint" style="margin:2px 0 0">${lucroBrutoPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(resumo.ads.custo||0)} de Ads</div>
+        <div class="hint" style="margin:2px 0 0">${lucroBrutoPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(resumo.ads.custo||0)} de Ads${badge(lucroBruto,margensAnt?margensAnt.lucroBruto:null,false)}</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente</div>
+        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · desconta ${fmtMoney(custosPeriodo)} de despesas do período e ${fmtMoney(faturaMlAtual)} de fatura ML pendente${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
       </div>
     </div>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+    <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">VENDAS DO PERÍODO</div>
         <b style="font-size:18px">${fmtInt(resumo.pedidosValidos)} pedido(s) · ${fmtInt(unidadesVendidas)} unidade(s) · ${fmtMoney(resumo.faturamento)}</b>
       </div>
-      <div class="card" style="margin:0">
+      ${financasResumoPeriodo==='hoje'?'':`<div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">VENDAS DE HOJE</div>
         <b style="font-size:18px">${fmtInt(resumo.vendasHoje.pedidos)} pedido(s) · ${fmtInt(resumo.vendasHoje.unidades||0)} unidade(s) · ${fmtMoney(resumo.vendasHoje.faturamento)}</b>
-      </div>
+      </div>`}
     </div>
     <div class="card" style="margin-top:12px">
       <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
@@ -5077,7 +5230,9 @@ function renderResumoFinanceiroResultado(resumo,loja){
           const margemLiquidaItem=margemContribItem-adsItem;
           const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':fmtMoney(adsAchado);
           const aberto=resumoRankingAberto.has(String(it.itemId));
-          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num">${fmtMoney(margemContribItem)}</td><td class="num">${adsCel}</td><td class="num"><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b></td><td><button class="btn sm" data-rankver="${esc(it.itemId)}">${aberto?'▲':'▼'}</button></td></tr>
+          const pctMC=it.valor?(margemContribItem/it.valor*100):0;
+          const pctML=it.valor?(margemLiquidaItem/it.valor*100):0;
+          return `<tr><td class="muted">${i+1}º</td><td>${nome}</td><td class="num"><b>${fmtInt(it.qtd)}</b></td><td class="num">${fmtMoney(it.valor)}</td><td class="num">${fmtMoney(margemContribItem)} <span class="muted" style="font-size:11px">(${pctMC.toFixed(1)}%)</span></td><td class="num">${adsCel}</td><td class="num"><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b> <span class="muted" style="font-size:11px">(${pctML.toFixed(1)}%)</span></td><td><button class="btn sm" data-rankver="${esc(it.itemId)}">${aberto?'▲':'▼'}</button></td></tr>
           ${aberto?`<tr><td colspan="8">
             <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
               <div><span class="muted" style="font-size:11px">Faturamento</span><br>${fmtMoney(it.valor)}</div>
@@ -5085,9 +5240,9 @@ function renderResumoFinanceiroResultado(resumo,loja){
               <div><span class="muted" style="font-size:11px">Tarifa (comissão ML, % da categoria)</span><br>− ${fmtMoney(it.tarifa||0)}</div>
               <div><span class="muted" style="font-size:11px">Frete (vendedor, rateado por peso)</span><br>− ${fmtMoney(it.freteMl||0)}</div>
               <div><span class="muted" style="font-size:11px">Imposto (${aliquota||0}% do faturamento)</span><br>− ${fmtMoney(impostoItem)}</div>
-              <div><span class="muted" style="font-size:11px">= Margem de Contribuição</span><br><b>${fmtMoney(margemContribItem)}</b></div>
+              <div><span class="muted" style="font-size:11px">= Margem de Contribuição</span><br><b>${fmtMoney(margemContribItem)}</b> <span class="muted" style="font-size:11px">(${pctMC.toFixed(1)}%)</span></div>
               <div><span class="muted" style="font-size:11px">Ads (não entra na M. Contribuição)</span><br>${adsAchado==null?'não encontrado':'− '+fmtMoney(adsAchado)}</div>
-              <div><span class="muted" style="font-size:11px">= Margem Líquida</span><br><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b></div>
+              <div><span class="muted" style="font-size:11px">= Margem Líquida</span><br><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b> <span class="muted" style="font-size:11px">(${pctML.toFixed(1)}%)</span></div>
             </div>
           </td></tr>`:''}`;
         }).join('')}
@@ -5102,6 +5257,9 @@ function renderResumoFinanceiroResultado(resumo,loja){
    líquida do mês) é calculado sob demanda, com uma busca própria à API do Mercado Livre pro mês
    inteiro. */
 let sociosFechamento=null;
+let novoSocioData='';
+let novaDespesaData='';
+let novoPagAmauriData='';
 let sociosFechamentoMes=null;
 let sociosFechamentoCarregando=false;
 let sociosFechamentoErro=null;
@@ -5169,7 +5327,7 @@ function renderSociosCard(){
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
         <label>Descrição<input id="socDescricao" type="text" placeholder="Ex: combustível"></label>
         <label>Valor (R$)<input id="socValor" type="number" min="0" step="0.01"></label>
-        <label>Data<input id="socData" type="date" value="${esc(hoje())}"></label>
+        <label>Data${botaoData('socData',novoSocioData||hoje(),{style:''})}</label>
         <button class="btn gold" id="btnAddSocio" style="align-self:end">+ Adicionar</button>
       </div>
       <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
@@ -5238,7 +5396,7 @@ function renderFinancas(){
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
         <label>Descrição<input id="fnDescricao" type="text" placeholder="Ex: Aluguel do galpão"></label>
         <label>Valor (R$)<input id="fnValor" type="number" min="0" step="0.01"></label>
-        <label>Data de pagamento<input id="fnData" type="date" value="${esc(hoje())}"></label>
+        <label>Data de pagamento${botaoData('fnData',novaDespesaData||hoje(),{style:''})}</label>
         <label>Loja<select id="fnLoja"><option value="">Geral (todas)</option>${optsLojas(null)}</select></label>
       </div>
       <div class="acoes-linha" style="margin-top:10px">
@@ -5304,10 +5462,12 @@ function renderFinancas(){
   `;
   el.querySelectorAll('[data-finsub]').forEach(b=>b.onclick=()=>{ financasSubAba=b.dataset.finsub; renderFinancas(); });
   const btnAddDespesa=document.getElementById('btnAddDespesa');
+  const btnFnData=document.getElementById('fnData');
+  if(btnFnData) btnFnData.onclick=()=>abrirSeletorData(novaDespesaData||hoje(),(iso)=>{ novaDespesaData=iso; renderFinancas(); });
   if(btnAddDespesa) btnAddDespesa.onclick=()=>{
     const descricao=document.getElementById('fnDescricao').value.trim();
     const valor=Number(document.getElementById('fnValor').value);
-    const dataPagamento=document.getElementById('fnData').value;
+    const dataPagamento=novaDespesaData||hoje();
     const loja=document.getElementById('fnLoja').value||null;
     const recorrente=document.getElementById('fnRecorrente').checked;
     if(!descricao){ alert('Informe uma descrição.'); return; }
@@ -5316,6 +5476,7 @@ function renderFinancas(){
     addDespesa({descricao,valor,dataPagamento,recorrente,loja,origem:'manual'});
     toast('Despesa cadastrada.');
     financasFiltroMes=dataPagamento.slice(0,7);
+    novaDespesaData='';
     renderFinancas();
   };
   const fnFiltroMes=document.getElementById('fnFiltroMes');
@@ -5376,14 +5537,17 @@ function renderFinancas(){
   });
   const audIniciar=document.getElementById('audIniciar');
   if(audIniciar) audIniciar.onclick=iniciarAuditoriaMes;
+  const btnSocData=document.getElementById('socData');
+  if(btnSocData) btnSocData.onclick=()=>abrirSeletorData(novoSocioData||hoje(),(iso)=>{ novoSocioData=iso; renderFinancas(); });
   const btnAddSocio=document.getElementById('btnAddSocio');
   if(btnAddSocio) btnAddSocio.onclick=()=>{
     const socio=document.getElementById('socQuem').value;
     const tipo=document.getElementById('socTipo').value;
     const descricao=document.getElementById('socDescricao').value.trim();
     const valor=Number(document.getElementById('socValor').value);
-    const data=document.getElementById('socData').value||hoje();
+    const data=novoSocioData||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+    novoSocioData='';
     addMovimentoSocio('TorvStore',socio,tipo,descricao,valor,data);
     toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(socio==='felipe'?'Felipe':'Thiago')+' lançado(a).');
     renderFinancas();
@@ -5788,7 +5952,7 @@ function renderAmauri(){
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr auto">
         <label>Descrição<input id="amPagDescricao" type="text" placeholder="Ex: repasse de agosto"></label>
         <label>Valor (R$)<input id="amPagValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
-        <label>Data<input id="amPagData" type="date" value="${esc(hoje())}"></label>
+        <label>Data${botaoData('amPagData',novoPagAmauriData||hoje(),{style:''})}</label>
         <button class="btn gold" id="btnAddPagAmauri" style="align-self:end">+ Adicionar</button>
       </div>
       ${pagamentos.length?`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><tbody>
@@ -5829,15 +5993,18 @@ function renderAmauri(){
   if(amPesquisar) amPesquisar.onclick=()=>{ commitCustosAmauri(); pesquisarResumoAmauri(); };
   const btnImprimirAmauri=document.getElementById('btnImprimirAmauri');
   if(btnImprimirAmauri) btnImprimirAmauri.onclick=()=>imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,totalPago,pagamentos);
+  const btnAmPagData=document.getElementById('amPagData');
+  if(btnAmPagData) btnAmPagData.onclick=()=>abrirSeletorData(novoPagAmauriData||hoje(),(iso)=>{ novoPagAmauriData=iso; renderAmauri(); });
   const btnAddPagAmauri=document.getElementById('btnAddPagAmauri');
   if(btnAddPagAmauri) btnAddPagAmauri.onclick=()=>{
     const descricao=document.getElementById('amPagDescricao').value.trim();
     const valor=parseMoeda(document.getElementById('amPagValor').value);
-    const data=document.getElementById('amPagData').value||hoje();
+    const data=novoPagAmauriData||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
     salvarCustosAmauriPendentes();
     addPagamentoAmauri(valor,descricao,data);
     toast('Pagamento registrado.');
+    novoPagAmauriData='';
     renderAmauri();
   };
   el.querySelectorAll('[data-rempagamauri]').forEach(b=>b.onclick=()=>{
@@ -5972,7 +6139,7 @@ function renderEnvio(){
       return `<div class="envio-card">
         <div class="envio-head">
           <div><div class="envio-tit">${e.origem==='emergencia'?'<span class="tag-zero" title="Criado à parte do envio já programado, para cobrir produtos em risco de ruptura">🚨 EMERGÊNCIA</span> ':''}${esc(e.nome)} · <span style="color:var(--violet-l)">${esc(e.loja)}</span></div>
-          <div class="envio-meta">Coleta em <b>${esc(e.localColeta||'—')}</b> · ${e.itens.length} SKU(s) · <b class="okv">${fmtInt(a)}</b> no galpão${c?` · <span class="cam">${fmtInt(c)} a coletar</span>`:''}${g?` · <span class="pend">${fmtInt(g)} a comprar</span>`:''}</div></div>
+          <div class="envio-meta">Coleta em <b>${esc(e.localColeta||'—')}</b> · ${e.itens.filter(i=>!i.kitDeItemId).length} SKU(s) · <b class="okv">${fmtInt(a)}</b> no galpão${c?` · <span class="cam">${fmtInt(c)} a coletar</span>`:''}${g?` · <span class="pend">${fmtInt(g)} a comprar</span>`:''}</div></div>
           <div class="envio-acts">
             <button class="btn sm" data-editenvio="${e.id}">✎ Editar</button>
             <button class="btn sm" data-addsku="${e.id}">+ Adicionar SKU</button>
@@ -5985,8 +6152,29 @@ function renderEnvio(){
         ${e.itens.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
           <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th>Total do envio</th><th></th>
         </tr></thead><tbody>
-        ${e.itens.map(i=>{
+        ${e.itens.filter(i=>!i.kitDeItemId).map(i=>{
           const p=prodById(i.produtoId); if(!p) return '';
+          if(i.kitGuardaChuva){
+            /* linha consolidada: soma os números de TODOS os componentes explodidos deste kit
+               (itensDoGrupoKit inclui o próprio guarda-chuva, que sempre carrega 0 em tudo) num
+               único row - fisicamente é isso que importa pra fechar o envio, e o detalhe de qual
+               componente é qual fica no "▸ detalhar" pra quem quiser conferir a separação. */
+            const grupo=itensDoGrupoKit(e,i.id).filter(g=>g.id!==i.id);
+            const al=grupo.reduce((s,g)=>s+(g.alocado||0),0);
+            const rc=grupo.reduce((s,g)=>s+(g.reservadoColeta||0),0);
+            const gc=grupo.reduce((s,g)=>s+(g.geradoCompra||0),0);
+            const aberto=envioKitAberto.has(i.id);
+            return `<tr><td class="mono">🧩 ${esc(p.sku)} <button class="btn sm" data-envkitdet="${i.id}" style="padding:1px 7px;font-size:11px">${aberto?'▾':'▸'} detalhar</button></td><td>${esc(p.codigo)}</td>
+            <td class="num okv">${fmtInt(al)}</td>
+            <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
+            <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
+            <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totkit="${e.id}|${i.id}"
+              title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
+            <td><button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
+            ${aberto?grupo.map(g=>{ const pg=prodById(g.produtoId); if(!pg) return ''; return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
+              <td class="num okv">${fmtInt(g.alocado)}</td><td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
+              <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td><td colspan="2" class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td></tr>`; }).join(''):''}`;
+          }
           const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===p.id);
           return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
             <td class="num okv">${fmtInt(i.alocado)}</td>
@@ -6041,6 +6229,26 @@ function renderEnvio(){
     if(!r.ok){ alert(r.msg); renderEnvio(); return; }
     if(r.dif>0) toast(`Programação aumentada em ${fmtInt(r.dif)} un. — reserva e compra recalculadas.`);
     else if(r.dif<0) toast(`Programação reduzida em ${fmtInt(-r.dif)} un. — estoque e compra liberados.`);
+  });
+  el.querySelectorAll('[data-totkit]').forEach(inp=>inp.onchange=()=>{
+    const [eid,iid]=inp.dataset.totkit.split('|');
+    const r=ajustarGrupoKitEnvio(eid,iid,inp.value);
+    if(!r.ok){ alert(r.msg); renderEnvio(); return; }
+    if(r.dif>0) toast(`Kit aumentado em ${fmtInt(r.dif)} un. — reserva e compra de cada componente recalculadas.`);
+    else if(r.dif<0) toast(`Kit reduzido em ${fmtInt(-r.dif)} un. — estoque e compra de cada componente liberados.`);
+    renderEnvio();
+  });
+  el.querySelectorAll('[data-remkit]').forEach(b=>b.onclick=()=>{
+    const [eid,iid]=b.dataset.remkit.split('|');
+    const e=envioById(eid); const it=e.itens.find(i=>i.id===iid); const p=prodById(it.produtoId);
+    confirmAction(`Remover o kit ${p.sku} (${fmtInt(it.solicitado)} un.) do envio "${e.nome}"? Libera de volta o estoque/compra de cada componente.`,()=>{
+      removerGrupoKitEnvio(eid,iid); toast('Kit removido do envio.'); renderEnvio();
+    });
+  });
+  el.querySelectorAll('[data-envkitdet]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.envkitdet;
+    if(envioKitAberto.has(id)) envioKitAberto.delete(id); else envioKitAberto.add(id);
+    renderEnvio();
   });
   el.querySelectorAll('[data-addsku]').forEach(b=>b.onclick=()=>openAddSkuEnvioModal(b.dataset.addsku));
   el.querySelectorAll('[data-editenvio]').forEach(b=>b.onclick=()=>openEnvioModal(b.dataset.editenvio));
@@ -6849,7 +7057,7 @@ function renderPrevisao(){
     <div class="form-grid">
       <label>Loja<select id="fLoja">${optsLojas(c.loja)}</select></label>
       <label>Hoje <small>(real)</small><input type="text" value="${fmtData(hoje())}" disabled></label>
-      <label>Previsão do envio ao FULL<input id="fEnvio" type="date" value="${esc(c.envio)}"></label>
+      <label>Previsão do envio ao FULL${botaoData('fEnvio',c.envio,{style:''})}</label>
       <label>Dias até o envio<input type="text" value="${D} dia(s)" disabled></label>
     </div>
     <details class="ajustes-full"><summary>Ajustes do cálculo — cobertura ${c.cobertura} dias · pesos ${c.p7}/${c.p15}/${c.p30}${soma>0?` (7d = ${Math.round(c.p7/soma*100)}% do cálculo)`:''}</summary>
@@ -6946,17 +7154,17 @@ function renderPrevisao(){
   </div>`;
 
   document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; persist(); };
-  document.getElementById('fEnvio').onchange=e=>{
-    if(!e.target.value) return;
+  document.getElementById('fEnvio').onclick=()=>abrirSeletorData(c.envio,(iso)=>{
     snapshot('mudança da data da previsão');
     /* antes, mudar a data zerava o ajuste manual de TODO produto (de todas as lojas, não só
        desta) - reescrevendo por cima de quantidade que a pessoa tinha corrigido à mão. Agora
        mudar a data só muda a data; os ajustes manuais continuam do jeito que estavam. Pra
        voltar 1 item específico ao cálculo automático, edite a quantidade dele em "A enviar"
        de volta pro valor sugerido (ver dica no ⓘ da coluna). */
-    fullCfg().envio=e.target.value;
+    fullCfg().envio=iso;
     persist();
-  };
+    renderPrevisao();
+  });
   const num=(id,campo,min)=>{ const n=document.getElementById(id); if(!n) return; n.onchange=()=>{
     const v=Number(n.value);
     if(isNaN(v)||v<min){ alert('Valor inválido.'); renderPrevisao(); return; }
@@ -7126,10 +7334,11 @@ function renderRuptura(){
           <td class="num">${cobDias} d</td>
           <td>${zeraAntesDoEnvio?`<span class="pend">${fmtData(diaZero)} — antes do envio</span>`:fmtData(diaZero)}</td>
           <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(proximoFullProduto.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data)):'<span class="muted">nenhum</span>'}</td>
-          <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button></td>
+          <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button> <button class="btn sm" data-pausarrup2="${p.id}" title="Produto saindo de linha — para de mostrar este aviso">🔕</button></td>
         </tr>`).join('')}
       </tbody></table></div>`}
-    </div>`).join('')}`;
+    </div>`).join('')}
+    ${produtosComReposicaoPausada().length?`<p class="hint"><button class="btn sm" id="btnVerPausados2">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}`;
   const rd=document.getElementById('rDiasAlerta'); if(rd) rd.onchange=()=>{
     const v=Number(rd.value);
     if(isNaN(v)||v<1){ alert('Valor inválido.'); renderRuptura(); return; }
@@ -7137,6 +7346,14 @@ function renderRuptura(){
   };
   el.querySelectorAll('[data-rver]').forEach(b=>b.onclick=()=>{ fullCfg().loja=b.dataset.rver; persist(); irParaAba('previsao'); });
   el.querySelectorAll('[data-remerg]').forEach(b=>b.onclick=()=>{ fullCfg().loja=b.dataset.remerg; persist(); abrirCriarFullEmergencia(); });
+  el.querySelectorAll('[data-pausarrup2]').forEach(b=>b.onclick=()=>{
+    const p=prodById(b.dataset.pausarrup2); if(!p) return;
+    confirmAction(`Parar de mostrar o aviso de ruptura pra ${p.sku}? Use isso pra produto que vai sair de linha. Dá pra reativar depois.`,()=>{
+      pausarReposicao(p.id,true); toast('Aviso de ruptura pausado pra este SKU.'); renderAll();
+    });
+  });
+  const btnVerPausados2=document.getElementById('btnVerPausados2');
+  if(btnVerPausados2) btnVerPausados2.onclick=abrirPausadosModal;
 }
 
 /* ---------- render ---------- */
