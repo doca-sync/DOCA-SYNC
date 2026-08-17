@@ -719,12 +719,14 @@ function disponivel(p){ return coletarLivre(p)+p.qtd.local; }
    só lista o que for maior que zero. Cor: verde se já tem algo pronto no galpão, amarelo se só
    tem coisa a coletar, vermelho se só falta comprar (ou não tem nada pendente). */
 function statusAcaoFull(p){
-  const galpao=p.qtd.local||0, coletar=coletarLivre(p), comprar=p.qtd.comprar||0;
+  const galpaoTotal=totalNoGalpao(p), galpaoLivre=p.qtd.local||0;
+  const coletarTotal=p.qtd.coletar||0, coletarLivreQtd=coletarLivre(p);
+  const comprar=p.qtd.comprar||0;
   const partes=[];
-  if(galpao>0) partes.push(`galpão: ${fmtInt(galpao)}`);
-  if(coletar>0) partes.push(`a coletar: ${fmtInt(coletar)}`);
+  if(galpaoTotal>0) partes.push(`galpão: ${fmtInt(galpaoTotal)}${galpaoLivre<galpaoTotal?` (${fmtInt(galpaoLivre)} livre)`:''}`);
+  if(coletarTotal>0) partes.push(`a coletar: ${fmtInt(coletarTotal)}${coletarLivreQtd<coletarTotal?` (${fmtInt(coletarLivreQtd)} livre)`:''}`);
   if(comprar>0) partes.push(`a comprar: ${fmtInt(comprar)}`);
-  const tipo=galpao>0?'ok':(coletar>0?'aten':'risco');
+  const tipo=galpaoLivre>0?'ok':(coletarLivreQtd>0?'aten':'risco');
   return {texto:partes.length?partes.join(' · '):'sem estoque, compra ou coleta pendente',tipo};
 }
 /* qtd.coletar já contém o reservadoColeta — não somar duas vezes */
@@ -4622,10 +4624,7 @@ function renderAuditoriaMes(){
         <div><span class="muted" style="font-size:11px">DIFERENÇA (assumida − real)</span><br><b style="font-size:16px" class="${res.diferenca_tarifa>0?'pend':'okv'}">${fmtMoney(res.diferenca_tarifa)}</b></div>
         <div><span class="muted" style="font-size:11px">PEDIDOS SEM REPASSE CONFIRMADO</span><br><b style="font-size:16px" class="${res.pedidos_pendentes_repasse>0?'pend':'okv'}">${res.pedidos_pendentes_repasse} (${fmtMoney(res.valor_pendente_repasse)})</b></div>
       </div>
-      ${res.custo_full_nao_capturado?`<div class="form-grid" style="grid-template-columns:1fr;margin-top:10px">
-        <div style="border:1px solid #e6a23c66;border-radius:8px;padding:8px 10px"><span class="muted" style="font-size:11px">⚠ TAXA DE SEPARAÇÃO/ARMAZENAGEM DO FULL (shp_fulfillment) — NÃO aparece em nenhum lugar do Resumo Financeiro hoje</span><br><b style="font-size:16px" class="pend">${fmtMoney(res.custo_full_nao_capturado)}</b></div>
-      </div>`:''}
-      <p class="hint" style="margin-top:10px">Compare Tarifa real e Frete real acima com os cards TARIFAS e FRETE do Resumo Financeiro (mesma loja/período): é aí que aparece exatamente quanto o cálculo do dia a dia está errando. A taxa do Full (se aparecer acima) é um custo À PARTE do frete normal — não compare com o card FRETE, é dinheiro saindo da conta que hoje o Doca simplesmente não soma em lugar nenhum. "Pedidos sem repasse confirmado" são vendas de mais de 35 dias cujo dinheiro ainda não aparece como liberado pro vendedor — confira uma a uma na tabela de Anomalias abaixo.</p>
+      <p class="hint" style="margin-top:10px">Compare Tarifa real e Frete real acima com os cards TARIFAS e FRETE do Resumo Financeiro (mesma loja/período): é aí que aparece exatamente quanto o cálculo do dia a dia está errando. "Pedidos sem repasse confirmado" são vendas de mais de 35 dias cujo dinheiro ainda não aparece como liberado pro vendedor — confira uma a uma na tabela de Anomalias abaixo.</p>
       ${(res.avisos||[]).filter(a=>!/^intervalo /.test(a)).length?`<p class="hint" style="color:#e6a23c;margin-top:6px">${res.avisos.filter(a=>!/^intervalo /.test(a)).map(a=>esc(a)).join('<br>')}</p>`:''}
       <h4 style="margin:16px 0 6px">Anomalias encontradas (${(res.anomalias||[]).length})</h4>
       ${(res.anomalias||[]).length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
