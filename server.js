@@ -486,7 +486,7 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     job.progresso = { feito: 0, total: auditaveis.length };
 
     let faturamento = 0, cancelamentosValor = 0;
-    let tarifaAssumida = 0, tarifaReal = 0, freteViaShipments = 0, custoFullNaoCapturado = 0;
+    let tarifaAssumida = 0, tarifaReal = 0, freteViaShipments = 0;
     let pedidosPendentesRepasse = 0, valorPendenteRepasse = 0;
     const anomalias = [];
     const agora = Date.now();
@@ -499,16 +499,17 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     // com N pedidos irmaos era somada N vezes, inflando o total. Corrigido: so soma a cobranca de
     // cada payment.id UMA vez (no primeiro pedido em que aparece).
     // v83: BUG CONCEITUAL encontrado (usuario desconfiou com razao do Frete real ter vindo MAIOR que
-    // ate o painel do Mercado Livre) - "shp_fulfillment" no charges_details do pagamento NAO e' o
-    // mesmo frete que /shipments/{id}/costs devolve (o que o card FRETE do Resumo Financeiro usa
-    // hoje) - e' a taxa de SEPARACAO/ARMAZENAGEM do Mercado Envios Full, cobrada a parte, fora do
-    // fluxo normal de frete do pedido (ja suspeitado antes em /debug/frete-fulfillment, nunca
-    // confirmado com dado ao vivo por causa do timeout do endpoint - mas a diferenca gigante contra
-    // o painel do ML bate com essa hipotese, e a loja usa Mercado Envios Full). Corrigido: agora
-    // busca o frete real pelo MESMO metodo do dia a dia (/shipments/{id}/costs, comparavel de
-    // verdade com o card FRETE), e mostra a taxa de separacao do Full (shp_fulfillment) SEPARADA,
-    // como um custo que hoje nao aparece em NENHUM lugar do Doca (nem no Resumo, nem na Auditoria
-    // antiga) - achado novo, nao um erro de medicao do frete.
+    // ate o painel do Mercado Livre) - "shp_fulfillment" no charges_details do pagamento foi
+    // erroneamente tratado como um custo SEPARADO (taxa de separacao/armazenagem do Full) somado
+    // por cima do Frete. Corrigido pra buscar o frete real pelo MESMO metodo do dia a dia
+    // (/shipments/{id}/costs, comparavel de verdade com o card FRETE).
+    // v85: BUG REAL confirmado (usuario desconfiou de novo, com razao, do tamanho de ~R$48mil/mes
+    // que "shp_fulfillment" dava, comparado aos R$1.637 de "armazenamento diario" que aparece na
+    // fatura do ML) - comparando pedido a pedido de verdade (/debug/frete-fulfillment), o valor de
+    // shp_fulfillment bate EXATO (ou quase) com o Frete real (/shipments/costs) na maioria dos
+    // casos - NAO e' um custo adicional, e' o MESMO frete visto pela otica do Mercado Pago em vez
+    // da otica do Mercado Livre. Contar os dois era dupla contagem do frete, nao dinheiro escondido.
+    // Removido de vez (nao so' escondido na tela) - shp_fulfillment nao entra em NENHUMA conta mais.
     const pagamentosContados = new Set();
     const shipmentsContados = new Set();
     let pedidosMesmoCarrinho = 0;
@@ -552,9 +553,7 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
         const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
         const temComissaoReal = cobrancas.some(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee');
         const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
-        const valorFull = cobrancas.filter(c => c.name === 'shp_fulfillment').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
         tarifaReal += valorComissaoReal;
-        custoFullNaoCapturado += valorFull;
 
         if (cancelado && !temComissaoReal && saleFeeDoPedido > 0.009) {
           anomalias.push({ pedido_id: p.id, motivo: 'Pedido cancelado: comissao NAO foi cobrada de verdade (devolvida) - o calculo do dia a dia estava contando indevidamente', total: totalPedido, sale_fee_assumido: round2(saleFeeDoPedido) });
@@ -588,7 +587,6 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       tarifa_real: round2(tarifaReal),
       diferenca_tarifa: round2(tarifaAssumida - tarifaReal),
       frete_real: round2(freteViaShipments),
-      custo_full_nao_capturado: round2(custoFullNaoCapturado),
       pedidos_pendentes_repasse: pedidosPendentesRepasse,
       valor_pendente_repasse: round2(valorPendenteRepasse),
       anomalias,
