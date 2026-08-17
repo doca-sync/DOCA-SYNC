@@ -612,6 +612,72 @@ function caixasTxt(qtd,unidPorCaixa){
   return `${fmtInt(Math.ceil(caixas))} cx (${fechadas?fmtInt(fechadas)+' fechada(s) + ':''}${fmtInt(resto)} un.)`;
 }
 function gerarId(p){ return (p||'p')+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+/* ---------- Seletor de período (1 calendário só, em português) ----------
+   Substitui os pares de campo "De" / "Até" separados. Clique no dia inicial e depois no dia
+   final marca o intervalo; clicar 2x no mesmo dia (ou clicar de novo nele) escolhe só aquele
+   dia. Usa o sistema de modal já existente no app. */
+const MESES_PT=['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+const DIAS_SEMANA_PT=['D','S','T','Q','Q','S','S'];
+function _pdParseISO(iso){ if(!iso) return null; const [y,m,d]=iso.split('-').map(Number); return {y,m:m-1,d}; }
+function _pdFmtISO(y,m,d){ return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
+let _seletorPeriodo=null;
+function botaoPeriodo(id,de,ate){
+  return `<label>Período<button type="button" class="btn" id="${id}" style="justify-content:flex-start;width:100%">📅 ${de&&ate?(de===ate?fmtData(de):fmtData(de)+' a '+fmtData(ate)):'Escolher datas...'}</button></label>`;
+}
+function abrirSeletorPeriodo(deAtual,ateAtual,onEscolher){
+  const base=_pdParseISO(ateAtual)||_pdParseISO(deAtual)||_pdParseISO(hoje());
+  _seletorPeriodo={de:deAtual||null,ate:ateAtual||null,ano:base.y,mes:base.m,onEscolher};
+  _renderSeletorPeriodo();
+}
+function _renderSeletorPeriodo(){
+  const s=_seletorPeriodo; if(!s) return;
+  const body=openModal(false);
+  const {ano,mes}=s;
+  const primeiroDia=new Date(ano,mes,1).getDay();
+  const diasNoMes=new Date(ano,mes+1,0).getDate();
+  const hj=hoje();
+  let celulas=[];
+  for(let i=0;i<primeiroDia;i++) celulas.push('<td></td>');
+  for(let d=1;d<=diasNoMes;d++){
+    const iso=_pdFmtISO(ano,mes,d);
+    const noIntervalo=s.de&&s.ate&&iso>=s.de&&iso<=s.ate;
+    const extremidade=iso===s.de||iso===s.ate;
+    celulas.push(`<td style="padding:2px"><button type="button" data-caldia="${iso}" style="width:32px;height:32px;border-radius:6px;border:1px solid ${extremidade?'var(--acc,#6c5ce7)':'transparent'};background:${extremidade?'var(--acc,#6c5ce7)':(noIntervalo?'rgba(108,92,231,.18)':'transparent')};color:${extremidade?'#fff':'inherit'};cursor:pointer;font:inherit;${iso===hj&&!extremidade?'font-weight:700;text-decoration:underline':''}">${d}</button></td>`);
+  }
+  while(celulas.length%7!==0) celulas.push('<td></td>');
+  let linhas=''; for(let i=0;i<celulas.length;i+=7) linhas+='<tr>'+celulas.slice(i,i+7).join('')+'</tr>';
+  body.innerHTML=`<h3>Escolher período</h3>
+    <p class="hint" style="margin:0 0 10px">Clique no dia inicial e depois no dia final. Pra escolher um dia só, clique de novo no mesmo dia.</p>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <button type="button" class="btn sm" id="calPrev">‹</button>
+      <b>${MESES_PT[mes]} de ${ano}</b>
+      <button type="button" class="btn sm" id="calNext">›</button>
+    </div>
+    <table style="width:100%;text-align:center;border-collapse:collapse">
+      <thead><tr>${DIAS_SEMANA_PT.map(d=>`<th style="font-size:11px;color:var(--muted);padding:4px;font-weight:400">${d}</th>`).join('')}</tr></thead>
+      <tbody>${linhas}</tbody>
+    </table>
+    <p class="hint" style="margin-top:10px">${s.de?(s.ate?('De '+fmtData(s.de)+(s.ate!==s.de?' até '+fmtData(s.ate):' (1 dia)')):'De '+fmtData(s.de)+' — escolha o dia final'):'Nenhum dia escolhido ainda.'}</p>
+    <div class="modal-actions"><button class="btn" id="calCancelar">Cancelar</button><button class="btn acc" id="calConfirmar" ${s.de&&s.ate?'':'disabled'}>Confirmar</button></div>`;
+  document.getElementById('calPrev').onclick=()=>{ s.mes--; if(s.mes<0){ s.mes=11; s.ano--; } _renderSeletorPeriodo(); };
+  document.getElementById('calNext').onclick=()=>{ s.mes++; if(s.mes>11){ s.mes=0; s.ano++; } _renderSeletorPeriodo(); };
+  document.getElementById('calCancelar').onclick=()=>{ _seletorPeriodo=null; closeModal(); };
+  body.querySelectorAll('[data-caldia]').forEach(b=>b.onclick=()=>{
+    const iso=b.dataset.caldia;
+    if(!s.de||(s.de&&s.ate)){ s.de=iso; s.ate=null; }
+    else if(iso===s.de){ s.ate=iso; }
+    else if(iso<s.de){ s.ate=s.de; s.de=iso; }
+    else{ s.ate=iso; }
+    _renderSeletorPeriodo();
+  });
+  const btnConf=document.getElementById('calConfirmar');
+  if(btnConf) btnConf.onclick=()=>{
+    const {de,ate,onEscolher}=s;
+    _seletorPeriodo=null;
+    closeModal();
+    onEscolher(de,ate);
+  };
+}
 function optsLojas(sel){ return STORES.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
 function optsColeta(sel){ return LOCAIS_COLETA.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
 function fmtData(iso){ if(!iso) return 'sem data'; const [a,m,d]=iso.split('-'); return `${d}/${m}/${a}`; }
@@ -1657,6 +1723,18 @@ function removerComponenteKit(kitId,produtoId){
   const kit=prodById(kitId); if(!kit) return;
   updateProduto(kitId,{componentesKit:componentesDe(kit).filter(c=>c.produtoId!==produtoId)});
 }
+/* cria um SKU novo (loja igual a do kit) e ja' adiciona ele como componente - pra quando o
+   componente e' algo que so' existe pra montar o kit (ex: a luva do Kit Pet), sem anuncio
+   proprio no Mercado Livre, sem precisar sair do modal do kit pra cadastrar antes. */
+function criarComponenteInterno(kitId,sku,qtdPorUnidade){
+  const kit=prodById(kitId); if(!kit) return {ok:false,msg:'Produto não encontrado.'};
+  sku=(sku||'').trim().toUpperCase();
+  if(!sku) return {ok:false,msg:'Dê um nome/SKU pro componente novo.'};
+  const dup=state.produtos.some(x=>x.loja===kit.loja&&x.sku.toLowerCase()===sku.toLowerCase());
+  if(dup) return {ok:false,msg:'Já existe esse SKU cadastrado nessa loja.'};
+  const novo=addProduto({loja:kit.loja,sku,codigo:'',fornecedor:'',custo:0,unidPorCaixa:0,estoqueMinimo:0,qtd:{comprar:0,coletar:0,local:0},lotes:[],pedidos:[],obsCompra:'',interno:true});
+  return adicionarComponenteKit(kitId,novo.id,qtdPorUnidade);
+}
 /* "montar X kits" não mexe no estoque do próprio kit - soma em Comprar de CADA componente a
    quantidade necessária (qtdMontar x qtdPorUnidade), reaproveitando o mesmo fluxo que já existe
    pra qualquer produto normal (aba Comprar). Ex: montar 20 Kit Pet com componentes {luva:1,
@@ -1992,6 +2070,25 @@ function editarEnvio(id,patch){
    O Coletar NÃO é descontado — o motorista continua vendo tudo que precisa buscar. */
 function alocarNoEnvio(envio,produtoEscolhido,solicitado){
   const marcaEnvio='FULL '+(envio.nome||'')+(envio.loja?' · '+envio.loja:'');
+  /* se o SKU escolhido e' um KIT (junta outros produtos, ex: Kit Pet = 1 luva + 1 Esponja Pet),
+     ele nao tem estoque proprio pra alocar - explode a quantidade pedida em cada componente
+     (qtd. por unidade x solicitado) e aloca/reserva/manda comprar CADA componente separado,
+     recursivamente (cada componente passa de novo por essa mesma funcao, entao se um componente
+     TAMBEM for vinculado a um mestre ou for ele mesmo um kit aninhado, resolve certo tambem).
+     Registra 1 item "guarda-chuva" do kit no envio so' pra aparecer na lista (0 em tudo, pra
+     nao somar 2x - quem realmente carrega os numeros sao os itens dos componentes). */
+  const comps=componentesDe(produtoEscolhido);
+  if(comps.length){
+    let alocadoTotal=0,aCaminhoTotal=0,geradoTotal=0;
+    comps.forEach(c=>{
+      const comp=prodById(c.produtoId); if(!comp) return;
+      const r=alocarNoEnvio(envio,comp,solicitado*c.qtdPorUnidade);
+      alocadoTotal+=r.alocado; aCaminhoTotal+=r.aCaminho; geradoTotal+=r.gerado;
+    });
+    envio.itens.push({id:gerarId('it'),produtoId:produtoEscolhido.id,solicitado,alocado:0,reservadoColeta:0,geradoCompra:0,kitGuardaChuva:true});
+    produtoEscolhido.atualizadoEm=Date.now();
+    return {alocado:alocadoTotal,aCaminho:aCaminhoTotal,gerado:geradoTotal};
+  }
   /* se o SKU escolhido na tela e' um membro vinculado (estoque fisico compartilhado com outro
      anuncio), o estoque de verdade mora no mestre - aloca/decrementa/compra sempre por la',
      senao ficava tirando de um produto.qtd.local que fica sempre travado em 0 pra um vinculado
@@ -2783,9 +2880,10 @@ function renderDashboard(){
           const envioTxt=r.zeraAntesDoEnvio
             ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
             :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`:' — este SKU não tem nenhum FULL programado ainda');
-          return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt}</span>`;
+          return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
         }).join('')}</div></div>`).join('')}
-      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL). A data de ruptura já desconta aptas + em transferência + envios programados <b>desse SKU específico</b> que chegam a tempo — quando aparece o aviso de FULL programado tardio, é o envio desse próprio produto que chega tarde, não evita a parada, é preciso antecipá-lo ou criar um FULL de emergência.</p></div>`:''}
+      <p class="hint" style="margin:8px 0 0">Esse número de dias é ajustável na aba <b>FULL → Previsão de reposição → Ajustes do cálculo</b>. Curva A/B/C = quem mais vende dentro de cada loja (Pareto pela média diária do FULL). A data de ruptura já desconta aptas + em transferência + envios programados <b>desse SKU específico</b> que chegam a tempo — quando aparece o aviso de FULL programado tardio, é o envio desse próprio produto que chega tarde, não evita a parada, é preciso antecipá-lo ou criar um FULL de emergência. Clique no 🔕 pra parar de mostrar um SKU que vai sair de linha.</p></div>`:''}
+    ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
     <p class="hint"><b>Comprar</b>, <b>Coletar</b> e <b>Local</b> mostram onde a mercadoria está fisicamente (a comprar, no fornecedor, no galpão). <b>Reservado</b> é quanto disso já tem destino num envio FULL — por isso ele se sobrepõe a Coletar e Local, não soma com eles. <b>Mercado Pago</b> e <b>A receber</b> são automáticos nas lojas já integradas (passe o mouse pro detalhe) e digitados à mão nas demais.</p>`;
   el.querySelectorAll('[data-mpago]').forEach(i=>{
     const commit=()=>atualizarFinanceiro(i.dataset.mpago,{mercadoPago:i.value});
@@ -2797,6 +2895,14 @@ function renderDashboard(){
     i.onchange=commit;
     i.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); commit(); i.blur(); } };
   });
+  el.querySelectorAll('[data-pausarrup]').forEach(b=>b.onclick=()=>{
+    const p=prodById(b.dataset.pausarrup); if(!p) return;
+    confirmAction(`Parar de mostrar o aviso de ruptura pra ${p.sku}? Use isso pra produto que vai sair de linha (vende o que resta, não repõe, depois exclui o anúncio). Dá pra reativar depois.`,()=>{
+      pausarReposicao(p.id,true); toast('Aviso de ruptura pausado pra este SKU.'); renderAll();
+    });
+  });
+  const btnVerPausados=document.getElementById('btnVerPausados');
+  if(btnVerPausados) btnVerPausados.onclick=abrirPausadosModal;
   el.querySelectorAll('[data-verperguntas]').forEach(b=>b.onclick=()=>carregarPerguntas(b.dataset.verperguntas));
   el.querySelectorAll('[data-responder]').forEach(b=>b.onclick=()=>{
     const [qid,loja,itemId]=b.dataset.responder.split('|');
@@ -3166,7 +3272,14 @@ function openOndeReservadoModal(id){
 function imprimirConferenciaEstoque(){
   const lojas = filtro.loja==='todas' ? STORES : [filtro.loja];
   const dados = lojas.map(loja=>({loja, itens: state.produtos.filter(p=>p.loja===loja&&(totalNoGalpao(p)>0||p.qtd.coletar>0))
-    .sort((a,b)=>(a.fornecedor||'').localeCompare(b.fornecedor||'')||a.sku.localeCompare(b.sku))})).filter(d=>d.itens.length);
+    .sort((a,b)=>(a.fornecedor||'').localeCompare(b.fornecedor||'')||a.sku.localeCompare(b.sku)),
+    /* SKUs vinculados (estoque fisico compartilhado) nao entram como linha propria - ja' estao
+       contados dentro do SKU mestre. Sem essa lista, o SKU simplesmente sumia da folha impressa
+       sem explicacao nenhuma, dando a entender que sumiu do sistema por engano. */
+    vinculados: state.produtos.filter(p=>p.loja===loja&&p.vinculadoA)
+      .map(p=>({p,mestre:prodById(p.vinculadoA)})).filter(x=>x.mestre)
+      .sort((a,b)=>a.p.sku.localeCompare(b.p.sku))
+    })).filter(d=>d.itens.length||d.vinculados.length);
   if(!dados.length){ alert('Não há estoque no galpão nem a coletar para conferir.'); return; }
   const win=window.open('','_blank');
   if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
@@ -3207,6 +3320,7 @@ function imprimirConferenciaEstoque(){
       </tr>`).join('')}
       </tbody></table>
       <div class="tot">${esc(d.loja)} — total no galpão: ${fmtInt(tg)} un. · total a coletar: ${fmtInt(tc)} un.</div>
+      ${d.vinculados.length?`<div class="rod" style="margin-top:6px;border-top:none;padding-top:0">${d.vinculados.map(v=>`<div>ℹ ${esc(v.p.sku)} (${esc(v.p.codigo)||'—'}) está vinculado ao estoque de <b>${esc(v.mestre.sku)}</b> — já contado na linha dele, não precisa contar separado.</div>`).join('')}</div>`:''}
       ${idx<dados.length-1?'<div class="quebra"></div>':''}`;
     }).join('')}
     <div class="rod">Preencha a coluna <b>Contado</b> com a quantidade física encontrada e anote a diferença. Depois lance os ajustes no sistema em Produtos → Gerenciar → Ajuste manual de estoque.<br>
@@ -3227,6 +3341,7 @@ function openProdutoModal(id,lojaPadrao){
   /* candidatos pra vincular: mesma loja, não é o próprio, e não está por sua vez vinculado a
      outro (mantém a cadeia com só 1 nível — o mestre nunca é vinculado de ninguém). */
   const candidatosVinculo=editing?state.produtos.filter(x=>x.id!==id&&x.loja===p.loja&&!x.vinculadoA):[];
+  const ehKit=editing?componentesDe(p).length>0:false;
   body.innerHTML=`
     <h3>${editing?'Gerenciar SKU':'Novo SKU'}</h3>
     <div class="form-grid">
@@ -3246,47 +3361,60 @@ function openProdutoModal(id,lojaPadrao){
       <button class="btn acc" id="btnSalvarProduto">${editing?'Salvar alterações':'Cadastrar SKU'}</button></div>
     ${editing?`
       <hr class="modal-sep">
-      <h4>Estoque físico compartilhado</h4>
-      ${mestreVinc?`
-        <div class="aviso atencao"><span>🔗</span><span>Este SKU está vinculado ao estoque do SKU <b>${esc(mestreVinc.sku)}</b> (${esc(mestreVinc.loja)}) — compra, coleta e ajuste de estoque são feitos por lá. As vendas deste anúncio já entram na conta de reposição do mestre.</span></div>
-        <div class="modal-actions" style="margin-top:10px">
-          <button class="btn" id="btnAbrirMestre">Abrir SKU mestre (${esc(mestreVinc.sku)})</button>
-          <button class="btn danger-outline" id="btnDesvincular">Desvincular</button>
+      <details${(mestreVinc||vinculadosDeP.length)?' open':''}>
+        <summary><b>Estoque físico compartilhado</b>${mestreVinc?' <span class="muted">(vinculado a '+esc(mestreVinc.sku)+')</span>':vinculadosDeP.length?' <span class="muted">(mestre de '+vinculadosDeP.length+' SKU'+(vinculadosDeP.length>1?'s':'')+')</span>':''}</summary>
+        <div style="margin-top:10px">
+        ${mestreVinc?`
+          <div class="aviso atencao"><span>🔗</span><span>Este SKU está vinculado ao estoque do SKU <b>${esc(mestreVinc.sku)}</b> (${esc(mestreVinc.loja)}) — compra, coleta e ajuste de estoque são feitos por lá. As vendas deste anúncio já entram na conta de reposição do mestre.</span></div>
+          <div class="modal-actions" style="margin-top:10px">
+            <button class="btn" id="btnAbrirMestre">Abrir SKU mestre (${esc(mestreVinc.sku)})</button>
+            <button class="btn danger-outline" id="btnDesvincular">Desvincular</button>
+          </div>
+        `:`
+          <p class="hint" style="margin-top:0">Use isso quando este SKU for o <b>mesmo produto físico</b> de outro anúncio (ex: 1 anúncio de catálogo + 1 normal) — as vendas dos dois somam pra decidir quanto comprar, e o estoque/compra passam a ser controlados só no SKU mestre escolhido.</p>
+          ${vinculadosDeP.length?`<p class="hint">Este é o <b>SKU mestre</b> de: ${vinculadosDeP.map(v=>esc(v.sku)).join(', ')}.</p>`:''}
+          ${candidatosVinculo.length?`<div class="envio-full-row">
+            <select id="fVincularA"><option value="">Vincular ao estoque de...</option>${candidatosVinculo.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
+            <button class="btn" id="btnVincular">Vincular</button>
+          </div>`:`<p class="hint muted">Não há outro SKU nessa loja disponível pra vincular.</p>`}
+        `}
         </div>
-      `:`
-        <p class="hint" style="margin-top:-4px">Use isso quando este SKU for o <b>mesmo produto físico</b> de outro anúncio (ex: 1 anúncio de catálogo + 1 normal) — as vendas dos dois somam pra decidir quanto comprar, e o estoque/compra passam a ser controlados só no SKU mestre escolhido.</p>
-        ${vinculadosDeP.length?`<p class="hint">Este é o <b>SKU mestre</b> de: ${vinculadosDeP.map(v=>esc(v.sku)).join(', ')}.</p>`:''}
-        ${candidatosVinculo.length?`<div class="envio-full-row">
-          <select id="fVincularA"><option value="">Vincular ao estoque de...</option>${candidatosVinculo.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
-          <button class="btn" id="btnVincular">Vincular</button>
-        </div>`:`<p class="hint muted">Não há outro SKU nessa loja disponível pra vincular.</p>`}
-      `}
+      </details>
 
       ${mestreVinc?'':`
       <hr class="modal-sep">
-      <h4>Kit (monta a partir de outros produtos)</h4>
-      ${componentesDe(p).length?`
-        <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Componente</th><th>Qtd. por unidade do kit</th><th></th></tr></thead><tbody>
-          ${componentesDe(p).map(c=>{ const comp=prodById(c.produtoId); return `<tr>
-            <td class="mono">${comp?esc(comp.sku):'<span class="muted">SKU removido</span>'}</td>
-            <td class="num">${fmtInt(c.qtdPorUnidade)}</td>
-            <td><button class="btn sm danger-outline" data-remcomp="${esc(c.produtoId)}">Remover</button></td>
-          </tr>`; }).join('')}
-        </tbody></table></div>
-        <div class="envio-full-row" style="margin-top:10px">
-          <input id="fQtdMontar" type="number" min="1" placeholder="Quantidade de kits a montar">
-          <button class="btn acc" id="btnMontarKit">Montar</button>
-        </div>
-        <p class="hint">Monta X unidades deste kit soma, em <b>Comprar</b>, a quantidade necessária de CADA componente acima (qtd. por unidade × X) — sem mexer no estoque do próprio kit. Se o componente também vende sozinho, isso soma com a compra que já existia dele.</p>
-      `:`<p class="hint" style="margin-top:-4px">Use isso quando este anúncio é um <b>kit que junta outros produtos</b> já cadastrados (ex: Kit Pet = 1 luva + 1 Esponja Pet). Cada componente continua com o estoque e as vendas dele próprio — o kit só soma a necessidade de compra deles quando você "monta" um lote.</p>`}
-      ${(()=>{ const cands=state.produtos.filter(x=>x.id!==id&&x.loja===p.loja&&!x.vinculadoA&&!componentesDe(p).some(c=>c.produtoId===x.id)); return cands.length?`
+      <details${ehKit?' open':''}>
+        <summary><b>Kit (monta a partir de outros produtos)</b>${ehKit?' <span class="muted">('+componentesDe(p).length+' componente'+(componentesDe(p).length>1?'s':'')+')</span>':''}</summary>
+        <div style="margin-top:10px">
+        ${ehKit?`
+          <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Componente</th><th>Qtd. por unidade do kit</th><th></th></tr></thead><tbody>
+            ${componentesDe(p).map(c=>{ const comp=prodById(c.produtoId); return `<tr>
+              <td class="mono">${comp?esc(comp.sku):'<span class="muted">SKU removido</span>'}</td>
+              <td class="num">${fmtInt(c.qtdPorUnidade)}</td>
+              <td><button class="btn sm danger-outline" data-remcomp="${esc(c.produtoId)}">Remover</button></td>
+            </tr>`; }).join('')}
+          </tbody></table></div>
+          <p class="hint">Ao adicionar este SKU num envio FULL, o sistema já reserva/manda comprar automaticamente a quantidade de CADA componente acima (qtd. por unidade × quantidade pedida do kit) — não precisa "montar" nada manualmente antes.</p>
+        `:`<p class="hint" style="margin-top:0">Use isso quando este anúncio é um <b>kit que junta outros produtos</b> já cadastrados (ex: Kit Pet = 1 luva + 1 Esponja Pet). Ao adicionar este SKU num envio FULL, o sistema reserva/manda comprar automaticamente a quantidade de cada componente — o kit não tem estoque próprio.</p>`}
+        ${(()=>{ const cands=state.produtos.filter(x=>x.id!==id&&x.loja===p.loja&&!x.vinculadoA&&!componentesDe(x).length&&!componentesDe(p).some(c=>c.produtoId===x.id)); return cands.length?`
+          <div class="envio-full-row" style="margin-top:8px">
+            <select id="fNovoComponente"><option value="">Adicionar componente já existente...</option>${cands.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
+            <input id="fQtdComponente" type="number" min="1" value="1" style="max-width:90px" placeholder="Qtd.">
+            <button class="btn" id="btnAddComponente">Adicionar</button>
+          </div>`:''; })()}
         <div class="envio-full-row" style="margin-top:8px">
-          <select id="fNovoComponente"><option value="">Adicionar componente...</option>${cands.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
-          <input id="fQtdComponente" type="number" min="1" value="1" style="max-width:90px" placeholder="Qtd.">
-          <button class="btn" id="btnAddComponente">Adicionar</button>
-        </div>`:''; })()}
+          <input id="fNovoSkuInterno" type="text" placeholder="Nome do SKU novo (ex: LUVAKITPET)" style="text-transform:uppercase">
+          <input id="fQtdSkuInterno" type="number" min="1" value="1" style="max-width:90px" placeholder="Qtd.">
+          <button class="btn" id="btnCriarComponenteInterno">+ Criar SKU e adicionar</button>
+        </div>
+        <p class="hint">Use "Criar SKU e adicionar" pra um componente que não tem anúncio próprio no Mercado Livre — existe só de controle interno (ex: a luva do Kit Pet).</p>
+        </div>
+      </details>`}
 
       <hr class="modal-sep">
+      ${(mestreVinc||ehKit)?`
+      <div class="aviso"><span>ℹ</span><span>${ehKit?'Este SKU é um kit — o estoque dele é sempre calculado a partir dos componentes (seção Kit acima), então não há compra/coleta/ajuste próprios aqui.':'Este SKU está vinculado — compra, coleta e ajuste de estoque são feitos no SKU mestre (seção acima).'}</span></div>
+      `:`
       <h4>Adicionar compra (nova entrada em Comprar)</h4>
       <div class="envio-full-row"><input id="fQtdAdicionar" type="number" min="1" placeholder="Quantidade">
         <button class="btn acc" id="btnAdicionarComprar">+ Adicionar ao Comprar</button></div>
@@ -3362,13 +3490,13 @@ function openProdutoModal(id,lojaPadrao){
       if(!r.ok){ alert(r.msg); return; }
       openProdutoModal(id); toast('Componente adicionado ao kit.');
     };
-    const btnMontarKit=document.getElementById('btnMontarKit');
-    if(btnMontarKit) btnMontarKit.onclick=()=>{
-      const qtd=document.getElementById('fQtdMontar').value;
-      const r=montarKit(id,qtd);
+    const btnCriarComponenteInterno=document.getElementById('btnCriarComponenteInterno');
+    if(btnCriarComponenteInterno) btnCriarComponenteInterno.onclick=()=>{
+      const sku=document.getElementById('fNovoSkuInterno').value;
+      const qtd=document.getElementById('fQtdSkuInterno').value;
+      const r=criarComponenteInterno(id,sku,qtd);
       if(!r.ok){ alert(r.msg); return; }
-      openProdutoModal(id);
-      toast(`Montagem somada em Comprar: ${r.detalhes.join(' + ')}.`);
+      openProdutoModal(id); toast('SKU interno criado e adicionado ao kit.');
     };
     const btnAjustar=document.getElementById('btnAjustar');
     if(btnAjustar) btnAjustar.onclick=()=>{
@@ -4028,8 +4156,9 @@ async function adsBuscarPersonalizado(loja){
 /* "Lucro" em Ads: pra cada campanha, Margem de Contribuição do produto (mesma fórmula do
    ranking em Finanças → Resumo Financeiro: faturamento − custo do produto − tarifa − frete −
    imposto) menos o gasto de Ads = Lucro Bruto. Precisa do resumo financeiro EXATO do mesmo
-   período que está selecionado em Ads (não aproximado) — por isso o botão "Calcular Lucro"
-   chama /financas/resumo de novo, igual ao padrão já usado no Amauri e no Personalizado acima. */
+   período que está selecionado em Ads (não aproximado) — por isso escolher o filtro "Maior
+   Lucro Bruto" chama /financas/resumo de novo na hora, igual ao padrão já usado no Amauri e no
+   Personalizado acima (sem precisar de um botão separado). */
 let adsLucroResultado=null, adsLucroCarregando=false, adsLucroErro=null, adsLucroPeriodoCalculado=null;
 async function calcularLucroAdsPeriodo(loja,periodoApi){
   const personalizado=periodoApi==='personalizado';
@@ -4371,8 +4500,7 @@ function renderAds(){
           <option value="personalizado" ${personalizado?'selected':''}>Personalizado</option>
         </select></label>
         ${personalizado?`
-        <label>De<input type="date" id="adPersonalizadoDe" value="${esc(adsPersonalizadoDe)}"></label>
-        <label>Até<input type="date" id="adPersonalizadoAte" value="${esc(adsPersonalizadoAte)}"></label>
+        ${botaoPeriodo('adPersonalizadoBtn',adsPersonalizadoDe,adsPersonalizadoAte)}
         `:`
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
         <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}"></label>
@@ -4388,21 +4516,20 @@ function renderAds(){
       `:''}
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         ${personalizado?'':`<button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>`}
-        <button class="btn" id="adCalcularLucro" ${adsLucroCarregando?'disabled':''}>${adsLucroCarregando?'Calculando...':(adsLucroResultado?'💰 Recalcular Lucro':'💰 Calcular Lucro')}</button>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Filtro
-          <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px">
+          <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px" ${adsLucroCarregando?'disabled':''}>
             <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
             <option value="tacos_asc" ${adsFiltro==='tacos_asc'?'selected':''}>Menor TACOS</option>
             <option value="custo_desc" ${adsFiltro==='custo_desc'?'selected':''}>Maior custo</option>
             <option value="roas_score" ${adsFiltro==='roas_score'?'selected':''}>Subir ROAS</option>
             <option value="mais_vendidos" ${adsFiltro==='mais_vendidos'?'selected':''}>Mais Vendidos</option>
-            <option value="lucro" ${adsFiltro==='lucro'?'selected':''}>Lucro</option>
+            <option value="lucro" ${adsFiltro==='lucro'?'selected':''}>Maior Lucro Bruto${adsLucroCarregando?' (calculando...)':''}</option>
           </select>
         </label>
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${personalizado?'':(dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.')}</span>
       </div>
       ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
-      ${adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ O Lucro mostrado abaixo foi calculado pra um período diferente do que está selecionado agora — clique em "Recalcular Lucro" pra atualizar.</p>`:''}
+      ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
@@ -4439,8 +4566,8 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
             <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
-            ${margemContrib!=null?`<div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${fmtMoney(margemContrib)}</div>`:''}
             ${lucroBruto!=null?`<div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br><b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b></div>`:''}
+            ${margemContrib!=null?`<div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${fmtMoney(margemContrib)}</div>`:''}
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
@@ -4453,9 +4580,15 @@ function renderAds(){
     </tbody></table></div>
     <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
-  document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
-  document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
-  document.getElementById('adFiltro').onchange=e=>{ adsFiltro=e.target.value; renderAds(); };
+  document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds(); };
+  document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds(); };
+  document.getElementById('adFiltro').onchange=e=>{
+    adsFiltro=e.target.value;
+    /* "Maior Lucro Bruto" precisa do resumo financeiro exato do período - calcula na hora que
+       escolhe o filtro, sem precisar de um botão separado (calcularLucroAdsPeriodo já chama
+       renderAds() sozinho, no início pra mostrar "calculando..." e no fim com o resultado). */
+    if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds();
+  };
   document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
   document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.tacosTeto=v; persist(); renderAds(); };
   const btnAtualizar=document.getElementById('adAtualizar');
@@ -4465,14 +4598,12 @@ function renderAds(){
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
   };
-  const elPersDe=document.getElementById('adPersonalizadoDe');
-  if(elPersDe) elPersDe.onchange=e=>{ adsPersonalizadoDe=e.target.value; renderAds(); };
-  const elPersAte=document.getElementById('adPersonalizadoAte');
-  if(elPersAte) elPersAte.onchange=e=>{ adsPersonalizadoAte=e.target.value; renderAds(); };
+  const elPersBtn=document.getElementById('adPersonalizadoBtn');
+  if(elPersBtn) elPersBtn.onclick=()=>abrirSeletorPeriodo(adsPersonalizadoDe,adsPersonalizadoAte,(de,ate)=>{
+    adsPersonalizadoDe=de; adsPersonalizadoAte=ate; renderAds();
+  });
   const btnPersCalc=document.getElementById('adPersonalizadoCalcular');
-  if(btnPersCalc) btnPersCalc.onclick=()=>adsBuscarPersonalizado(c.loja);
-  const btnCalcularLucro=document.getElementById('adCalcularLucro');
-  if(btnCalcularLucro) btnCalcularLucro.onclick=()=>calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
+  if(btnPersCalc) btnPersCalc.onclick=()=>{ adsBuscarPersonalizado(c.loja); if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
@@ -4503,6 +4634,48 @@ function addDespesa({descricao,valor,dataPagamento,recorrente,loja,origem,fatura
   arr.push(d);
   persist();
   return d;
+}
+function abrirEditarDespesaModal(id){
+  const d=despesasArr().find(x=>x.id===id); if(!d) return;
+  const body=openModal(false);
+  body.innerHTML=`<h3>Editar despesa</h3>
+    <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
+      <label>Descrição<input id="feDescricao" type="text" value="${esc(d.descricao)}"></label>
+      <label>Valor (R$)<input id="feValor" type="number" min="0" step="0.01" value="${d.valor}"></label>
+      <label>Data de pagamento<input id="feData" type="date" value="${esc(d.dataPagamento)}"></label>
+      <label>Loja<select id="feLoja"><option value="" ${d.loja?'':'selected'}>Geral (todas)</option>${optsLojas(d.loja)}</select></label>
+    </div>
+    <div class="acoes-linha" style="margin-top:10px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="feRecorrente" style="width:auto" ${d.recorrente?'checked':''}> Despesa recorrente (repete todo mês)</label>
+    </div>
+    ${d.origem==='ml_fatura'?`<p class="hint" style="margin-top:8px">⚠ Esta despesa veio automático da fatura do Mercado Livre — se sincronizar de novo, o valor puxado da API substitui o que você editar aqui.</p>`:''}
+    <div class="modal-actions"><button class="btn" id="btnCancelarEditDesp">Cancelar</button><button class="btn acc" id="btnSalvarEditDesp">Salvar alterações</button></div>`;
+  document.getElementById('btnCancelarEditDesp').onclick=closeModal;
+  document.getElementById('btnSalvarEditDesp').onclick=()=>{
+    const r=editarDespesa(id,{
+      descricao:document.getElementById('feDescricao').value.trim(),
+      valor:Number(document.getElementById('feValor').value),
+      dataPagamento:document.getElementById('feData').value,
+      loja:document.getElementById('feLoja').value||null,
+      recorrente:document.getElementById('feRecorrente').checked,
+    });
+    if(!r.ok){ alert(r.msg); return; }
+    closeModal(); toast('Despesa atualizada.'); renderFinancas();
+  };
+}
+/* edita uma despesa já lançada (descrição, valor, data, loja, recorrente) - útil pro cartão de
+   crédito por exemplo, que é recorrente mas o valor muda todo mês: em vez de excluir e recriar,
+   só ajusta o valor da ocorrência do mês antes de marcar como paga. */
+function editarDespesa(id,{descricao,valor,dataPagamento,loja,recorrente}){
+  const arr=despesasArr();
+  const d=arr.find(x=>x.id===id); if(!d) return {ok:false,msg:'Despesa não encontrada.'};
+  if(!descricao) return {ok:false,msg:'Informe uma descrição.'};
+  if(!(valor>0)) return {ok:false,msg:'Informe um valor válido.'};
+  if(!dataPagamento) return {ok:false,msg:'Informe a data de pagamento.'};
+  snapshot('edição da despesa ("'+(d.descricao||'').slice(0,30)+'")');
+  d.descricao=descricao.trim(); d.valor=Number(valor); d.dataPagamento=dataPagamento; d.loja=loja||null; d.recorrente=!!recorrente;
+  persist();
+  return {ok:true};
 }
 function excluirDespesa(id){
   const arr=despesasArr();
@@ -4719,8 +4892,7 @@ function renderAuditoriaMes(){
       <p class="hint" style="margin:0 0 10px">Busca TODOS os pedidos do período (não é amostra, válidos e cancelados) e confere direto no Mercado Pago a comissão e o frete realmente cobrados de cada um, além de checar se o dinheiro de vendas antigas já foi liberado pro vendedor. Período grande pode levar vários minutos, pois é uma chamada extra por pedido. Requer o backend atualizado (server_v77.js) publicado no Render.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
         <label>Loja<select id="audLoja">${optsLojas(auditoriaLoja)}</select></label>
-        <label>De<input type="date" id="audDe" value="${esc(auditoriaDe)}"></label>
-        <label>Até<input type="date" id="audAte" value="${esc(auditoriaAte)}"></label>
+        ${botaoPeriodo('audPeriodoBtn',auditoriaDe,auditoriaAte)}
       </div>
       <div class="acoes-linha" style="margin-top:10px">
         <button class="btn gold" id="audIniciar" ${auditoriaStatus==='rodando'?'disabled':''}>${auditoriaStatus==='rodando'?'Rodando...':'▶ Rodar auditoria'}</button>
@@ -5043,8 +5215,7 @@ function renderFinancas(){
           <option value="personalizado" ${financasResumoPeriodo==='personalizado'?'selected':''}>Personalizado</option>
         </select></label>
         ${financasResumoPeriodo==='personalizado'?`
-          <label>De<input type="date" id="frDe" value="${esc(financasResumoDe)}"></label>
-          <label>Até<input type="date" id="frAte" value="${esc(financasResumoAte)}"></label>`:'<span></span><span></span>'}
+          ${botaoPeriodo('frPeriodoBtn',financasResumoDe,financasResumoAte)}<span></span>`:'<span></span><span></span>'}
       </div>
       <div class="acoes-linha" style="margin-top:10px;flex-wrap:wrap">
         <button class="btn gold" id="frPesquisar" ${financasResumoCarregando?'disabled':''}>${financasResumoCarregando?'Buscando... (pode levar um tempo em períodos grandes)':'🔍 Pesquisar'}</button>
@@ -5103,7 +5274,7 @@ function renderFinancas(){
         <td>${fmtData(d.dataPagamento)}</td>
         <td>${d.recorrente?'<span class="badge okv">🔁 Mensal</span>':'<span class="muted">—</span>'}</td>
         <td style="text-align:center"><input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}></td>
-        <td><button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
+        <td><button class="btn sm" data-fneditar="${d.id}">Editar</button> <button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
       </tr>`;
         const linhaDetalhe=(temItens&&financasExpandido[d.id])?`<tr><td colspan="7" style="background:var(--panel2,rgba(255,255,255,.02))">
           <table class="tbl-produtos" style="margin:4px 0"><tbody>
@@ -5156,6 +5327,7 @@ function renderFinancas(){
     toast(c.checked?'Despesa marcada como paga.':'Despesa marcada como pendente.');
     renderFinancas();
   });
+  el.querySelectorAll('[data-fneditar]').forEach(b=>b.onclick=()=>abrirEditarDespesaModal(b.dataset.fneditar));
   el.querySelectorAll('[data-fnexcluir]').forEach(b=>b.onclick=()=>{
     const d=despesasArr().find(x=>x.id===b.dataset.fnexcluir); if(!d) return;
     confirmAction(`Excluir a despesa "${d.descricao}" (${fmtMoney(d.valor)})?`,()=>{
@@ -5186,9 +5358,10 @@ function renderFinancas(){
     if(financasResumoPeriodo==='personalizado'){ renderFinancas(); return; }
     pesquisarResumoFinanceiro();
   };
-  const frDe=document.getElementById('frDe'), frAte=document.getElementById('frAte');
-  if(frDe) frDe.onchange=e=>{ financasResumoDe=e.target.value; };
-  if(frAte) frAte.onchange=e=>{ financasResumoAte=e.target.value; };
+  const frPeriodoBtn=document.getElementById('frPeriodoBtn');
+  if(frPeriodoBtn) frPeriodoBtn.onclick=()=>abrirSeletorPeriodo(financasResumoDe,financasResumoAte,(de,ate)=>{
+    financasResumoDe=de; financasResumoAte=ate; renderFinancas();
+  });
   const frPesquisar=document.getElementById('frPesquisar');
   if(frPesquisar) frPesquisar.onclick=pesquisarResumoFinanceiro;
   const frAliquota=document.getElementById('frAliquota');
@@ -5197,10 +5370,10 @@ function renderFinancas(){
   if(btnFecharTodasLojas) btnFecharTodasLojas.onclick=calcularFechamentoTodasLojas;
   const audLoja=document.getElementById('audLoja');
   if(audLoja) audLoja.onchange=e=>{ auditoriaLoja=e.target.value; };
-  const audDe=document.getElementById('audDe');
-  if(audDe) audDe.onchange=e=>{ auditoriaDe=e.target.value; };
-  const audAte=document.getElementById('audAte');
-  if(audAte) audAte.onchange=e=>{ auditoriaAte=e.target.value; };
+  const audPeriodoBtn=document.getElementById('audPeriodoBtn');
+  if(audPeriodoBtn) audPeriodoBtn.onclick=()=>abrirSeletorPeriodo(auditoriaDe,auditoriaAte,(de,ate)=>{
+    auditoriaDe=de; auditoriaAte=ate; renderFinancas();
+  });
   const audIniciar=document.getElementById('audIniciar');
   if(audIniciar) audIniciar.onclick=iniciarAuditoriaMes;
   const btnAddSocio=document.getElementById('btnAddSocio');
@@ -5570,9 +5743,8 @@ function renderAmauri(){
     ${amauriSubAba==='periodo'?(marcados.length?`
     <div class="card">
       <h3 style="margin-top:0">📊 Período do fechamento</h3>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
-        <label>De<input type="date" id="amDe" value="${esc(amauriResumoDe)}"></label>
-        <label>Até<input type="date" id="amAte" value="${esc(amauriResumoAte)}"></label>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr">
+        ${botaoPeriodo('amPeriodoBtn',amauriResumoDe,amauriResumoAte)}
         <label>Alíquota de imposto do fechamento Amauri (%)<input type="text" inputmode="decimal" placeholder="0,0" id="amAliquota" value="${a.aliquotaImposto?String(a.aliquotaImposto).replace('.',','):''}"></label>
       </div>
       <p class="hint" style="margin:8px 0 0">Alíquota própria deste fechamento — independente da alíquota configurada em Finanças → Resumo Financeiro (TorvStore). Mudar aqui não mexe lá, e vice-versa. É ela que desconta o imposto de cada produto antes de calcular a margem líquida e o repasse do Amauri.</p>
@@ -5640,9 +5812,10 @@ function renderAmauri(){
     if(amauriCustosAberto.has(id)) amauriCustosAberto.delete(id); else amauriCustosAberto.add(id);
     renderAmauri();
   });
-  const amDe=document.getElementById('amDe'), amAte=document.getElementById('amAte');
-  if(amDe) amDe.onchange=e=>{ amauriResumoDe=e.target.value; amauriResumoResultado=null; renderAmauri(); };
-  if(amAte) amAte.onchange=e=>{ amauriResumoAte=e.target.value; amauriResumoResultado=null; renderAmauri(); };
+  const amPeriodoBtn=document.getElementById('amPeriodoBtn');
+  if(amPeriodoBtn) amPeriodoBtn.onclick=()=>abrirSeletorPeriodo(amauriResumoDe,amauriResumoAte,(de,ate)=>{
+    amauriResumoDe=de; amauriResumoAte=ate; amauriResumoResultado=null; renderAmauri();
+  });
   const amAliquota=document.getElementById('amAliquota');
   if(amAliquota) amAliquota.onchange=e=>{
     salvarCustosAmauriPendentes();
@@ -6013,17 +6186,41 @@ function openEnvioModal(id,lojaPadrao){
     }
   };
 }
+/* calcula (sem alterar o state) de onde sairia uma quantidade "q" deste SKU, explodindo
+   componentes de kit e redirecionando SKUs vinculados pro mestre - mesma lógica de
+   alocarNoEnvio, só que só pra prévia na tela (não mexe em nada). */
+function previewAlocacao(produtoEscolhido,q){
+  const comps=componentesDe(produtoEscolhido);
+  if(comps.length){
+    let dl=0,dc=0,gc=0; const detalhes=[];
+    comps.forEach(c=>{
+      const comp=prodById(c.produtoId); if(!comp) return;
+      const r=previewAlocacao(comp,q*c.qtdPorUnidade);
+      dl+=r.dl; dc+=r.dc; gc+=r.gc;
+      detalhes.push({sku:comp.sku,...r});
+    });
+    return {dl,dc,gc,detalhes};
+  }
+  const base=produtoEfetivo(produtoEscolhido);
+  const dl=Math.min(q,base.qtd.local);
+  const dc=Math.min(q-dl,coletarLivre(base));
+  const gc=q-dl-dc;
+  return {dl,dc,gc,detalhes:[]};
+}
 function openAddSkuEnvioModal(envioId){
   const e=envioById(envioId);
   const disp=state.produtos.filter(p=>p.loja===e.loja).sort((a,b)=>a.sku.localeCompare(b.sku));
   const body=openModal(true);
   body.innerHTML=`<h3>Adicionar SKUs ao envio "${esc(e.nome)}"</h3>
-    <p class="hint" style="margin:0 0 14px">Digite a quantidade e a coluna <b>De onde sai</b> mostra na hora o que vem do galpão, o que vem do que já foi comprado e o que vai virar ordem de compra.</p>
+    <p class="hint" style="margin:0 0 14px">Digite a quantidade e a coluna <b>De onde sai</b> mostra na hora o que vem do galpão, o que vem do que já foi comprado e o que vai virar ordem de compra. Kits mostram a soma já explodida por componente.</p>
     ${disp.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>SKU</th><th>Local</th><th>Coletar</th><th>Qtd nesse envio</th><th>De onde sai</th>
     </tr></thead><tbody>
-      ${disp.map(p=>{ const base=produtoEfetivo(p); return `<tr><td class="mono">${esc(p.sku)}${p.vinculadoA?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(base.sku)}">🔗</small>`:''}</td>
-        <td class="num">${fmtInt(base.qtd.local)}</td><td class="num">${fmtInt(coletarLivre(base))}</td>
+      ${disp.map(p=>{ const base=produtoEfetivo(p); const kit=componentesDe(p).length>0;
+        const rotuloLocal=kit?`<span class="muted" title="Kit: ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:fmtInt(base.qtd.local);
+        const rotuloColetar=kit?'':fmtInt(coletarLivre(base));
+        return `<tr><td class="mono">${esc(p.sku)}${p.vinculadoA?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(base.sku)}">🔗</small>`:''}</td>
+        <td class="num">${rotuloLocal}</td><td class="num">${rotuloColetar}</td>
         <td><input type="number" min="0" value="0" class="qty-acao" id="add_${p.id}" data-prev="${p.id}"></td>
         <td id="prev_${p.id}" style="font-size:12.5px"><span class="muted">—</span></td></tr>`; }).join('')}
     </tbody></table></div>`:`<p class="empty-inline">Nenhum SKU cadastrado para ${esc(e.loja)}.</p>`}
@@ -6031,18 +6228,17 @@ function openAddSkuEnvioModal(envioId){
   body.querySelectorAll('[data-prev]').forEach(inp=>{
     inp.oninput=()=>{
       const p=prodById(inp.dataset.prev);
-      const base=produtoEfetivo(p);
       const cel=document.getElementById('prev_'+p.id);
       const q=parseInt(inp.value)||0;
       if(q<=0){ cel.innerHTML='<span class="muted">—</span>'; return; }
-      const dl=Math.min(q,base.qtd.local);
-      const dc=Math.min(q-dl,coletarLivre(base));
-      const gc=q-dl-dc;
+      const {dl,dc,gc,detalhes}=previewAlocacao(p,q);
       const partes=[];
       if(dl) partes.push(`<span class="okv">${fmtInt(dl)}</span> do galpão`);
       if(dc) partes.push(`<span class="cam">${fmtInt(dc)}</span> do coletar`);
       if(gc) partes.push(`<span class="pend">${fmtInt(gc)}</span> vai pra comprar`);
-      cel.innerHTML=partes.join(' + ')+(p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(q,p.unidPorCaixa)}</div>`:'');
+      let html=partes.join(' + ')+(p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(q,p.unidPorCaixa)}</div>`:'');
+      if(detalhes.length) html+=`<div class="hint" style="margin-top:2px">${detalhes.map(d=>esc(d.sku)+': '+[d.dl?fmtInt(d.dl)+' galpão':'',d.dc?fmtInt(d.dc)+' coletar':'',d.gc?fmtInt(d.gc)+' comprar':''].filter(Boolean).join('+')).join(' · ')}</div>`;
+      cel.innerHTML=html;
     };
   });
   document.getElementById('btnCancelar').onclick=closeModal;
@@ -6835,6 +7031,35 @@ function rupturaCalcComData(i){
   const pendenteTardio=pendentes.find(p=>!usados.has(p.data))||null;
   return {...k,full,cob,diaZero,pendentes,pendenteTardio};
 }
+/* pausa/reativa o aviso de ruptura de 1 SKU - pra produto que vai sair de linha: vende o que
+   resta, não repõe, e depois exclui o anúncio no Mercado Livre. Não mexe em estoque nem vendas,
+   só tira (ou devolve) da lista de risco de ruptura em Visão Geral e FULL → Ruptura. */
+function pausarReposicao(id,pausar){
+  const p=prodById(id); if(!p) return;
+  snapshot((pausar?'aviso de ruptura pausado: ':'aviso de ruptura reativado: ')+p.sku);
+  p.repoPausada=!!pausar;
+  persist();
+}
+function produtosComReposicaoPausada(){
+  return state.produtos.filter(p=>p.repoPausada).sort((a,b)=>a.loja.localeCompare(b.loja)||a.sku.localeCompare(b.sku));
+}
+function abrirPausadosModal(){
+  const lista=produtosComReposicaoPausada();
+  const body=openModal(false);
+  body.innerHTML=`<h3>SKUs com aviso de ruptura pausado</h3>
+    <p class="hint" style="margin:0 0 12px">Esses produtos não aparecem mais no alerta de risco de ruptura (Visão Geral e FULL → Ruptura). Clique em Reativar se voltar a repor.</p>
+    ${lista.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Loja</th><th></th></tr></thead><tbody>
+      ${lista.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td><span class="loja-tag">${esc(p.loja)}</span></td><td><button class="btn sm" data-reativarrup="${p.id}">Reativar aviso</button></td></tr>`).join('')}
+    </tbody></table></div>`:`<p class="empty-inline">Nenhum SKU pausado no momento.</p>`}
+    <div class="modal-actions"><button class="btn" id="btnFecharPausados">Fechar</button></div>`;
+  document.getElementById('btnFecharPausados').onclick=closeModal;
+  body.querySelectorAll('[data-reativarrup]').forEach(b=>b.onclick=()=>{
+    pausarReposicao(b.dataset.reativarrup,false);
+    toast('Aviso de ruptura reativado.');
+    abrirPausadosModal();
+    renderAll();
+  });
+}
 function rupturaLojaLista(loja,diasLimite){
   const prox=proximoEnvioLoja(loja);
   return fullItensLoja(loja).map(i=>({i,k:fullCalc(i),p:fullProduto(i)}))
@@ -6842,6 +7067,10 @@ function rupturaLojaLista(loja,diasLimite){
        de ruptura - ele so continua no cadastro pra manter historico, nao faz mais sentido
        comprar/coletar/repor algo que nao existe mais como anuncio pra vender. */
     .filter(({p})=>!(p&&p.mlAusente))
+    /* produto que o Felipe marcou pra "sair de linha" (vende o que resta, não repõe, depois
+       exclui o anúncio) - o aviso de ruptura não faz sentido mais pra ele, então some da lista
+       até ser reativado (ver botão 🔕/produtosComReposicaoPausada). */
+    .filter(({p})=>!(p&&p.repoPausada))
     .filter(({k})=>k.media>0&&k.cob!==Infinity)
     .map(x=>{
       const kr=rupturaCalcComData(x.i);
