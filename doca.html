@@ -1759,6 +1759,29 @@ function adicionarQtd(id,campo,qty){
 }
 /* ---------- kit (produto que consome outros produtos) ---------- */
 function componentesDe(p){ return p.componentesKit||[]; }
+/* números "virtuais" de um kit pra Comprar/Coletar/Local/Reservado/Disponível - o kit em si
+   nunca tem estoque próprio (fica sempre 0, de propósito, pra não contar 2x junto com os
+   componentes nos totais da loja), mas pra ORIENTAÇÃO VISUAL é útil ver quantos kits dá pra
+   montar com o que cada componente tem hoje em cada status - o gargalo (componente com MENOS)
+   é quem manda em cada coluna. Só leitura, não conta em soma nenhuma (por isso a tela de
+   Produtos usa esse valor separado do p.qtd de verdade). */
+function kitVirtualQtd(p){
+  const comps=componentesDe(p);
+  if(!comps.length) return null;
+  let comprar=Infinity,coletar=Infinity,local=Infinity,reservado=Infinity,disp=Infinity;
+  comps.forEach(c=>{
+    const comp=prodById(c.produtoId); if(!comp) return;
+    const base=produtoEfetivo(comp);
+    const qpu=c.qtdPorUnidade||1;
+    comprar=Math.min(comprar,Math.floor((base.qtd.comprar||0)/qpu));
+    coletar=Math.min(coletar,Math.floor((base.qtd.coletar||0)/qpu));
+    local=Math.min(local,Math.floor(totalNoGalpao(base)/qpu));
+    reservado=Math.min(reservado,Math.floor(reservadoDe(base)/qpu));
+    disp=Math.min(disp,Math.floor(disponivel(base)/qpu));
+  });
+  if(comprar===Infinity) return null;
+  return {comprar,coletar,local,reservado,disp};
+}
 /* produtos dessa loja que já são componente de ALGUM kit (útil pra saber, mas não bloqueia usar
    o mesmo produto em kits diferentes - ex: esponja pode entrar em mais de 1 kit). */
 function kitsQueUsam(produtoId){ return state.produtos.filter(x=>componentesDe(x).some(c=>c.produtoId===produtoId)); }
@@ -3312,17 +3335,19 @@ function renderProdutos(){
         const fi=fullItemDeProduto(p), fk=fi?fullCalc(fi):null;
         const mestreVinc=p.vinculadoA?prodById(p.vinculadoA):null;
         const vinculados=membrosVinculados(p);
+        const kitv=kitVirtualQtd(p);
+        const tituloKitv='Calculado a partir do estoque dos componentes do kit hoje (o componente com menos é quem limita) — só pra referência visual, o kit em si não tem estoque próprio e isso não soma nos totais da loja.';
         return `
         <tr>
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
-          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
+          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}${kitv?` <span class="muted" style="font-size:10.5px" title="Kit: monta a partir de ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
           <td class="num">${mProp!=null?mProp.toFixed(2):'<span class="muted">—</span>'}${vinculados.length?` <small class="muted" title="Soma deste + ${vinculados.map(v=>esc(v.sku)).join(', ')} — é esse total que decide quanto comprar/repor">(total: ${(m||0).toFixed(2)})</small>`:''}${mestreVinc?` <small class="muted" title="Estoque e reposição são decididos pelo total no SKU mestre ${esc(mestreVinc.sku)}, não só por este anúncio">🔗</small>`:''}</td>
-          <td class="num">${fmtInt(mestreVinc?mestreVinc.qtd.comprar:p.qtd.comprar)}${mestreVinc?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(mestreVinc.sku)} — mostrado aqui só pra referência, não soma 2x nos totais">🔗</small>`:''}</td>
-          <td class="num">${fmtInt(mestreVinc?mestreVinc.qtd.coletar:p.qtd.coletar)}</td>
-          <td class="num">${fmtInt(totalNoGalpao(mestreVinc||p))}</td>
-          <td class="num">${reservadoDe(mestreVinc||p)>0?`<button class="btn sm" style="padding:3px 9px" data-verres="${(mestreVinc||p).id}" title="Ver em quais envios está reservado"><span class="okv">${fmtInt(reservadoDe(mestreVinc||p))}</span> ⓘ</button>`:'0'}</td>
-          <td class="num">${fmtInt(disponivel(mestreVinc||p))}</td>
+          <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.comprar)} 🧩</span>`:`${fmtInt(mestreVinc?mestreVinc.qtd.comprar:p.qtd.comprar)}${mestreVinc?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(mestreVinc.sku)} — mostrado aqui só pra referência, não soma 2x nos totais">🔗</small>`:''}`}</td>
+          <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.coletar)} 🧩</span>`:fmtInt(mestreVinc?mestreVinc.qtd.coletar:p.qtd.coletar)}</td>
+          <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.local)} 🧩</span>`:fmtInt(totalNoGalpao(mestreVinc||p))}</td>
+          <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.reservado)} 🧩</span>`:(reservadoDe(mestreVinc||p)>0?`<button class="btn sm" style="padding:3px 9px" data-verres="${(mestreVinc||p).id}" title="Ver em quais envios está reservado"><span class="okv">${fmtInt(reservadoDe(mestreVinc||p))}</span> ⓘ</button>`:'0')}</td>
+          <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.disp)} 🧩</span>`:fmtInt(disponivel(mestreVinc||p))}</td>
           <td class="num">${p.mlItemId?fmtInt(p.mlQtdDisponivel||0):'<span class="muted">—</span>'}</td>
           <td class="num">${fi?(()=>{const tot=fk.full-(fi.aptas||0); return `<span class="det">${fmtInt(tot)}<span class="i">i</span><span class="pop">
             <span class="ln"><span>Em transferência</span><b>${fmtInt(fi.transf||0)}</b></span>
