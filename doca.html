@@ -4721,10 +4721,13 @@ function renderAds(){
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds(); };
   document.getElementById('adFiltro').onchange=e=>{
     adsFiltro=e.target.value;
-    /* "Maior Lucro Bruto" precisa do resumo financeiro exato do período - calcula na hora que
-       escolhe o filtro, sem precisar de um botão separado (calcularLucroAdsPeriodo já chama
-       renderAds() sozinho, no início pra mostrar "calculando..." e no fim com o resultado). */
-    if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds();
+    /* qualquer filtro escolhido já calcula o Lucro (não só "Maior Lucro Bruto") - é o que faz
+       aparecer as tags "✓ lucro > ads" / "⚠ lucro < ads" em cada linha, então elas ficam
+       visíveis em qualquer ordenação, sem precisar trocar pro filtro de lucro só pra ver isso.
+       Não recalcula de novo se já tem um resultado fresco pro mesmo período (evita ficar
+       martelando o backend a cada troca de filtro). */
+    if(!adsLucroResultado||adsLucroPeriodoCalculado!==adsPeriodoApi) calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
+    else renderAds();
   };
   document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
   document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.tacosTeto=v; persist(); renderAds(); };
