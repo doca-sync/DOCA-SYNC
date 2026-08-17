@@ -779,6 +779,11 @@ function mediaVendasDiariaPropria(p){
   const m=fullCalc(it).media;
   return m>0?m:null;
 }
+/* resolve pro SKU que realmente guarda o estoque fisico (o mestre, se este for um membro
+   vinculado - ou ele mesmo, se nao estiver vinculado a ninguem). Usada em qualquer lugar que
+   PRECISE saber/mexer no estoque de verdade a partir de um SKU qualquer (ex: alocar num envio
+   FULL escolhendo pela tela o SKU membro). */
+function produtoEfetivo(p){ return p.vinculadoA?(prodById(p.vinculadoA)||p):p; }
 function mediaVendasDiaria(p){
   if(p.vinculadoA) return 0;
   const grupo=[p,...membrosVinculados(p)];
@@ -1985,8 +1990,15 @@ function editarEnvio(id,patch){
 }
 /* Reserva o que está no galpão (Local) e o que já foi comprado e está por coletar.
    O Coletar NÃO é descontado — o motorista continua vendo tudo que precisa buscar. */
-function alocarNoEnvio(envio,produto,solicitado){
+function alocarNoEnvio(envio,produtoEscolhido,solicitado){
   const marcaEnvio='FULL '+(envio.nome||'')+(envio.loja?' · '+envio.loja:'');
+  /* se o SKU escolhido na tela e' um membro vinculado (estoque fisico compartilhado com outro
+     anuncio), o estoque de verdade mora no mestre - aloca/decrementa/compra sempre por la',
+     senao ficava tirando de um produto.qtd.local que fica sempre travado em 0 pra um vinculado
+     (mandava tudo pra "comprar" mesmo tendo estoque de sobra no mestre). O item do envio continua
+     registrado com o produtoId do SKU ESCOLHIDO (pra saber pra qual anuncio esse envio FULL e'),
+     so' a CONTA de disponibilidade/decremento que acontece no mestre. */
+  const produto=produtoEfetivo(produtoEscolhido);
   const aloc=Math.min(solicitado,produto.qtd.local);
   produto.qtd.local-=aloc;
   let falta=solicitado-aloc;
@@ -1998,8 +2010,9 @@ function alocarNoEnvio(envio,produto,solicitado){
     produto.pedidos.push({...novoPedido(gerado),origem:marcaEnvio,envioId:envio.id});
     sincronizarPedidos(produto);
   }
-  envio.itens.push({id:gerarId('it'),produtoId:produto.id,solicitado,alocado:aloc,reservadoColeta:resCol,geradoCompra:gerado});
+  envio.itens.push({id:gerarId('it'),produtoId:produto.id,skuEscolhidoId:produtoEscolhido.id!==produto.id?produtoEscolhido.id:null,solicitado,alocado:aloc,reservadoColeta:resCol,geradoCompra:gerado});
   produto.atualizadoEm=Date.now();
+  produtoEscolhido.atualizadoEm=Date.now();
   return {alocado:aloc,aCaminho:resCol,gerado};
 }
 /* puxa para a reserva o que estiver sobrando no Local */
@@ -6009,20 +6022,21 @@ function openAddSkuEnvioModal(envioId){
     ${disp.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>SKU</th><th>Local</th><th>Coletar</th><th>Qtd nesse envio</th><th>De onde sai</th>
     </tr></thead><tbody>
-      ${disp.map(p=>`<tr><td class="mono">${esc(p.sku)}</td>
-        <td class="num">${fmtInt(p.qtd.local)}</td><td class="num">${fmtInt(coletarLivre(p))}</td>
+      ${disp.map(p=>{ const base=produtoEfetivo(p); return `<tr><td class="mono">${esc(p.sku)}${p.vinculadoA?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(base.sku)}">🔗</small>`:''}</td>
+        <td class="num">${fmtInt(base.qtd.local)}</td><td class="num">${fmtInt(coletarLivre(base))}</td>
         <td><input type="number" min="0" value="0" class="qty-acao" id="add_${p.id}" data-prev="${p.id}"></td>
-        <td id="prev_${p.id}" style="font-size:12.5px"><span class="muted">—</span></td></tr>`).join('')}
+        <td id="prev_${p.id}" style="font-size:12.5px"><span class="muted">—</span></td></tr>`; }).join('')}
     </tbody></table></div>`:`<p class="empty-inline">Nenhum SKU cadastrado para ${esc(e.loja)}.</p>`}
     <div class="modal-actions"><button class="btn" id="btnCancelar">Cancelar</button><button class="btn gold" id="btnAddLote">Adicionar ao envio</button></div>`;
   body.querySelectorAll('[data-prev]').forEach(inp=>{
     inp.oninput=()=>{
       const p=prodById(inp.dataset.prev);
+      const base=produtoEfetivo(p);
       const cel=document.getElementById('prev_'+p.id);
       const q=parseInt(inp.value)||0;
       if(q<=0){ cel.innerHTML='<span class="muted">—</span>'; return; }
-      const dl=Math.min(q,p.qtd.local);
-      const dc=Math.min(q-dl,coletarLivre(p));
+      const dl=Math.min(q,base.qtd.local);
+      const dc=Math.min(q-dl,coletarLivre(base));
       const gc=q-dl-dc;
       const partes=[];
       if(dl) partes.push(`<span class="okv">${fmtInt(dl)}</span> do galpão`);
