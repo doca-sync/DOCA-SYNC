@@ -616,6 +616,122 @@ app.get('/auditoria/mes/status', (req, res) => {
   if (!job) return res.status(404).json({ ok: false, erro: 'Auditoria nao encontrada - pode ter expirado (o servidor guarda so a ultima leva de jobs em memoria, some se reiniciar).' });
   res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
+
+/* ================= Auditoria de UM PRODUTO (real, confirmado) =================
+   Mesma logica da auditoria do mes, mas filtrando so os pedidos que tem esse item_id, pra
+   estudar um produto especifico (ex: "isso aqui bate?"). Pedido MISTO (carrinho com outros
+   produtos junto) nao da pra saber a fatia exata da comissao/frete SO' desse item direto na
+   cobranca real do Mercado Pago (ela vem por PAGAMENTO inteiro, nao por item) - pedido puro
+   (so' esse produto) conta 100% direto; pedido misto e' rateado proporcional ao valor do item
+   dentro do pedido (aproximado, marcado separado no resultado pra nao confundir com o exato). */
+const auditoriaProdutoJobs = new Map();
+async function rodarAuditoriaProduto(jobId, loja, itemId, de, ate) {
+  const job = auditoriaProdutoJobs.get(jobId);
+  try {
+    if (!tokenMpDaLoja(loja)) { job.status = 'erro'; job.erro = 'Essa loja nao tem Mercado Pago configurado - a auditoria precisa dele pra confirmar as cobrancas reais.'; return; }
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const log = { avisos: [] };
+    const deIso = `${de}T00:00:00-03:00`, ateIso = `${ate}T23:59:59-03:00`;
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+    const comItem = pedidos.filter(p => p.status !== 'invalid' && (p.order_items || []).some(oi => oi.item && oi.item.id === itemId));
+    job.progresso = { feito: 0, total: comItem.length };
+
+    let qtdVendida = 0, qtdCancelada = 0;
+    let faturamentoItem = 0, cancelamentoItem = 0;
+    let tarifaAssumida = 0;
+    let tarifaRealPura = 0, tarifaRealMistaEstimada = 0;
+    let pedidosPuros = 0, pedidosMistos = 0;
+    let freteRealPuros = 0, freteFalhas = 0;
+    const pagamentosContados = new Set();
+    const shipmentsContados = new Set();
+    const anomalias = [];
+
+    for (const p of comItem) {
+      const cancelado = p.status === 'cancelled';
+      const itensDoPedido = p.order_items || [];
+      const puro = itensDoPedido.length === 1;
+      const oiAlvo = itensDoPedido.find(oi => oi.item && oi.item.id === itemId);
+      const qtd = oiAlvo.quantity || 0;
+      const valorItem = (Number(oiAlvo.unit_price) || 0) * qtd;
+      const saleFee = (Number(oiAlvo.sale_fee) || 0) * qtd;
+      tarifaAssumida += saleFee;
+      if (cancelado) { qtdCancelada += qtd; cancelamentoItem += valorItem; } else { qtdVendida += qtd; faturamentoItem += valorItem; }
+      if (puro) pedidosPuros++; else pedidosMistos++;
+
+      if (puro && p.shipping && p.shipping.id && !shipmentsContados.has(p.shipping.id)) {
+        shipmentsContados.add(p.shipping.id);
+        try {
+          const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${p.shipping.id}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          freteRealPuros += (j.senders || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        } catch (e) { freteFalhas++; }
+      }
+
+      const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved' || pg.status === 'refunded' || pg.status === 'partially_refunded') || (p.payments || [])[0];
+      if (pgAprovado && pgAprovado.id && !pagamentosContados.has(pgAprovado.id)) {
+        pagamentosContados.add(pgAprovado.id);
+        try {
+          const r = await mpFetch(loja, `/v1/payments/${pgAprovado.id}`, { method: 'GET' });
+          const jp = await r.json();
+          const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
+          const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
+          if (puro) {
+            tarifaRealPura += valorComissaoReal;
+          } else {
+            const totalPedido = itensDoPedido.reduce((s, oi) => s + ((Number(oi.unit_price) || 0) * (oi.quantity || 0)), 0);
+            const fracao = totalPedido > 0 ? valorItem / totalPedido : 0;
+            tarifaRealMistaEstimada += valorComissaoReal * fracao;
+          }
+        } catch (e) {
+          anomalias.push({ pedido_id: p.id, motivo: 'Erro ao consultar o pagamento: ' + e.message });
+        }
+      }
+      job.progresso.feito++;
+      await sleep(180);
+    }
+
+    job.resultado = {
+      loja, itemId, periodo: { de, ate },
+      pedidos_com_produto: comItem.length,
+      pedidos_puros: pedidosPuros, pedidos_mistos: pedidosMistos,
+      qtd_vendida: qtdVendida, qtd_cancelada: qtdCancelada,
+      faturamento_item: round2(faturamentoItem), cancelamento_item: round2(cancelamentoItem),
+      tarifa_assumida: round2(tarifaAssumida),
+      tarifa_real_pedidos_puros: round2(tarifaRealPura),
+      tarifa_real_estimada_pedidos_mistos: round2(tarifaRealMistaEstimada),
+      tarifa_real_total: round2(tarifaRealPura + tarifaRealMistaEstimada),
+      diferenca_tarifa: round2(tarifaAssumida - (tarifaRealPura + tarifaRealMistaEstimada)),
+      frete_real_pedidos_puros: round2(freteRealPuros),
+      frete_falhas: freteFalhas,
+      aviso_frete: pedidosMistos > 0 ? `${pedidosMistos} pedido(s) misto(s) (com outros produtos no mesmo carrinho) - frete real desses NAO entrou no total (precisaria ratear por peso, igual o Resumo Financeiro faz - compare com o campo freteMl dele pra esses).` : null,
+      anomalias, avisos: log.avisos
+    };
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro';
+    job.erro = e.message;
+  }
+}
+app.post('/auditoria/produto/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const itemId = req.query.itemId;
+    const de = req.query.de, ate = req.query.ate;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Parametro "itemId" obrigatorio (ex: MLB1234567890).' });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const jobId = gerarJobId();
+    auditoriaProdutoJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: 0 }, resultado: null, erro: null, criadoEm: Date.now() });
+    rodarAuditoriaProduto(jobId, loja, itemId, de, ate);
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/auditoria/produto/status', (req, res) => {
+  const jobId = req.query.id;
+  const job = auditoriaProdutoJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Auditoria nao encontrada - pode ter expirado (o servidor guarda so a ultima leva de jobs em memoria, some se reiniciar).' });
+  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
+});
 /* rota de diagnostico - a pessoa apontou (com razao) que buscar o pagamento de CADA pedido pra
    calcular Tarifa/Frete e' pesado demais (uma chamada extra por venda) - o jeito que ferramentas
    tipo Metrify parecem fazer e' mais leve: pra CADA PRODUTO (nao pedido), consultar de uma vez
