@@ -3005,11 +3005,25 @@ const loja = req.query.loja || req.body?.loja;
         ]
       );
     }
+    // limpeza: produto que sumiu de vez do Mercado Livre (excluido, nao so pausado/encerrado -
+    // esses continuam aparecendo na busca normal) nunca era removido daqui, porque o /sync so'
+    // fazia INSERT/UPDATE dos itens que a API retornou, nunca um DELETE dos que pararam de vir.
+    // Resultado: produto excluido la' ficava "fantasma" pra sempre no Doca. So' roda a limpeza se
+    // vieram itens de verdade (evita apagar tudo numa falha silenciosa que retorne lista vazia).
+    let itensRemovidos = 0;
+    if (itens.length > 0) {
+      const idsAtuais = itens.map(it => it.id);
+      const del = await pool.query(
+        'delete from ml_produtos where loja = $1 and not (ml_item_id = any($2::text[]))',
+        [loja, idsAtuais]
+      );
+      itensRemovidos = del.rowCount || 0;
+    }
     await pool.query(
       'update ml_sync_log set concluido_em = now(), itens_sincronizados = $2 where id = $1',
       [logId, itens.length]
     );
-    res.json({ ok: true, loja, itensSincronizados: itens.length, atualizadoEm: new Date().toISOString() });
+    res.json({ ok: true, loja, itensSincronizados: itens.length, itensRemovidos, atualizadoEm: new Date().toISOString() });
   } catch (e) {
     console.error('Erro no /sync:', e);
     if (logId != null) {
