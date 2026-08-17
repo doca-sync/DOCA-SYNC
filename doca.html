@@ -921,6 +921,13 @@ function migrar(){
        com qtd zerada de propósito, ver telas de Produtos) e suas vendas somam na conta do
        mestre pra decisão de compra/reposição - ver mediaVendasDiaria/estoqueBaixo. */
     if(p.vinculadoA===undefined) p.vinculadoA=null;
+    /* componentesKit: quando este anuncio e' um KIT que junta outros produtos existentes (ex:
+       "Kit Pet" = 1 luva (sem anuncio proprio) + 1 unidade de "Esponja Pet" (que TAMBEM vende
+       sozinha no seu proprio anuncio, com estoque proprio). Diferente de vinculadoA (mesmo
+       produto fisico, 1:1): aqui sao produtos DIFERENTES, cada um com seu proprio historico de
+       venda, e o kit pode consumir mais de 1 unidade de cada. Nao mexe no estoque do kit em si -
+       "montar X kits" soma direto em Comprar de cada componente (ver montarKit). */
+    if(p.componentesKit===undefined) p.componentesKit=[];
     if(!p.qtd) p.qtd={comprar:0,coletar:0,local:0};
     garantirLotes(p); garantirPedidos(p);
     if(p.qtd.reservado!==undefined){
@@ -1615,6 +1622,46 @@ function adicionarQtd(id,campo,qty){
   else p.qtd[campo]=(p.qtd[campo]||0)+qty;
   p.atualizadoEm=Date.now(); persist();
   return {ok:true};
+}
+/* ---------- kit (produto que consome outros produtos) ---------- */
+function componentesDe(p){ return p.componentesKit||[]; }
+/* produtos dessa loja que já são componente de ALGUM kit (útil pra saber, mas não bloqueia usar
+   o mesmo produto em kits diferentes - ex: esponja pode entrar em mais de 1 kit). */
+function kitsQueUsam(produtoId){ return state.produtos.filter(x=>componentesDe(x).some(c=>c.produtoId===produtoId)); }
+function adicionarComponenteKit(kitId,produtoId,qtdPorUnidade){
+  const kit=prodById(kitId); if(!kit) return {ok:false,msg:'Produto não encontrado.'};
+  const comp=prodById(produtoId); if(!comp) return {ok:false,msg:'Componente não encontrado.'};
+  qtdPorUnidade=parseInt(qtdPorUnidade); if(!qtdPorUnidade||qtdPorUnidade<=0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  if(produtoId===kitId) return {ok:false,msg:'Um kit não pode consumir a si mesmo.'};
+  const lista=componentesDe(kit);
+  if(lista.some(c=>c.produtoId===produtoId)) return {ok:false,msg:'Esse produto já está nos componentes deste kit.'};
+  updateProduto(kitId,{componentesKit:[...lista,{produtoId,qtdPorUnidade}]});
+  return {ok:true};
+}
+function removerComponenteKit(kitId,produtoId){
+  const kit=prodById(kitId); if(!kit) return;
+  updateProduto(kitId,{componentesKit:componentesDe(kit).filter(c=>c.produtoId!==produtoId)});
+}
+/* "montar X kits" não mexe no estoque do próprio kit - soma em Comprar de CADA componente a
+   quantidade necessária (qtdMontar x qtdPorUnidade), reaproveitando o mesmo fluxo que já existe
+   pra qualquer produto normal (aba Comprar). Ex: montar 20 Kit Pet com componentes {luva:1,
+   esponja:1} soma 20 em Comprar da luva e 20 em Comprar da esponja - se a esponja já tinha 20
+   de compra própria (venda avulsa), fica 40 no total, exatamente o cenário que motivou isso. */
+function montarKit(kitId,qtdMontar){
+  const kit=prodById(kitId); if(!kit) return {ok:false,msg:'Produto não encontrado.'};
+  qtdMontar=parseInt(qtdMontar); if(!qtdMontar||qtdMontar<=0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  const lista=componentesDe(kit);
+  if(!lista.length) return {ok:false,msg:'Este kit não tem componentes cadastrados.'};
+  const detalhes=[];
+  batch(`montagem de ${qtdMontar} un. de ${kit.sku}`,()=>{
+    lista.forEach(c=>{
+      const comp=prodById(c.produtoId); if(!comp) return;
+      const qty=qtdMontar*c.qtdPorUnidade;
+      adicionarQtd(c.produtoId,'comprar',qty);
+      detalhes.push(`${qty} un. de ${comp.sku}`);
+    });
+  });
+  return {ok:true,detalhes};
 }
 
 /* compra que chegou vira "reservado a coletar" nos envios que a geraram */
@@ -3193,6 +3240,29 @@ function openProdutoModal(id,lojaPadrao){
 
       ${mestreVinc?'':`
       <hr class="modal-sep">
+      <h4>Kit (monta a partir de outros produtos)</h4>
+      ${componentesDe(p).length?`
+        <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Componente</th><th>Qtd. por unidade do kit</th><th></th></tr></thead><tbody>
+          ${componentesDe(p).map(c=>{ const comp=prodById(c.produtoId); return `<tr>
+            <td class="mono">${comp?esc(comp.sku):'<span class="muted">SKU removido</span>'}</td>
+            <td class="num">${fmtInt(c.qtdPorUnidade)}</td>
+            <td><button class="btn sm danger-outline" data-remcomp="${esc(c.produtoId)}">Remover</button></td>
+          </tr>`; }).join('')}
+        </tbody></table></div>
+        <div class="envio-full-row" style="margin-top:10px">
+          <input id="fQtdMontar" type="number" min="1" placeholder="Quantidade de kits a montar">
+          <button class="btn acc" id="btnMontarKit">Montar</button>
+        </div>
+        <p class="hint">Monta X unidades deste kit soma, em <b>Comprar</b>, a quantidade necessária de CADA componente acima (qtd. por unidade × X) — sem mexer no estoque do próprio kit. Se o componente também vende sozinho, isso soma com a compra que já existia dele.</p>
+      `:`<p class="hint" style="margin-top:-4px">Use isso quando este anúncio é um <b>kit que junta outros produtos</b> já cadastrados (ex: Kit Pet = 1 luva + 1 Esponja Pet). Cada componente continua com o estoque e as vendas dele próprio — o kit só soma a necessidade de compra deles quando você "monta" um lote.</p>`}
+      ${(()=>{ const cands=state.produtos.filter(x=>x.id!==id&&x.loja===p.loja&&!x.vinculadoA&&!componentesDe(p).some(c=>c.produtoId===x.id)); return cands.length?`
+        <div class="envio-full-row" style="margin-top:8px">
+          <select id="fNovoComponente"><option value="">Adicionar componente...</option>${cands.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
+          <input id="fQtdComponente" type="number" min="1" value="1" style="max-width:90px" placeholder="Qtd.">
+          <button class="btn" id="btnAddComponente">Adicionar</button>
+        </div>`:''; })()}
+
+      <hr class="modal-sep">
       <h4>Adicionar compra (nova entrada em Comprar)</h4>
       <div class="envio-full-row"><input id="fQtdAdicionar" type="number" min="1" placeholder="Quantidade">
         <button class="btn acc" id="btnAdicionarComprar">+ Adicionar ao Comprar</button></div>
@@ -3253,6 +3323,28 @@ function openProdutoModal(id,lojaPadrao){
       const r=adicionarQtd(id,'comprar',document.getElementById('fQtdAdicionar').value);
       if(!r.ok){ alert(r.msg); return; }
       openProdutoModal(id); toast('Quantidade adicionada ao Comprar.');
+    };
+    body.querySelectorAll('[data-remcomp]').forEach(b=>b.onclick=()=>{
+      const comp=prodById(b.dataset.remcomp);
+      confirmAction(`Remover ${comp?comp.sku:'este componente'} do kit ${p.sku}? Isso não desfaz nenhuma compra já somada antes - só para de contar nas próximas montagens.`,()=>{
+        removerComponenteKit(id,b.dataset.remcomp); openProdutoModal(id); toast('Componente removido do kit.');
+      });
+    });
+    const btnAddComponente=document.getElementById('btnAddComponente');
+    if(btnAddComponente) btnAddComponente.onclick=()=>{
+      const produtoId=document.getElementById('fNovoComponente').value;
+      if(!produtoId){ alert('Escolha um produto pra adicionar como componente.'); return; }
+      const r=adicionarComponenteKit(id,produtoId,document.getElementById('fQtdComponente').value);
+      if(!r.ok){ alert(r.msg); return; }
+      openProdutoModal(id); toast('Componente adicionado ao kit.');
+    };
+    const btnMontarKit=document.getElementById('btnMontarKit');
+    if(btnMontarKit) btnMontarKit.onclick=()=>{
+      const qtd=document.getElementById('fQtdMontar').value;
+      const r=montarKit(id,qtd);
+      if(!r.ok){ alert(r.msg); return; }
+      openProdutoModal(id);
+      toast(`Montagem somada em Comprar: ${r.detalhes.join(' + ')}.`);
     };
     const btnAjustar=document.getElementById('btnAjustar');
     if(btnAjustar) btnAjustar.onclick=()=>{
