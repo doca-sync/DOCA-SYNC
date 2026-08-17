@@ -4734,7 +4734,13 @@ function renderAds(){
   const btnAtualizar=document.getElementById('adAtualizar');
   if(btnAtualizar) btnAtualizar.onclick=async()=>{
     adsSincronizando=true; renderAds();
-    try{ await adsSincronizarLoja(c.loja); toast('Ads atualizado.'); }
+    try{
+      await adsSincronizarLoja(c.loja);
+      toast('Ads atualizado.');
+      /* recalcula o Lucro Bruto junto - senão as tags "✓ lucro > ads"/"⚠ lucro < ads" ficam
+         com o número antigo (de antes do Atualizar) até a pessoa mexer no filtro. */
+      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
+    }
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
   };
