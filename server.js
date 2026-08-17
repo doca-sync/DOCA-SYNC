@@ -830,6 +830,31 @@ app.post('/debug/mp/relatorio/pedir', async (req, res) => {
     res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: beginDate, end_date: endDate }, corpo });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* teste pontual (16/08): o passoSaldoMp/passoAReceberMp de producao pede o relatorio ate' a
+   MEIA-NOITE UTC de HOJE (fim = diaUTC(new Date())) - ou seja, por construcao, NUNCA inclui nada
+   do dia atual, so' vai ate' o fechamento de ontem. Usuario desconfiou (com razao, batendo os
+   numeros do Doca contra o saldo ao vivo do app do Mercado Pago) que por isso o saldo/a-receber
+   ficam "atrasados 1 dia inteiro". Essa rota testa pedir o relatorio com o fim empurrado pra
+   MEIA-NOITE UTC de AMANHA (cobrindo o dia de hoje inteiro), pra ver se o Mercado Pago aceita e
+   se o relatorio resultante passa a trazer linhas de hoje. Ex.:
+   GET /debug/mp/relatorio/testar-janela-hoje?loja=TorvStore */
+app.get('/debug/mp/relatorio/testar-janela-hoje', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const amanha = diaUTC(new Date(Date.now() + 864e5)); // meia-noite UTC de amanha - cobre hoje inteiro
+    const inicio = diaUTC(new Date(amanha.getTime() - 7 * 864e5));
+    const beginDate = fmtSemMs(inicio), endDate = fmtSemMs(amanha);
+    const r = await mpFetch(loja, '/v1/account/release_report', {
+      method: 'POST',
+      body: JSON.stringify({ begin_date: beginDate, end_date: endDate })
+    });
+    let corpo; try { corpo = await r.json(); } catch (e) { corpo = { aviso: 'resposta sem JSON', texto: await r.text().catch(() => null) }; }
+    res.status(200).json({ ok: r.ok, http_status: r.status, janela: { begin_date: beginDate, end_date: endDate }, corpo });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 /* Passo 2: lista os relatorios ja pedidos pra essa conta, com o status de cada um. Ex.:
    GET /debug/mp/relatorio/listar?loja=TorvShop */
 app.get('/debug/mp/relatorio/listar', async (req, res) => {
