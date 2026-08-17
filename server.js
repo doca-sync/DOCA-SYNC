@@ -819,7 +819,7 @@ app.post('/debug/mp/relatorio/pedir', async (req, res) => {
        aqui zera hora/minuto/segundo/ms explicitamente antes de formatar. */
     const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const fim = diaUTC(new Date());
+    const fim = fimHojeBRT();
     const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
     const beginDate = fmtSemMs(inicio), endDate = fmtSemMs(fim);
     const r = await mpFetch(loja, '/v1/account/release_report', {
@@ -844,9 +844,13 @@ app.get('/debug/mp/relatorio/testar-janela-hoje', async (req, res) => {
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const amanha = diaUTC(new Date(Date.now() + 864e5)); // meia-noite UTC de amanha - cobre hoje inteiro
-    const inicio = diaUTC(new Date(amanha.getTime() - 7 * 864e5));
-    const beginDate = fmtSemMs(inicio), endDate = fmtSemMs(amanha);
+    // v84: primeiro teste (pedindo ate' meia-noite UTC de amanha) voltou 400 "max_date_end_exceeded",
+    // mas o proprio erro revelou o teto real aceito pelo Mercado Pago: hoje 23:59:59 -03:00 (horario
+    // de Brasilia) - ou seja, cobre o dia inteiro de hoje, so' nao aceita ir alem disso. Usa
+    // fimHojeBRT() (a mesma correcao ja aplicada em producao) pra testar exatamente esse teto.
+    const fim = fimHojeBRT();
+    const inicio = diaUTC(new Date(fim.getTime() - 7 * 864e5));
+    const beginDate = fmtSemMs(inicio), endDate = fmtSemMs(fim);
     const r = await mpFetch(loja, '/v1/account/release_report', {
       method: 'POST',
       body: JSON.stringify({ begin_date: beginDate, end_date: endDate })
@@ -1080,7 +1084,7 @@ app.post('/debug/mp/dinheiro/pedir', async (req, res) => {
     const dias = Math.min(60, Math.max(1, parseInt(req.query.dias || '30', 10)));
     const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
     const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-    const fim = diaUTC(new Date());
+    const fim = fimHojeBRT();
     const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
     const beginDate = fmtSemMs(inicio), endDate = fmtSemMs(fim);
     const r = await mpFetch(loja, '/v1/account/settlement_report', {
@@ -1190,6 +1194,23 @@ async function pegarFinanceiroMp(loja) {
    nenhum tratamento. Serve pra ver de verdade o que esta gravado (saldo_report_id pendente,
    quando foi pedido, etc) quando o valor nao aparece no Doca mas o relatorio parece pronto -
    em vez de tentar adivinhar pelo comportamento de fora. Ex.: /debug/mp/financeiro?loja=TorvShop */
+/* forca rodar passoSaldoMp+passoAReceberMp de verdade (as MESMAS funcoes que o Doca chama ao
+   sincronizar) pra uma loja, na hora - usado pra testar se a correcao do fimHojeBRT() (v84) esta
+   realmente gerando um relatorio NOVO com a janela corrigida, em vez de so' reaproveitar (pela
+   regra de frescor de 8h/6h) um relatorio antigo que ainda foi pedido com a janela velha (fim =
+   inicio de hoje). Devolve o estado antes/depois pra comparar. Ex.:
+   GET /debug/mp/forcar-atualizacao?loja=TorvStore */
+app.get('/debug/mp/forcar-atualizacao', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const antes = await pegarFinanceiroMp(loja);
+    await passoSaldoMp(loja, antes);
+    await passoAReceberMp(loja, antes);
+    const depois = await pegarFinanceiroMp(loja);
+    res.json({ ok: true, loja, antes, depois });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
 app.get('/debug/mp/financeiro', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -1281,7 +1302,7 @@ async function passoSaldoMp(loja, row) {
   const dias = 7;
   const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const fim = diaUTC(new Date());
+  const fim = fimHojeBRT();
   const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
   const r = await mpFetch(loja, '/v1/account/release_report', {
     method: 'POST',
@@ -1336,7 +1357,7 @@ async function passoAReceberMp(loja, row) {
   const dias = 60;
   const diaUTC = (d) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  const fim = diaUTC(new Date());
+  const fim = fimHojeBRT();
   const inicio = diaUTC(new Date(fim.getTime() - dias * 864e5));
   const r = await mpFetch(loja, '/v1/account/settlement_report', {
     method: 'POST',
@@ -1613,6 +1634,24 @@ function diffDiasCivis(diaA, diaB) {
    se o total bater perto do teto o intervalo e' dividido em dois e cada metade e' buscada
    separado (recursivo) - e a soma das duas metades nunca esbarra no teto de novo. */
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+/* v84: BUG REAL encontrado (usuario desconfiou com razao, comparando o saldo/a-receber do Doca
+   contra o saldo AO VIVO do proprio app do Mercado Pago - diferenca de ~R$2000 em algumas lojas).
+   passoSaldoMp/passoAReceberMp pediam o relatorio do Mercado Pago com fim = "meia-noite UTC de
+   HOJE" (Date.UTC(ano,mes,dia) do dia atual, hora zero) - que em horario de Brasilia cai por volta
+   das 21h de ONTEM. Ou seja, por construcao, o relatorio NUNCA incluia nada do dia atual, so' ia
+   ate' o fechamento do dia anterior - explicando o atraso de quase 1 dia inteiro que a pessoa via
+   toda vez que conferia a tarde/noite (quanto mais tarde no dia, maior a diferenca acumulada).
+   Confirmado com teste real contra a API (GET /debug/mp/relatorio/testar-janela-hoje) que o
+   Mercado Pago ACEITA pedir ate' o fim do dia atual em horario de Brasilia (o erro devolvido ao
+   tentar ir alem, "max_date_end_exceeded", informou o teto exato: hoje 23:59:59 -03:00) - ou seja
+   NAO e' limitacao da API, e' so' a conta que o Doca fazia que jogava o "fim" longe demais pro
+   passado. Corrigido: "fim" agora e' sempre 23:59:59 de HOJE em horario de Brasilia (convertido
+   pra UTC de verdade), cobrindo o dia inteiro ate' agora. */
+function fimHojeBRT() {
+  const agoraComoBRT = new Date(Date.now() - 3 * 3600 * 1000); // desloca 3h pra "ler" a data em BRT
+  const ano = agoraComoBRT.getUTCFullYear(), mes = agoraComoBRT.getUTCMonth(), dia = agoraComoBRT.getUTCDate();
+  return new Date(Date.UTC(ano, mes, dia, 23, 59, 59) + 3 * 3600 * 1000); // 23:59:59 BRT desse dia, em UTC real
+}
 /* chama o /orders/search com retry+backoff em 429 ("local_rate_limited") - o ML aplica um
    teto de chamadas por segundo por app/token, e lojas de volume alto (muitas paginas, ainda
    mais com 2 buscas rodando - ver buscarPedidosComPendentes) estouram esse teto com facilidade.
