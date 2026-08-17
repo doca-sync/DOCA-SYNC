@@ -769,6 +769,16 @@ function estoqueBaixo(p){
    de todos eles - a decisão de quanto comprar/repor tem que olhar a demanda total, não só a
    de 1 dos anúncios. Um SKU vinculado não soma sozinho (retorna 0) - seu volume já entra na
    conta do mestre. */
+/* media de vendas/dia SO' deste anuncio especifico, mesmo quando ele esta vinculado a outro -
+   diferente de mediaVendasDiaria (que soma no mestre e esconde o valor do membro, usada pra
+   decisao de reposicao). Usada so' pra EXIBIR na tabela de Produtos, pra Felipe conseguir ver
+   o desempenho de cada anuncio separado mesmo depois de vincular o estoque. */
+function mediaVendasDiariaPropria(p){
+  const it=itemFullDoProduto(p);
+  if(!it) return null;
+  const m=fullCalc(it).media;
+  return m>0?m:null;
+}
 function mediaVendasDiaria(p){
   if(p.vinculadoA) return 0;
   const grupo=[p,...membrosVinculados(p)];
@@ -3069,6 +3079,7 @@ function renderProdutos(){
       <th>Comprar</th><th>Coletar</th><th>Local</th><th>Reservado</th><th>Disponível*</th><th title="Vem do botão Atualizar (Mercado Livre)">Aptas Full</th><th title="Em transferência (API) + próximos programados (Doca). Passe o mouse pra ver o detalhe">A Caminho</th><th>Valor estoque</th><th></th></tr></thead>
       <tbody>${lista.length?lista.map(p=>{
         const m=mediaVendasDiaria(p);
+        const mProp=mediaVendasDiariaPropria(p);
         const dicaSku=(p.codigo||'')+(p.fornecedor?' · Fornecedor: '+p.fornecedor:'');
         const fi=fullItemDeProduto(p), fk=fi?fullCalc(fi):null;
         const mestreVinc=p.vinculadoA?prodById(p.vinculadoA):null;
@@ -3078,7 +3089,7 @@ function renderProdutos(){
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
           <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&p.mlCatalogo?' <span title="Anúncio vinculado ao catálogo do Mercado Livre">📚</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
-          <td class="num">${mestreVinc?'<span class="muted" title="Vendas somadas no SKU mestre">—</span>':(m!=null?m.toFixed(2):'<span class="muted">—</span>')}</td>
+          <td class="num">${mProp!=null?mProp.toFixed(2):'<span class="muted">—</span>'}${vinculados.length?` <small class="muted" title="Soma deste + ${vinculados.map(v=>esc(v.sku)).join(', ')} — é esse total que decide quanto comprar/repor">(total: ${(m||0).toFixed(2)})</small>`:''}${mestreVinc?` <small class="muted" title="Estoque e reposição são decididos pelo total no SKU mestre ${esc(mestreVinc.sku)}, não só por este anúncio">🔗</small>`:''}</td>
           <td class="num">${fmtInt(p.qtd.comprar)}</td>
           <td class="num">${fmtInt(p.qtd.coletar)}</td>
           <td class="num">${fmtInt(totalNoGalpao(p))}</td>
