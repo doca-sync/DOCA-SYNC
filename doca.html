@@ -6721,6 +6721,10 @@ function rupturaCalcComData(i){
 function rupturaLojaLista(loja,diasLimite){
   const prox=proximoEnvioLoja(loja);
   return fullItensLoja(loja).map(i=>({i,k:fullCalc(i),p:fullProduto(i)}))
+    /* produto ja excluido/encerrado no Mercado Livre (p.mlAusente=true) nao deve gerar alerta
+       de ruptura - ele so continua no cadastro pra manter historico, nao faz mais sentido
+       comprar/coletar/repor algo que nao existe mais como anuncio pra vender. */
+    .filter(({p})=>!(p&&p.mlAusente))
     .filter(({k})=>k.media>0&&k.cob!==Infinity)
     .map(x=>{
       const kr=rupturaCalcComData(x.i);
