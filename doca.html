@@ -582,10 +582,8 @@ let nuvemGravando=false, nuvemGravarDeNovo=false;
 /* ---------- helpers ---------- */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtMoney(v){ return 'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-/* barra de status reutilizável pra qualquer operação que demore (Ads, Auditoria, Fechamento de
-   todas as lojas, Resumo Financeiro, Amauri etc). barraProgresso mostra % de verdade (quando dá
-   pra contar feito/total). barraIndeterminada é pra quando não dá pra saber quanto falta - mostra
-   uma barrinha animada, só pra avisar "ainda tô trabalhando", sem inventar porcentagem falsa. */
+/* barra de progresso reutilizável - real (feito/total, em %) ou indeterminada (quando ainda
+   não dá pra saber o total). Usada em qualquer tela com carregamento demorado. */
 function barraProgresso(feito,total,label){
   const pct=total?Math.round(feito/total*100):0;
   return `<div style="margin-top:10px">
@@ -4087,6 +4085,10 @@ function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct){
   const dias=[];
   porDia.forEach(d=>{
     const c=d.campanhas&&d.campanhas[campanhaId]; if(!c) return;
+    /* dia sem gasto de Ads (só venda orgânica) não serve pra sugerir ROAS objetivo — não dá
+       pra configurar "objetivo 0x" no Mercado Ads, e misturar esses dias no cálculo inflava
+       artificialmente a faixa 0x como se fosse a "melhor" opção. */
+    if(!(c.cost>0)) return;
     const receita=(c.total_amount||0)+(c.organic_units_amount||0);
     if(receita<=0) return;
     const tacos=(c.cost||0)/receita*100;
@@ -4106,7 +4108,7 @@ function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct){
     const margemM=receitaM*(margemPct/100);
     const lucroM=margemM-custoM;
     return {faixa:Number(k),dias:l.length,tacosM,vendasM,roasM,custoM,receitaM,margemM,lucroM};
-  }).filter(r=>r.dias>=3);
+  }).filter(r=>r.dias>=3&&r.faixa>0);
   if(!resumo.length) return null;
   const norm=(vals,inv)=>{ const lo=Math.min(...vals),hi=Math.max(...vals); if(hi===lo) return vals.map(()=>0.5); return vals.map(v=>inv?(hi-v)/(hi-lo):(v-lo)/(hi-lo)); };
   const nT=norm(resumo.map(r=>r.tacosM),true);
@@ -4411,7 +4413,7 @@ function renderAds(){
       ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
       ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
-      ${adsSugestaoRoasStatus==='rodando'?barraProgresso((adsSugestaoRoasProgresso||{}).feito||0,(adsSugestaoRoasProgresso||{}).total||90,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'):''}
+      ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
@@ -4425,7 +4427,7 @@ function renderAds(){
         const tacosComp=comp?calcTacos(comp):null;
         const tacosAlto=tacos>c.margemPct;
         const av=avalAtual.get(camp.id);
-        const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700;margin-left:0.5cm" title="${[
+        const notaRoas=av?` <span style="margin-left:0.5cm" class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${[
           ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
           `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
         ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
@@ -4434,7 +4436,7 @@ function renderAds(){
           const sug=adsSugestaoRoasArr()[c.loja];
           const dc=sug&&sug.porCampanha[camp.id];
           if(!dc) return '';
-          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Sugestão calculada nos últimos 90 dias: faixa de ROAS realizado ${dc.sugestao.faixa}x deu o melhor resultado (lucro + eficiência) — hoje o objetivo está em ${camp.roas_target||0}x">💡 sugestão ROAS ${dc.sugestao.faixa}x</span>`;
+          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Sugestão de ROAS objetivo (90 dias, maior lucro + eficiência): ${dc.sugestao.faixa}x — lucro médio ${fmtMoney(dc.sugestao.lucroM)}/dia">💡 sugestão ROAS ${dc.sugestao.faixa}x</span>`;
         })();
         return `<tr>
           <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
@@ -4521,7 +4523,13 @@ function renderAds(){
     adsPersonalizadoDe=de; adsPersonalizadoAte=ate; renderAds();
   });
   const btnPersCalc=document.getElementById('adPersonalizadoCalcular');
-  if(btnPersCalc) btnPersCalc.onclick=()=>{ adsBuscarPersonalizado(c.loja); if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); };
+  if(btnPersCalc) btnPersCalc.onclick=()=>{
+    /* antes só calculava o Lucro/custo quando o filtro já estava em "Maior Lucro Bruto" -
+       por isso o custo ficava em branco no personalizado mesmo trocando de filtro depois.
+       Agora calcula sempre, igual ao "Atualizar" nos outros períodos. */
+    adsBuscarPersonalizado(c.loja);
+    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
+  };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
