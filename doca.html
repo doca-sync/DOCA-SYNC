@@ -3047,8 +3047,12 @@ function renderDashboard(){
         const a=e.itens.reduce((x,i)=>x+(i.alocado||0),0);
         const c=e.itens.reduce((x,i)=>x+(i.reservadoColeta||0),0);
         const g=e.itens.reduce((x,i)=>x+(i.geradoCompra||0),0);
+        const coletaCel=e.localColeta?`<label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" data-coletaconf="${e.id}" ${e.coletaConfirmada?'checked':''}>
+            ${e.coletaConfirmada?`<span class="badge okv">✓ ${esc(e.localColeta)}</span>`:esc(e.localColeta)}
+          </label>`:'<span class="muted">—</span>';
         return `<tr><td class="mono">${fmtData(e.data)}</td>
-          <td><span class="loja-tag">${esc(e.loja)}</span></td><td>${esc(e.localColeta||'—')}</td><td class="num">${e.itens.filter(i=>!i.kitDeItemId).length}</td>
+          <td><span class="loja-tag">${esc(e.loja)}</span></td><td>${coletaCel}</td><td class="num">${e.itens.filter(i=>!i.kitDeItemId).length}</td>
           <td class="num okv">${fmtInt(a)}</td><td class="num ${c?'cam':''}">${fmtInt(c)}</td>
           <td class="num ${g?'pend':''}">${fmtInt(g)}</td></tr>`;
       }).join('')}
@@ -3091,6 +3095,12 @@ function renderDashboard(){
     const [qid,loja,itemId]=b.dataset.responder.split('|');
     const ta=el.querySelector(`[data-respostatexto="${qid}"]`);
     responderPergunta(loja,qid,itemId,ta?ta.value:'');
+  });
+  el.querySelectorAll('[data-coletaconf]').forEach(c=>c.onchange=()=>{
+    const e=envioById(c.dataset.coletaconf); if(!e) return;
+    e.coletaConfirmada=c.checked;
+    persist();
+    renderDashboard();
   });
 }
 
@@ -5346,10 +5356,22 @@ function renderSociosCard(){
   }else{
     fechamentoHtml=`<p class="hint" style="margin-top:10px">Clique em "Calcular fechamento" pra ver a margem líquida de ${esc(mesLabel(mes))} e quanto cada um recebe ou devolve.</p>`;
   }
+  /* meses disponiveis pro seletor: junta os meses que ja tem despesa lançada + os meses que ja
+     tem retirada/reembolso lançado + o mes atualmente selecionado (financasFiltroMes), pra sempre
+     ter pelo menos uma opção mesmo em loja/mes sem nenhum lançamento ainda. Mesma lista usada no
+     filtro de mês da aba Despesas, pra manter os dois sincronizados quando possível. */
+  const mesesDespesasSoc=despesasArr().filter(despesaBateFiltroLoja).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
+  const mesesSociosSoc=[...sociosLoja(loja).felipe,...sociosLoja(loja).thiago].map(x=>(x.data||'').slice(0,7)).filter(Boolean);
+  const mesesDisponiveisSoc=[...new Set([...mesesDespesasSoc,...mesesSociosSoc,mes])].sort().reverse();
   return `
     <div class="card" style="margin-top:16px">
       <h3 style="margin-top:0">💸 Retiradas e Reembolsos — Felipe &amp; Thiago (${esc(loja)})</h3>
-      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
+      <div class="toolbar-produtos" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Mês
+          <select id="scMesSel">${mesesDisponiveisSoc.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${esc(mesLabel(m))}</option>`).join('')}</select>
+        </label>
+      </div>
+      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima, e pode trocar pelo seletor acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select id="socQuem"><option value="felipe">Felipe</option><option value="thiago">Thiago</option></select></label>
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
@@ -5594,6 +5616,8 @@ function renderFinancas(){
       renderFinancas();
     });
   });
+  const scMesSel=document.getElementById('scMesSel');
+  if(scMesSel) scMesSel.onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
   const btnFecharSocios=document.getElementById('btnFecharSocios');
   if(btnFecharSocios) btnFecharSocios.onclick=calcularFechamentoSocios;
   el.querySelectorAll('[data-rankver]').forEach(b=>b.onclick=()=>{
