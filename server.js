@@ -2655,13 +2655,20 @@ async function buscarFaturamentoRapido(loja, de, ate) {
   }
   return faturamento;
 }
-async function buscarResumoFinanceiro(loja, de, ate) {
+async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
+  // onProgress(pct, etapa) e' OPCIONAL - so' usado pela versao "job" (/financas/resumo-job) pra
+  // dar status de verdade na tela (igual o Ads ja faz). A rota sincrona antiga (/financas/resumo)
+  // continua chamando essa mesma funcao sem passar onProgress - nao muda nenhum calculo, so'
+  // avisa o quanto ja andou nos pontos que já existiam no fluxo.
+  if (typeof onProgress !== 'function') onProgress = () => {};
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const log = { avisos: [] };
   const deIso = `${de}T00:00:00-03:00`;
   const ateIso = `${ate}T23:59:59-03:00`;
+  onProgress(5, 'Buscando pedidos do período...');
   const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+  onProgress(20, `${pedidos.length} pedido(s) encontrado(s) - calculando itens vendidos...`);
 
   let faturamento = 0, tarifas = 0, cancelamentosValor = 0, reembolsosValor = 0;
   let pedidosValidos = 0, pedidosCancelados = 0;
@@ -2774,6 +2781,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // pro PACKAGE_WEIGHT (peso "de fabrica" cadastrado no catalogo). Item sem nenhum peso cadastrado
   // fica de fora do mapa - o rateio usa 1g como peso minimo pra ele (evita dividir por zero e nao
   // deixa ele ficar de fora do rateio, so' com peso desprezível).
+  onProgress(30, 'Calculando peso dos itens...');
   const pesosPorItem = new Map(); // itemId -> gramas
   try {
     const idsParaPeso = [...itensVendidos.keys()];
@@ -2809,6 +2817,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // PRINCIPAL - e tambem fica bem mais leve (nao precisa mais de 1 chamada extra por produto pra
   // achar a % de comissao). A % de categoria vira fallback, so' usada quando um produto nao tem
   // NENHUM sale_fee declarado no periodo (ex.: campo ausente em pedido muito antigo).
+  onProgress(45, 'Calculando comissão (tarifa) por produto...');
   itensVendidos.forEach(atual => { atual.tarifa = atual.tarifaDeclarada; });
   let itensSemComissao = 0;
   try {
@@ -2881,8 +2890,10 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       throw e;
     }
   }
+  onProgress(50, `Calculando frete de ${idsParaBuscar.length} envio(s)...`);
   const CONCORRENCIA_FRETE = 10;
   let cursorFrete = 0;
+  let concluidosFrete = 0;
   async function workerFrete() {
     while (cursorFrete < idsParaBuscar.length) {
       const shippingId = idsParaBuscar[cursorFrete++];
@@ -2909,6 +2920,13 @@ async function buscarResumoFinanceiro(loja, de, ate) {
       } catch (e) {
         freteFalhas++;
       }
+      concluidosFrete++;
+      // atualiza a cada 15 envios (ou no ultimo) pra nao floodar o job com atualizacao demais -
+      // faixa de 50% a 88% do progresso total reservada pra essa etapa (a mais lenta de todas)
+      if (concluidosFrete % 15 === 0 || concluidosFrete === idsParaBuscar.length) {
+        const pct = 50 + Math.round((concluidosFrete / idsParaBuscar.length) * 38);
+        onProgress(pct, `Calculando frete: ${concluidosFrete}/${idsParaBuscar.length} envio(s)...`);
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
@@ -2930,6 +2948,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
   // o total da loja) - usado pelo fechamento do Amauri pra achar o gasto exato de cada produto
   // nesse MESMO periodo personalizado (antes so' tinha as janelas fixas de 7/15/30 dias, que nao
   // batiam com um periodo escolhido a dedo como "1 a 31 de julho").
+  onProgress(90, 'Buscando gasto de Ads do período...');
   let adsCusto = 0;
   let adsCampanhas = [];
   let adsItens = [];
@@ -2949,6 +2968,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
 
+  onProgress(96, 'Calculando vendas de hoje e títulos dos produtos...');
   // vendas de hoje - sempre calculado, independente do periodo escolhido acima
   const vendasHoje = { pedidos: 0, faturamento: 0, unidades: 0 };
   try {
@@ -2981,6 +3001,7 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     itensVendidosArr.forEach(x => { x.titulo = titulos[x.itemId] || null; });
   } catch (e) { log.avisos.push('Nao foi possivel buscar o titulo dos itens vendidos (ranking vai mostrar so o item_id): ' + e.message); }
 
+  onProgress(100, 'Concluído.');
   return {
     periodo: { de, ate },
     faturamento, tarifas, cancelamentosValor, reembolsosValor,
@@ -2992,6 +3013,42 @@ async function buscarResumoFinanceiro(loja, de, ate) {
     avisos: log.avisos
   };
 }
+/* versao "job" do /financas/resumo (igual o padrao do Ads/Auditoria) - devolve jobId na hora e
+   roda em background, reportando progresso de verdade (0-100%) igual o onProgress acima ja
+   preenche - assim a tela pode mostrar uma barra de status real em vez de só "carregando...".
+   A rota antiga /financas/resumo continua existindo do jeito que estava (sincrona, sem
+   progresso) - nenhum outro caller precisa mudar. */
+const resumoJobs = new Map();
+function gerarJobIdResumo() { return 'res_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+async function rodarResumoJob(jobId, loja, periodo, deQuery, ateQuery) {
+  const job = resumoJobs.get(jobId);
+  try {
+    const { de, ate } = calcularPeriodoResumo(periodo, deQuery, ateQuery);
+    const resumo = await buscarResumoFinanceiro(loja, de, ate, (pct, etapa) => {
+      job.progresso = { feito: pct, total: 100, etapa };
+    });
+    job.resultado = { loja, periodo, resumo };
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro'; job.erro = e.message;
+  }
+}
+app.get('/financas/resumo-job/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const periodo = req.query.periodo || '30d';
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const jobId = gerarJobIdResumo();
+    resumoJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: 100, etapa: 'Iniciando...' }, resultado: null, erro: null, criadoEm: Date.now() });
+    rodarResumoJob(jobId, loja, periodo, req.query.de, req.query.ate); // fire-and-forget
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/financas/resumo-job/status', (req, res) => {
+  const job = resumoJobs.get(req.query.id);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
+  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
+});
 app.get('/financas/resumo', async (req, res) => {
   try {
     const loja = req.query.loja;
