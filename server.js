@@ -2373,6 +2373,69 @@ app.get('/debug/ads/estudo-diario/status', (req, res) => {
   if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
   res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
+/* v3 - mesma ideia do /estudo-diario, mas pra TODAS as campanhas da loja de uma vez so' - custa
+   EXATAMENTE a mesma quantidade de chamadas na API do ML (1 por dia, nao 1 por dia por campanha),
+   porque cada chamada do dia ja' devolve TODAS as campanhas do advertiser naquele dia - so' que
+   agora guardamos o resultado inteiro (todas as campanhas), nao filtramos so' 1 antes de salvar.
+   Ex.: /debug/ads/estudo-diario-loja/iniciar?loja=TorvStore&dias=90 */
+const estudoAdsLojaJobs = new Map();
+async function rodarEstudoDiarioLoja(jobId, loja, dias) {
+  const job = estudoAdsLojaJobs.get(jobId);
+  try {
+    const { primeiro } = await buscarAdvertiserId(loja);
+    const siteId = primeiro && primeiro.site_id;
+    const advertiserId = primeiro && primeiro.advertiser_id;
+    const porDia = [];
+    const avisos = [];
+    job.progresso = { feito: 0, total: dias };
+    for (let i = dias - 1; i >= 0; i--) {
+      const dia = dataYMD(Date.now() - i * 864e5);
+      try {
+        const resp = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de: dia, ate: dia });
+        const campanhas = {};
+        (resp.results || []).forEach(c => {
+          const m = c.metrics || {};
+          campanhas[c.id] = {
+            nome: c.name || '',
+            cost: m.cost || 0,
+            total_amount: m.total_amount || 0,
+            organic_units_amount: m.organic_units_amount || 0,
+            organic_units_quantity: m.organic_units_quantity || 0,
+            units_quantity: m.units_quantity || 0,
+            roas: m.roas || 0
+          };
+        });
+        porDia.push({ date: dia, campanhas });
+      } catch (e) {
+        avisos.push(`Falha no dia ${dia}: ${e.message}`);
+        porDia.push({ date: dia, campanhas: {}, erro: e.message });
+      }
+      job.progresso.feito++;
+      await sleep(300);
+    }
+    job.resultado = { loja, dias, porDia, avisos };
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro'; job.erro = e.message;
+  }
+}
+app.get('/debug/ads/estudo-diario-loja/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const dias = Math.min(90, Math.max(1, parseInt(req.query.dias || '90', 10)));
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const jobId = gerarJobIdAds();
+    estudoAdsLojaJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: dias }, resultado: null, erro: null, criadoEm: Date.now() });
+    rodarEstudoDiarioLoja(jobId, loja, dias); // fire-and-forget
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/debug/ads/estudo-diario-loja/status', (req, res) => {
+  const jobId = req.query.id;
+  const job = estudoAdsLojaJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
+  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
+});
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
    Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
    aqui - isso fica pro Doca decidir depois, conforme formos definindo filtros/calculos. Uma
