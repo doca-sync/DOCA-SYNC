@@ -2297,6 +2297,56 @@ app.get('/debug/ads/diario', async (req, res) => {
     res.json({ ok: false, erro: 'Muitas metricas invalidas seguidas.', metricas_removidas: removidas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
 });
+/* rota de teste v2 - o /debug/ads/diario acima (aggregation_type=DAILY) tem um bug confirmado:
+   ele IGNORA o filtro de campanha e devolve a LOJA INTEIRA (todas as campanhas somadas) em cada
+   "dia", mesmo passando campaign_ids - confirmado comparando a soma dos "dias" devolvidos (bateu
+   quase exato com o custo de TODAS as campanhas da loja no periodo) contra o agregado real de 90
+   dias so' da campanha pedida (bem menor). Aqui em vez disso repete, um dia de cada vez, a MESMA
+   chamada que o /debug/ads/campanhas ja usa sem aggregation_type (essa sim confirmadamente
+   respeita o filtro por campanha, devolve um array com o "id" certo de cada uma) - mais lento
+   (1 chamada de API por dia, com pausa entre elas pra nao estourar rate limit) mas confiavel.
+   Ex.: /debug/ads/estudo-diario?loja=TorvStore&campanhaId=353706387&dias=30 */
+app.get('/debug/ads/estudo-diario', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const campanhaId = String(req.query.campanhaId || '');
+    const dias = Math.min(90, Math.max(1, parseInt(req.query.dias || '30', 10)));
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    const { primeiro } = await buscarAdvertiserId(loja);
+    const siteId = primeiro && primeiro.site_id;
+    const advertiserId = primeiro && primeiro.advertiser_id;
+    const resultado = [];
+    const avisos = [];
+    for (let i = dias - 1; i >= 0; i--) {
+      const dia = dataYMD(Date.now() - i * 864e5);
+      try {
+        const resp = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de: dia, ate: dia });
+        const camp = (resp.results || []).find(c => String(c.id) === campanhaId);
+        const m = (camp && camp.metrics) || {};
+        resultado.push({
+          date: dia,
+          cost: m.cost || 0,
+          direct_amount: m.direct_amount || 0,
+          indirect_amount: m.indirect_amount || 0,
+          total_amount: m.total_amount || 0,
+          organic_units_amount: m.organic_units_amount || 0,
+          organic_units_quantity: m.organic_units_quantity || 0,
+          units_quantity: m.units_quantity || 0,
+          roas: m.roas || 0,
+          acos: m.acos || 0,
+          sov: m.sov || 0,
+          semDados: !camp
+        });
+      } catch (e) {
+        avisos.push(`Falha no dia ${dia}: ${e.message}`);
+        resultado.push({ date: dia, cost: 0, direct_amount: 0, indirect_amount: 0, total_amount: 0, organic_units_amount: 0, organic_units_quantity: 0, units_quantity: 0, roas: 0, acos: 0, sov: 0, erro: e.message });
+      }
+      await sleep(300);
+    }
+    res.json({ ok: true, loja, campanhaId, dias, resultado, avisos });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+});
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
    Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
    aqui - isso fica pro Doca decidir depois, conforme formos definindo filtros/calculos. Uma
