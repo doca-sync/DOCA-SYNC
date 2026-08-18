@@ -3924,346 +3924,13 @@ function renderNotasFiscais(){
 
 /* ================= ADS (Product Ads · Mercado Livre) ================= */
 function adsCfg(){ return state.ads.cfg; }
-function campanhasAds(loja){ return state.ads.campanhas.filter(c=>c.loja===(loja||adsCfg().loja)); }
-
-function promptAds(){
-  const c=adsCfg();
-  return `Tarefa: leitura de anúncios patrocinados (Product Ads) — loja ${c.loja} (Mercado Livre)
-
-Use a aba do navegador já aberta e logada nesta loja. Não faça login, não troque de conta, não peça credenciais.
-Consulte o painel somente em modo leitura: não pausar, não reativar, não mudar orçamento, não mudar ROAS objetivo, não editar nada. Só olhar e anotar.
-
-NÃO CALCULE NADA — nem CTR, nem CVR, nem médias, nem sugestões. Isso eu calculo no meu sistema. Entregue só os dados brutos que já aparecem prontos na tela.
-
-ONDE BUSCAR
-No menu do Mercado Livre, vá em Publicidade → Product Ads → Campanhas. Essa tela lista TODAS as campanhas (ativas e pausadas) — anote mentalmente quantas existem no total e se há paginação (botão de próxima página ou numeração no rodapé da lista).
-
-PASSO A PASSO DENTRO DE CADA CAMPANHA (repita esses 6 passos pra CADA campanha da lista, uma de cada vez, até terminar todas — inclusive as que estiverem em outras páginas):
-1) Clique na campanha pra abrir os detalhes dela. Antes de ler os números, clique no ícone de lápis ✎ ao lado do bloco de métricas e marque para aparecer: Vendas atribuídas, Outras vendas, TACOS, Cliques, Impressões (essas cinco precisam estar marcadas — às vezes o painel não vem configurado assim por padrão).
-2) Anote: nome da campanha, Estado (ativa/pausada), Diagnóstico. Confira também se o produto anunciado tem a etiqueta/selo "MAIS VENDIDO" (também chamada de "Mercado Líder" às vezes) — normalmente aparece na miniatura ou no título do anúncio, dentro da própria página da campanha ou no anúncio em si. Anote SIM se tiver a etiqueta, NAO se não tiver.
-3) No topo da página, antes do bloco de métricas, tem um card "Orçamento médio diário" com o valor atual (com um lápis ✎ do lado pra editar — não clique, só leia) e o ROAS Objetivo. Se logo abaixo desse card aparecer uma caixinha de aviso do tipo "Você está perdendo X vendas por mês por falta de orçamento. Aumente-o à R$Y e venda mais.", anote esse X (vendas perdidas por mês) e esse Y (orçamento sugerido). Se não aparecer esse aviso, anote os dois como 0.
-4) A tela normalmente já abre com o filtro em "Últimos 30 dias" — não troque o filtro ainda. Primeiro expanda a seção "Ganho de leilões" (também pode aparecer como "Seus anúncios patrocinados versus sua concorrência") e anote os três percentuais de competitividade para esse período de 30 dias que já está aberto: Seus anúncios patrocinados foram exibidos / Não foram exibidos por falta de orçamento / Não foram exibidos por classificação.
-5) Ainda com o filtro em 30 dias, anote também: Vendas atribuídas, Outras vendas, TACOS, ROAS Realizado (às vezes aparece só como "ROAS", ao lado do ROAS Objetivo — se não tiver um valor separado por período, repita o mesmo ROAS Objetivo), Cliques, Impressões e CPC. Depois troque o filtro pra 15 dias e repita a mesma leitura (métricas + ROAS Realizado + Ganho de leilões). Depois troque pra 7 dias e repita de novo — capriche na leitura desse último, os últimos 7 dias costumam ser o período mais importante pra decisão. Pode ignorar a tabela de anúncios no rodapé da campanha, se houver — só preciso do total da campanha.
-6) Volte pra lista de campanhas (breadcrumb ou botão voltar do navegador) e abra a PRÓXIMA campanha ainda não lida. Repita os passos 1 a 5. Quando terminar todas as campanhas da página atual, se houver próxima página na lista, avance e continue até não sobrar nenhuma.
-
-Só escreva a tabela final depois de ter passado por TODAS as campanhas — não pare no meio nem entregue parcial sem avisar.
-
-FORMATO DE SAÍDA — entregue um bloco de código com tabela separada por TABULAÇÃO, com esta primeira linha exata:
-
-CAMPANHA	STATUS	DIAGNOSTICO	TEM_TAG	ORCAMENTO_DIARIO	ORCAMENTO_SUGERIDO	VENDAS_PERDIDAS_MES	ROAS_OBJETIVO	PERIODO	VENDAS_ATRIBUIDAS	OUTRAS_VENDAS	TACOS	ROAS_REALIZADO	CLIQUES	IMPRESSOES	CPC	EXIBIDO_PCT	SEM_ORCAMENTO_PCT	SEM_CLASSIF_PCT
-
-Regras:
-- TRÊS linhas por campanha — uma com PERIODO=7D, uma com 15D e uma com 30D. Os campos que não mudam com o período (nome, status, diagnóstico, tem tag, orçamento, orçamento sugerido, vendas perdidas por mês, ROAS objetivo) se repetem nas três linhas da mesma campanha.
-- TEM_TAG: escreva só SIM ou NAO.
-- Números com ponto decimal (ex.: 5.4), sem separador de milhar, sem "%", sem "R$", sem "un.", sem "x".
-- TACOS, EXIBIDO_PCT, SEM_ORCAMENTO_PCT e SEM_CLASSIF_PCT são percentuais — escreva só o número (ex.: 6.2 para 6,2%).
-- Se algum dado não existir ou não carregar, escreva 0. Não invente número.
-- Sem totais, sem comentários entre as linhas, sem linha de rodapé.
-
-Depois da tabela, diga quantas campanhas existem no total na lista e confirme que passou por todas (ou avise quais faltaram e por quê). Aponte qualquer coisa estranha que notar (campanha sem orçamento definido, métrica que não carregou, etc). Informe a data de hoje confirmada no painel.`;
-}
-
-const ADS_NORM=s=>String(s==null?'':s).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^A-Z0-9]+/g,'_').replace(/^_+|_+$/g,'');
-const ADS_COLS=['CAMPANHA','STATUS','DIAGNOSTICO','TEM_TAG','ORCAMENTO_DIARIO','ORCAMENTO_SUGERIDO','VENDAS_PERDIDAS_MES','ROAS_OBJETIVO','PERIODO','VENDAS_ATRIBUIDAS','OUTRAS_VENDAS','TACOS','ROAS_REALIZADO','CLIQUES','IMPRESSOES','CPC','EXIBIDO_PCT','SEM_ORCAMENTO_PCT','SEM_CLASSIF_PCT'];
-function adsNum(v){
-  let s=String(v==null?'':v).trim().replace(/[^\d.,\-]/g,'');
-  if(!s) return 0;
-  if(s.includes(',')&&!s.includes('.')) s=s.replace(',','.');
-  else s=s.replace(/,/g,'');
-  const x=parseFloat(s);
-  return isNaN(x)?0:x;
-}
-function adsPeriodoVazio(){ return {vendasAtribuidas:0,outrasVendas:0,tacos:0,roasRealizado:0,cliques:0,impressoes:0,cpc:0,exibidoPct:0,semOrcamentoPct:0,semClassifPct:0}; }
-function adsBool(v){ const s=ADS_NORM(v); return s==='SIM'||s==='S'||s==='TRUE'||s==='1'||s==='YES'||s==='X'; }
-function adsParsear(txt){
-  let t=String(txt||'');
-  const bl=t.match(/```[a-z]*\n([\s\S]*?)```/i); if(bl) t=bl[1];
-  let ls=t.split(/\r?\n/).map(l=>l.replace(/\r/g,'')).filter(l=>l.trim().length);
-  if(!ls.length) return {campanhas:[],linhas:0};
-  const comPipe=ls.filter(l=>l.includes('|')).length>=Math.max(2,ls.length*0.6);
-  let div;
-  if(comPipe){ ls=ls.filter(l=>!/^[\s|:+-]+$/.test(l)); div=l=>l.replace(/^\s*\|/,'').replace(/\|\s*$/,'').split('|').map(x=>x.trim()); }
-  else { const c0=ls[0]; const sep=c0.includes('\t')?'\t':(c0.split(';').length>c0.split(',').length?';':','); div=l=>l.split(sep).map(x=>x.replace(/^"|"$/g,'').trim()); }
-  if(!ls.length) return {campanhas:[],linhas:0};
-  const cab=div(ls[0]).map(ADS_NORM);
-  const idx={}; ADS_COLS.forEach(c=>{ const i=cab.indexOf(c); if(i>=0) idx[c]=i; });
-  if(idx.CAMPANHA===undefined||idx.PERIODO===undefined) return {campanhas:[],linhas:0,naoReconhecido:true,cab};
-  const porCampanha={};
-  let linhas=0;
-  for(let n=1;n<ls.length;n++){
-    const cel=div(ls[n]); if(cel.length<3) continue;
-    const nome=(cel[idx.CAMPANHA]||'').trim(); if(!nome) continue;
-    if(/^(total|totais|soma)/i.test(nome)) continue;
-    const periodoRaw=ADS_NORM(cel[idx.PERIODO]||'');
-    const pk=periodoRaw.startsWith('7')?'d7':periodoRaw.startsWith('15')?'d15':periodoRaw.startsWith('30')?'d30':null;
-    if(!pk) continue;
-    const g=k=>idx[k]!==undefined?adsNum(cel[idx[k]]):0;
-    if(!porCampanha[nome]) porCampanha[nome]={nome,status:(cel[idx.STATUS]||'').trim(),diagnostico:(cel[idx.DIAGNOSTICO]||'').trim(),
-      temTag:idx.TEM_TAG!==undefined?adsBool(cel[idx.TEM_TAG]):false,
-      orcamentoDiario:g('ORCAMENTO_DIARIO'),orcamentoSugerido:g('ORCAMENTO_SUGERIDO'),vendasPerdidasMes:g('VENDAS_PERDIDAS_MES'),roasObjetivo:g('ROAS_OBJETIVO'),periodos:{}};
-    porCampanha[nome].periodos[pk]={vendasAtribuidas:g('VENDAS_ATRIBUIDAS'),outrasVendas:g('OUTRAS_VENDAS'),tacos:g('TACOS'),roasRealizado:g('ROAS_REALIZADO'),
-      cliques:g('CLIQUES'),impressoes:g('IMPRESSOES'),cpc:g('CPC'),exibidoPct:g('EXIBIDO_PCT'),semOrcamentoPct:g('SEM_ORCAMENTO_PCT'),semClassifPct:g('SEM_CLASSIF_PCT')};
-    linhas++;
-  }
-  return {campanhas:Object.values(porCampanha),linhas,idx,cab};
-}
-function aplicarColagemAds(loja,campanhasNovas){
-  snapshot('importação de leitura de Ads ('+loja+')');
-  campanhasNovas.forEach(cn=>{
-    ['d7','d15','d30'].forEach(pk=>{ if(!cn.periodos[pk]) cn.periodos[pk]=adsPeriodoVazio(); });
-    let camp=state.ads.campanhas.find(c=>c.loja===loja&&c.nome.toUpperCase()===cn.nome.toUpperCase());
-    if(!camp){ camp={id:gerarId('camp'),loja,nome:cn.nome}; state.ads.campanhas.push(camp); }
-    camp.status=cn.status; camp.diagnostico=cn.diagnostico; camp.temTag=!!cn.temTag; camp.orcamentoDiario=cn.orcamentoDiario; camp.orcamentoSugerido=cn.orcamentoSugerido||0; camp.vendasPerdidasMes=cn.vendasPerdidasMes||0; camp.roasObjetivo=cn.roasObjetivo;
-    camp.periodos=cn.periodos; camp.lidoEm=Date.now();
-    const dia=hoje();
-    ['d7','d15','d30'].forEach(pk=>{
-      const p=cn.periodos[pk];
-      state.ads.hist.push({data:dia,loja,campanha:cn.nome,periodo:pk,roasObjetivo:cn.roasObjetivo,
-        tacos:p.tacos,vendasAtribuidas:p.vendasAtribuidas,outrasVendas:p.outrasVendas,cliques:p.cliques,impressoes:p.impressoes,
-        exibidoPct:p.exibidoPct,semOrcamentoPct:p.semOrcamentoPct});
-    });
-  });
-  const chaves=[...new Set(state.ads.hist.map(h=>h.loja+'|'+h.campanha))];
-  chaves.forEach(ch=>{
-    const i=ch.indexOf('|'), loja2=ch.slice(0,i), nome2=ch.slice(i+1);
-    const meus=state.ads.hist.filter(h=>h.loja===loja2&&h.campanha===nome2);
-    if(meus.length>300){ const fora=meus.slice(0,meus.length-300); state.ads.hist=state.ads.hist.filter(h=>fora.indexOf(h)<0); }
-  });
-  adsCfg().loja=loja;
-  persist();
-}
-/* diagnóstico + sugestões de uma campanha, com base na leitura de 30 dias */
-/* escolhe a janela mais recente com volume suficiente pra não tirar conclusão de amostra pequena — prioriza 7 dias, que costuma ser o período mais importante pra decisão */
-function periodoBaseAds(camp){
-  const d7=camp.periodos.d7||adsPeriodoVazio();
-  if((d7.cliques||0)>=10||(d7.impressoes||0)>=200) return {chave:'d7',dados:d7,rotulo:'7d'};
-  const d15=camp.periodos.d15||adsPeriodoVazio();
-  if((d15.cliques||0)>=10) return {chave:'d15',dados:d15,rotulo:'15d'};
-  return {chave:'d30',dados:camp.periodos.d30||adsPeriodoVazio(),rotulo:'30d'};
-}
-/* compara a média diária dos últimos 7 dias com a média diária da janela anterior (15d, ou 30d se 15d vazio) pra indicar se cliques/impressões estão subindo ou caindo — sem precisar coletar dado dia a dia */
-/* compara a media diaria dos ultimos 7 dias com a media diaria dos ultimos 30 dias */
-function adsTendencia(camp){
-  const d7=camp.periodos.d7||adsPeriodoVazio(), d30=camp.periodos.d30||adsPeriodoVazio();
-  const calc=campo=>{
-    const m7=(d7[campo]||0)/7, m30=(d30[campo]||0)/30;
-    if(!m30) return {dir:'eq',m7,base:0,deltaPct:0};
-    const delta=(m7-m30)/m30;
-    return {dir:delta>0.12?'up':(delta<-0.12?'dn':'eq'),m7,base:m30,deltaPct:delta*100};
-  };
-  return {cliques:calc('cliques'),impressoes:calc('impressoes')};
-}
-function setaTend(dir){ return dir==='up'?'▲':(dir==='dn'?'▼':'='); }
-/* tendencia do ROAS realizado: compara os ultimos 7 dias com os 15 dias (janela um pouco mais longa) — no ROAS, subir é bom (mais retorno), diferente da tendencia de cliques/impressoes */
-function adsTendenciaRoas(camp){
-  const d7=(camp.periodos.d7||adsPeriodoVazio()).roasRealizado||0;
-  const d15=(camp.periodos.d15||adsPeriodoVazio()).roasRealizado||0;
-  if(!d15) return {dir:'eq',pct:0};
-  const pct=(d7-d15)/d15*100;
-  return {dir:pct>3?'up':(pct<-3?'dn':'eq'),pct};
-}
-/* produto do Doca vinculado manualmente a esta campanha (pra puxar dado real de estoque/vendas) */
-function produtoDaCampanhaAds(camp){
-  return camp.produtoId?(state.produtos.find(p=>p.id===camp.produtoId)||null):null;
-}
-/* vendas/dia da campanha: usa a média real do produto vinculado no Doca (mais confiável) quando existir;
-   senão estima pela janela de leitura da campanha (vendas atribuídas + orgânicas, dividido pelos dias do período) */
-function vendasDiaAds(camp,base){
-  const p=produtoDaCampanhaAds(camp);
-  if(p){ const m=mediaVendasDiaria(p); if(m!=null&&m>0) return {valor:m,fonte:'doca'}; }
-  const dias=base.chave==='d7'?7:(base.chave==='d15'?15:30);
-  const total=(base.dados.vendasAtribuidas||0)+(base.dados.outrasVendas||0);
-  return {valor:dias>0?total/dias:0,fonte:'ads'};
-}
-/* risco de ruptura do produto vinculado, usando a mesma lista/prazo já usado no alerta da Visão Geral */
-function rupturaAds(camp){
-  const p=produtoDaCampanhaAds(camp); if(!p) return null;
-  const dias=(typeof fullCfg==='function'?(fullCfg().diasAlertaRuptura||10):10);
-  const item=rupturaProximaLista(dias).find(r=>r.produto.id===p.id);
-  return item||null;
-}
-/* responde a "pergunta chave": quantas vendas/dia o histórico já mostrou com TACOS perto da meta,
-   e se isso for menos que 10, qual foi o menor TACOS que já rendeu 10+ vendas/dia */
-function perguntaChaveAds(loja,nomeCampanha,metaTacos){
-  const regs=state.ads.hist.filter(h=>h.loja===loja&&h.campanha===nomeCampanha&&h.periodo==='d30'&&h.roasObjetivo>0);
-  if(regs.length<2) return null;
-  const porRoas={};
-  regs.forEach(h=>{ (porRoas[h.roasObjetivo]=porRoas[h.roasObjetivo]||[]).push(h); });
-  const chaves=Object.keys(porRoas);
-  if(chaves.length<2) return null;
-  const resumo=chaves.map(k=>{
-    const l=porRoas[k];
-    const tacosMedio=l.reduce((a,x)=>a+x.tacos,0)/l.length;
-    const vendasDiaMedia=l.reduce((a,x)=>a+((x.vendasAtribuidas||0)+(x.outrasVendas||0))/30,0)/l.length;
-    return {roas:Number(k),tacosMedio,vendasDiaMedia,leituras:l.length};
-  });
-  const naMeta=resumo.filter(r=>Math.abs(r.tacosMedio-metaTacos)<=2).sort((a,b)=>b.vendasDiaMedia-a.vendasDiaMedia)[0]||null;
-  let precisaPara10=null;
-  if(!naMeta||naMeta.vendasDiaMedia<10){
-    const acima10=resumo.filter(r=>r.vendasDiaMedia>=10).sort((a,b)=>a.tacosMedio-b.tacosMedio)[0];
-    if(acima10) precisaPara10=acima10;
-  }
-  return {naMeta,precisaPara10,resumo:resumo.sort((a,b)=>a.roas-b.roas)};
-}
-function analisarCampanhaAds(camp,cfg){
-  const teto=cfg.tacosTeto||6;
-  const base=periodoBaseAds(camp);
-  const p=base.dados;
-  const vendas=p.vendasAtribuidas||0, organicas=p.outrasVendas||0, totalVendas=vendas+organicas;
-  const aportePct=totalVendas>0?(vendas/totalVendas*100):null;
-  const ctrPct=p.impressoes>0?(p.cliques/p.impressoes*100):null;
-  const cvrPct=p.cliques>0?(vendas/p.cliques*100):null;
-  const tacos=p.tacos||0;
-  const tend=adsTendencia(camp);
-  const sug=[];
-  if(tacos>teto){
-    /* árvore de decisão: ruptura de estoque (prioridade máxima, é físico) > TAG de mais vendido (preserva posição) >
-       volume de vendas/dia (cruzado com o Doca quando a campanha estiver vinculada a um produto) */
-    const vd=vendasDiaAds(camp,base);
-    const rupt=rupturaAds(camp);
-    if(rupt) sug.push({tipo:'aviso',grupo:'tacos',
-      texto:`Esse produto está previsto pra zerar o estoque em ${rupt.dias} dia(s) (${fmtData(rupt.diaZero)}) — suba o ROAS objetivo em +2 pontos pra segurar o ritmo de venda e não ficar sem estoque antes da hora.`,
-      curto:`🚨 Ruptura em ${rupt.dias}d — subir ROAS +2pt pra segurar o estoque`});
-    else if(camp.temTag) sug.push({tipo:'ok',grupo:'tacos',
-      texto:`Esse anúncio tem a etiqueta de mais vendido — melhor manter o ROAS objetivo como está pra não perder a posição, mesmo com TACOS acima da meta (${tacos.toFixed(1)}% x ${teto}%).`,
-      curto:`Tem TAG de mais vendido — manter ROAS pra não perder posição`});
-    else if(vd.valor>20) sug.push({tipo:'roas',grupo:'tacos',
-      texto:`Média de ${vd.valor.toFixed(1)} vendas/dia (${vd.fonte==='doca'?'dado real do estoque':'estimado pelos dados de ads'}) — volume alto o suficiente pra subir o ROAS objetivo em passos de até 1 ponto por vez até convergir com a meta de TACOS (${teto}%).`,
-      curto:`${vd.valor.toFixed(0)} vendas/dia — subir ROAS até a meta (${teto}%)`});
-    else if(vd.valor<10) sug.push({tipo:'info',grupo:'tacos',
-      texto:`Só ${vd.valor.toFixed(1)} vendas/dia (${vd.fonte==='doca'?'dado real do estoque':'estimado pelos dados de ads'}) — volume ainda baixo pra decidir com segurança. Melhor manter o ROAS objetivo como está e esperar o volume crescer.`,
-      curto:`${vd.valor.toFixed(1)} vendas/dia — volume baixo, manter ROAS`});
-    else if(organicas>0) sug.push({tipo:'roas',grupo:'tacos',
-      texto:`${vd.valor.toFixed(1)} vendas/dia, sem a etiqueta de mais vendido e já com venda orgânica presente — dá pra subir o ROAS objetivo aos poucos, 0,5 ponto por vez, até chegar na meta.`,
-      curto:`${vd.valor.toFixed(0)} vendas/dia, com orgânica — subir ROAS +0,5pt`});
-    else sug.push({tipo:'aviso',grupo:'tacos',
-      texto:`${vd.valor.toFixed(1)} vendas/dia mas ainda sem venda orgânica — parece que ainda depende de ads pra vender. Melhor não subir o ROAS ainda; espere a venda orgânica aparecer.`,
-      curto:`${vd.valor.toFixed(0)} vendas/dia, sem orgânica — não subir ROAS ainda`});
-  } else if(aportePct!=null&&aportePct<30){
-    sug.push({tipo:'roas',grupo:'tacos',
-      texto:`TACOS confortável (${tacos.toFixed(1)}% x ${teto}%) nos últimos ${base.rotulo} e aporte publicitário já abaixo de 30% — tem espaço pra descer um pouco o ROAS objetivo (também aos poucos, 0,5 a 1 ponto) pra ganhar mais volume sem estourar a meta.`,
-      curto:`TACOS ok, aporte baixo — pode descer ROAS +0,5–1 pt`});
-  } else {
-    sug.push({tipo:'ok',grupo:'tacos',texto:`TACOS dentro da meta (${tacos.toFixed(1)}% x ${teto}%) nos últimos ${base.rotulo}. Sem necessidade de mexer no ROAS agora.`,curto:`TACOS dentro da meta`});
-  }
-  if(aportePct!=null){
-    if(aportePct>60) sug.push({tipo:'info',texto:`Aporte publicitário em ${aportePct.toFixed(1)}% — típico de anúncio ainda rankeando e ganhando volume.`,curto:`Aporte ${aportePct.toFixed(0)}% — rankeando`});
-    else if(aportePct>=45) sug.push({tipo:'info',texto:`Aporte publicitário em ${aportePct.toFixed(1)}% — faixa saudável, costuma ser onde o TACOS fica mais perto da meta.`,curto:`Aporte ${aportePct.toFixed(0)}% — saudável`});
-    else if(aportePct>=30) sug.push({tipo:'info',texto:`Aporte publicitário em ${aportePct.toFixed(1)}% — anúncio maduro, rentabilizando.`,curto:`Aporte ${aportePct.toFixed(0)}% — maduro`});
-    else sug.push({tipo:'atencao',texto:`Aporte publicitário em ${aportePct.toFixed(1)}%, abaixo de 30% — vale acompanhar pra não perder alcance.`,curto:`Aporte ${aportePct.toFixed(0)}% — vigiar alcance`});
-  }
-  if(ctrPct!=null){
-    if(ctrPct<0.4) sug.push({tipo:'atencao',texto:`CTR baixo (${ctrPct.toFixed(2)}%) — revise a foto de capa do anúncio, pode não estar atrativa.`,curto:`CTR baixo — revisar foto de capa`});
-    else if(ctrPct>1.5) sug.push({tipo:'ok',texto:`CTR ótimo (${ctrPct.toFixed(2)}%).`,curto:`CTR ótimo`});
-    else sug.push({tipo:'info',texto:`CTR dentro do esperado (${ctrPct.toFixed(2)}%).`,curto:`CTR ok`});
-  }
-  if(cvrPct!=null){
-    if(cvrPct<10) sug.push({tipo:'atencao',texto:`CVR baixo (${cvrPct.toFixed(1)}%) — revise oferta, preço, estrutura do anúncio ou concorrência.`,curto:`CVR baixo — revisar oferta/preço`});
-    else if(cvrPct>30) sug.push({tipo:'ok',texto:`CVR ótimo (${cvrPct.toFixed(1)}%).`,curto:`CVR ótimo`});
-    else sug.push({tipo:'info',texto:`CVR na faixa esperada (${cvrPct.toFixed(1)}%).`,curto:`CVR ok`});
-  }
-  const p7ForOrcamento=camp.periodos.d7||adsPeriodoVazio();
-  if(p7ForOrcamento.semOrcamentoPct>0){
-    const atual=camp.orcamentoDiario||0;
-    /* preferir o valor que o proprio Mercado Livre ja sugere na campanha (mais preciso que uma estimativa nossa) — só cai pra fórmula própria se não tiver essa leitura */
-    const temSugestaoML=camp.orcamentoSugerido>0;
-    const novo=temSugestaoML?camp.orcamentoSugerido:Math.ceil(atual*(1+p7ForOrcamento.semOrcamentoPct/100)/5)*5;
-    const perdidas=camp.vendasPerdidasMes>0?` (o Mercado Livre estima ${fmtInt(camp.vendasPerdidasMes)} vendas perdidas por mês)`:'';
-    sug.push({tipo:'atencao',texto:`Nos últimos 7 dias, ${p7ForOrcamento.semOrcamentoPct.toFixed(0)}% das oportunidades não foram exibidas por falta de orçamento — considere subir o orçamento diário de ${fmtMoney(atual)} para ${temSugestaoML?'':'perto de '}${fmtMoney(novo)}${temSugestaoML?' (sugestão do próprio Mercado Livre)':' (estimativa)'}${perdidas}, pra durar o dia todo e não perder leilões.`,curto:`Sem orçamento ${p7ForOrcamento.semOrcamentoPct.toFixed(0)}% (7d) — subir pra ${fmtMoney(novo)}${temSugestaoML?' (ML)':''}`});
-  }
-  if(p.exibidoPct>55) sug.push({tipo:'info',texto:`Seus anúncios ganharam o leilão em ${p.exibidoPct.toFixed(1)}% das oportunidades — acima de 50%, pode estar pagando por venda que já aconteceria organicamente.`,curto:`Leilões ${p.exibidoPct.toFixed(0)}% — pode estar pagando por venda orgânica`});
-  else if(p.exibidoPct>0&&p.exibidoPct<45) sug.push({tipo:'info',texto:`Seus anúncios ganharam o leilão em ${p.exibidoPct.toFixed(1)}% das oportunidades, abaixo de 50% — perdendo impressões e cliques.`,curto:`Leilões ${p.exibidoPct.toFixed(0)}% — perdendo alcance`});
-  if(tend.cliques.dir==='up'&&tend.impressoes.dir==='up') sug.push({tipo:'ok',grupo:'tendencia',texto:`Cliques e impressões em alta nos últimos 7 dias frente aos últimos 30 — campanha ganhando tração.`,curto:`Cliques e impressões subindo`});
-  else if(tend.cliques.dir==='dn'&&tend.impressoes.dir==='dn'){
-    const quedaCl=Math.abs(tend.cliques.deltaPct), quedaIm=Math.abs(tend.impressoes.deltaPct);
-    const rtRoas=adsTendenciaRoas(camp);
-    const p7q=camp.periodos.d7||adsPeriodoVazio(), p30q=camp.periodos.d30||adsPeriodoVazio();
-    let palpite;
-    if(p7q.semOrcamentoPct>10||p7q.semOrcamentoPct>p30q.semOrcamentoPct) palpite='o orçamento diário pode estar acabando mais cedo — tem sinal de falta de orçamento nos últimos 7 dias';
-    else if(rtRoas.dir==='up') palpite='pode ser reflexo do ROAS mais conservador, participando de menos leilões';
-    else if(p7q.exibidoPct<p30q.exibidoPct) palpite='os leilões ganhos também caíram — pode estar perdendo espaço pra concorrência';
-    else palpite='vale checar orçamento diário, ROAS objetivo e concorrência';
-    sug.push({tipo:'atencao',grupo:'tendencia',
-      texto:`Investigar: cliques caíram ${quedaCl.toFixed(0)}% e impressões caíram ${quedaIm.toFixed(0)}% nos últimos 7 dias frente aos últimos 30. Palpite: ${palpite}.`,
-      curto:`Cliques ↓${quedaCl.toFixed(0)}% e impressões ↓${quedaIm.toFixed(0)}% — ${palpite}`});
-  }
-  else if(tend.impressoes.dir==='dn'&&tend.cliques.dir!=='dn') sug.push({tipo:'info',grupo:'tendencia',texto:`Impressões em queda (${Math.abs(tend.impressoes.deltaPct).toFixed(0)}% nos últimos 7 dias frente aos últimos 30) mas cliques seguraram — pode ser perda de leilão pra concorrência; de olho na competitividade.`,curto:`Impressões ↓${Math.abs(tend.impressoes.deltaPct).toFixed(0)}%, cliques seguram`});
-  return {aportePct,ctrPct,cvrPct,tacos,base,tend,sugestoes:sug};
-}
-/* olha o histórico de leituras e compara os ROAS objetivo já usados nesta campanha */
-function melhorRoasHistoricoAds(loja,nomeCampanha,tetoTacos){
-  const regs=state.ads.hist.filter(h=>h.loja===loja&&h.campanha===nomeCampanha&&h.periodo==='d30'&&h.roasObjetivo>0);
-  if(!regs.length) return null;
-  const porRoas={};
-  regs.forEach(h=>{ (porRoas[h.roasObjetivo]=porRoas[h.roasObjetivo]||[]).push(h); });
-  const chaves=Object.keys(porRoas);
-  if(chaves.length<2) return null;
-  const resumo=chaves.map(k=>{
-    const l=porRoas[k];
-    const tacosMedio=l.reduce((a,x)=>a+x.tacos,0)/l.length;
-    const vendasMedia=l.reduce((a,x)=>a+x.vendasAtribuidas,0)/l.length;
-    return {roas:Number(k),tacosMedio,vendasMedia,leituras:l.length};
-  });
-  const dentroDoTeto=resumo.filter(r=>r.tacosMedio<=tetoTacos);
-  const base=(dentroDoTeto.length?dentroDoTeto:resumo).slice().sort((a,b)=>b.vendasMedia-a.vendasMedia);
-  return {melhor:base[0],todos:resumo.slice().sort((a,b)=>a.roas-b.roas)};
-}
-/* nota de saúde da campanha perante a nossa margem — substitui o status bruto (ativa/pausada) por algo que já diz se precisa de ação.
-   base: margem média (ex.: 18%) menos a meta de TACOS (ex.: 6%) define onde a campanha "começa a ficar saudável" (ex.: 12%) —
-   acima da margem = urgente (TACOS come mais que a margem inteira); entre esse ponto e a margem = atenção;
-   entre a meta e esse ponto = bom (pode ser produto novo ainda rankeando); na meta ou abaixo = saudável. */
-/* 4 fases entre a meta (TACOS ideal) e a margem (teto absoluto):
-   até a meta = Saudável (no alvo); da meta até o meio do caminho = Estável (folga, comum rankeando);
-   do meio até a margem = Se pagando (margem apertada, quase no limite); acima da margem = Investindo (gastando mais que a margem permite). */
-function notaCampanhaAds(A,camp,cfg){
-  const meta=cfg.tacosTeto||6;
-  const margem=cfg.margemPct||18;
-  const meio=(meta+margem)/2;
-  const t=A.tacos;
-  if(t>margem) return {nivel:'investindo',emoji:'🔴',label:'Investindo',cor:'var(--danger)',bg:'rgba(251,113,133,.15)'};
-  if(t>meio) return {nivel:'sepagando',emoji:'🟠',label:'Se pagando',cor:'var(--warn)',bg:'rgba(251,191,36,.13)'};
-  if(t>meta+1) return {nivel:'estavel',emoji:'🟡',label:'Estável',cor:'var(--info)',bg:'rgba(96,165,250,.13)'};
-  return {nivel:'saudavel',emoji:'🟢',label:'Saudável',cor:'var(--ok)',bg:'rgba(52,211,153,.13)'};
-}
-/* score pro modo ranking: maior número de vendas, com bônus quando o TACOS está o mais próximo possível da meta (nem muito acima, nem muito abaixo) */
-function scoreRankingAds(camp,cfg,Apre){
-  const A=Apre||analisarCampanhaAds(camp,cfg);
-  const teto=cfg.tacosTeto||6;
-  const vendas=A.base.dados.vendasAtribuidas||0;
-  const proximidade=1-Math.min(Math.abs(A.tacos-teto)/teto,1);
-  return vendas*(0.5+0.5*proximidade);
-}
-function abrirColarAds(){
-  const body=openModal(true);
-  body.innerHTML=`<h3>Colar resultado do Cowork — Ads</h3>
-    <p class="hint" style="margin:0 0 12px">Cole a tabela que o Cowork devolveu. As campanhas coladas substituem os dados atuais das MESMAS campanhas desta loja (por nome) — as demais continuam como estavam.</p>
-    <div class="form-grid"><label>Loja destes dados<select id="caLoja">${optsLojas(adsCfg().loja)}</select></label></div>
-    <textarea id="caTxt" rows="9" style="width:100%;margin-top:12px" placeholder="CAMPANHA	STATUS	DIAGNOSTICO	ORCAMENTO_DIARIO	ROAS_OBJETIVO	PERIODO	VENDAS_ATRIBUIDAS	OUTRAS_VENDAS	TACOS	CLIQUES	IMPRESSOES	CPC	EXIBIDO_PCT	SEM_ORCAMENTO_PCT	SEM_CLASSIF_PCT"></textarea>
-    <div id="caPrev"></div>
-    <div class="modal-actions"><button class="btn" id="caCanc">Cancelar</button><button class="btn gold" id="caOk">Importar</button></div>`;
-  const ta=document.getElementById('caTxt');
-  const prev=()=>{
-    const r=adsParsear(ta.value), elp=document.getElementById('caPrev');
-    if(!ta.value.trim()){ elp.innerHTML=''; return; }
-    if(r.naoReconhecido){ elp.innerHTML=`<div class="aviso perigo" style="margin-top:11px"><span>⚠</span><span><b>Não reconheci as colunas.</b> Encontrei: <i>${esc((r.cab||[]).join(' | ').slice(0,180))}</i>.</span></div>`; return; }
-    if(!r.campanhas.length){ elp.innerHTML='<div class="aviso perigo" style="margin-top:11px"><span>⚠</span><span>Não identifiquei nenhuma linha válida.</span></div>'; return; }
-    elp.innerHTML=`<div class="aviso ok" style="margin-top:11px"><span>✓</span><span><b>${r.campanhas.length} campanha(s)</b> reconhecida(s) (${r.linhas} linha(s) no total, 3 por campanha).</span></div>`;
-  };
-  ta.oninput=prev; ta.onpaste=()=>setTimeout(prev,30);
-  document.getElementById('caCanc').onclick=closeModal;
-  document.getElementById('caOk').onclick=()=>{
-    const r=adsParsear(ta.value);
-    if(!r.campanhas.length){ alert(r.naoReconhecido?'Não reconheci as colunas desta tabela.':'Não consegui ler nenhuma linha.'); return; }
-    const loja=document.getElementById('caLoja').value;
-    aplicarColagemAds(loja,r.campanhas);
-    closeModal();
-    toast(r.campanhas.length+' campanha(s) importada(s) para '+loja+'.');
-  };
-}
-/* ids das campanhas com o card expandido — só controla a UI, não precisa persistir */
-let adsExpandido=new Set();
-let adsOrdenacao='recentes';
-let adsSoUrgente=false;
+/* (removido: sistema antigo de "colagem" manual — copiar prompt, rodar num agente à parte
+   numa aba do Mercado Livre logada, colar o resultado de volta. Felipe decidiu não usar mais
+   esse fluxo, então tirei campanhasAds/promptAds/adsParsear/aplicarColagemAds/perguntaChaveAds/
+   analisarCampanhaAds/melhorRoasHistoricoAds/scoreRankingAds/abrirColarAds e os states
+   adsExpandido/adsOrdenacao/adsSoUrgente, que só existiam pra alimentar esse fluxo morto.
+   O histórico TACOS × ROAS agora vem sozinho da API - ver registrarHistoricoAds/
+   pontoInflexaoAds mais abaixo. */
 let adsPeriodoApi='d7';
 let adsSincronizando=false;
 let adsDetalheAberto=new Set();
@@ -4349,125 +4016,6 @@ function custoAdsCampanhaCalculado(camp){
   const achada=campanhas.find(cc=>String(cc.id)===String(camp.id));
   return achada?(achada.cost||0):null;
 }
-function renderAds(){
-  const el=document.getElementById('tab-ads'); if(!el) return;
-  const c=adsCfg();
-  const camps=campanhasAds(c.loja).slice().sort((a,b)=>(b.lidoEm||0)-(a.lidoEm||0));
-  let linhas=camps.map(camp=>{ const A=analisarCampanhaAds(camp,c); return {camp,A,N:notaCampanhaAds(A,camp,c)}; });
-  if(adsSoUrgente){
-    linhas=linhas.filter(l=>l.N.nivel==='investindo');
-    linhas.sort((a,b)=>(b.camp.orcamentoDiario||0)-(a.camp.orcamentoDiario||0));
-  } else if(adsOrdenacao==='ranking'){
-    linhas.sort((a,b)=>scoreRankingAds(b.camp,c,b.A)-scoreRankingAds(a.camp,c,a.A));
-  } else if(adsOrdenacao==='tag'){
-    linhas.sort((a,b)=>(b.camp.temTag?1:0)-(a.camp.temTag?1:0)||vendasDiaAds(b.camp,b.A.base).valor-vendasDiaAds(a.camp,a.A.base).valor);
-  } else if(adsOrdenacao==='vendasdia'){
-    linhas.sort((a,b)=>vendasDiaAds(b.camp,b.A.base).valor-vendasDiaAds(a.camp,a.A.base).valor);
-  }
-  el.innerHTML=`
-    <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
-    <div class="card">
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
-        <label>Loja<select id="adLoja">${optsLojas(c.loja)}</select></label>
-        <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}"></label>
-        <label>Margem média (%)<input id="adMargem" type="number" min="0" step="1" value="${c.margemPct}"></label>
-      </div>
-      <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
-        <button class="btn" id="adPrompt">🤖 Copiar prompt</button>
-        <button class="btn" id="adColar">📋 Colar resultado</button>
-        <span style="flex:1"></span>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Ordenar
-          <select id="adOrdenar" ${adsSoUrgente?'disabled':''} style="width:auto;font-size:12.5px;padding:6px 8px">
-            <option value="recentes" ${adsOrdenacao==='recentes'?'selected':''}>Mais recentes</option>
-            <option value="ranking" ${adsOrdenacao==='ranking'?'selected':''}>Ranking (vendas x TACOS na meta)</option>
-            <option value="tag" ${adsOrdenacao==='tag'?'selected':''}>Com TAG de mais vendido primeiro</option>
-            <option value="vendasdia" ${adsOrdenacao==='vendasdia'?'selected':''}>Maior vendas/dia (dado do Doca)</option>
-          </select>
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
-          <input type="checkbox" id="adUrgente" ${adsSoUrgente?'checked':''} style="width:auto"> 🚨 Só "Investindo" (acima da margem, maior orçamento primeiro)
-        </label>
-      </div>
-      <p class="hint">Copie o prompt, rode no Cowork com a aba do Mercado Livre desta loja já aberta e logada, e cole a tabela que ele devolver. Cada card abaixo abre um resumo — clique nele pra ver os números completos de 30/15/7 dias.</p>
-    </div>
-    ${linhas.length?linhas.map(({camp,A,N})=>{
-      const hst=melhorRoasHistoricoAds(camp.loja,camp.nome,c.tacosTeto);
-      const pq=perguntaChaveAds(camp.loja,camp.nome,c.tacosTeto);
-      const p7=camp.periodos.d7||adsPeriodoVazio(), p15=camp.periodos.d15||adsPeriodoVazio(), p30=camp.periodos.d30||adsPeriodoVazio();
-      const aberto=adsExpandido.has(camp.id);
-      const clDir=A.tend.cliques.dir, imDir=A.tend.impressoes.dir, roasTend=adsTendenciaRoas(camp);
-      /* mostra a sugestão de TACOS/ROAS e a de tendência de cliques/impressões juntas no resumo (quando existirem) */
-      const sTacos=A.sugestoes.find(s=>s.grupo==='tacos');
-      const sTend=A.sugestoes.find(s=>s.grupo==='tendencia');
-      const acoesResumo=[sTacos,sTend].filter(Boolean);
-      const notaCor=N.cor, notaBg=N.bg;
-      return `<div class="envio-card ads-card">
-        <div class="envio-head" data-adstoggle="${camp.id}" style="cursor:pointer;user-select:none;flex-direction:column;align-items:stretch;gap:8px;margin-bottom:${aberto?'12px':'0'}">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="envio-tit" style="font-size:14px">${esc(camp.nome)}</span>
-            <span class="badge" style="background:${notaBg};color:${notaCor}" title="Status: ${esc(camp.status||'—')}">${N.emoji} ${N.label}</span>
-            <span class="badge ${A.tacos>c.tacosTeto?'tag-zero':''}" title="TACOS na janela de ${A.base.rotulo}">TACOS ${A.tacos.toFixed(1)}% <span style="opacity:.65">· ${A.base.rotulo}</span></span>
-            ${camp.temTag?'<span class="badge" style="background:rgba(139,92,246,.18);color:var(--violet-l)" title="Produto anunciado tem a etiqueta de mais vendido">🏷️ TAG</span>':''}
-            <span class="badge" title="ROAS objetivo da campanha">🎯 obj ${camp.roasObjetivo||0}x</span>
-            <span class="badge" title="ROAS realizado nos últimos 7 dias, comparado aos 15 dias">🚀 real (7d) ${(p7.roasRealizado||0).toFixed(2)}x <span class="${roasTend.dir==='up'?'okv':(roasTend.dir==='dn'?'pend':'')}">${roasTend.dir==='up'?'▲':(roasTend.dir==='dn'?'▼':'=')}${Math.abs(roasTend.pct).toFixed(0)}%</span></span>
-            <span class="badge" title="Ganho de leilões: % de vezes que seu anúncio ganhou o leilão (${A.base.rotulo})">🏆 Leilões ${(A.base.dados.exibidoPct||0).toFixed(0)}%</span>
-            <span class="badge" title="Cliques: tendência (últimos 7d vs últimos 30d), CTR e CVR na janela de ${A.base.rotulo}">👆 <span class="${clDir==='up'?'okv':(clDir==='dn'?'pend':'')}">${setaTend(clDir)}</span> CTR ${A.ctrPct!=null?A.ctrPct.toFixed(1)+'%':'—'} · CVR ${A.cvrPct!=null?A.cvrPct.toFixed(1)+'%':'—'}</span>
-            <span class="badge" title="Impressões: tendência (últimos 7d vs últimos 30d)">👁 <span class="${imDir==='up'?'okv':(imDir==='dn'?'pend':'')}">${setaTend(imDir)}</span></span>
-            ${A.aportePct!=null?`<span class="badge">Aporte ${A.aportePct.toFixed(0)}%</span>`:''}
-          </div>
-          ${acoesResumo.map(s=>`<div style="font-size:12.5px;color:var(--text);opacity:.85">💡 ${esc(s.curto||s.texto)}</div>`).join('')}
-          <div style="text-align:center;opacity:.55;font-size:12px;border-top:1px dashed var(--line2);padding-top:6px">${aberto?'▲ recolher':'▼ ver 30 / 15 / 7 dias completos'}</div>
-        </div>
-        ${aberto?`<div class="ads-detalhe">
-        <div class="envio-meta" style="margin-bottom:10px">${camp.status?esc(camp.status)+' · ':''}${camp.diagnostico?'Diagnóstico: '+esc(camp.diagnostico)+' · ':''}Orçamento diário ${fmtMoney(camp.orcamentoDiario)}${camp.orcamentoSugerido>0?' (ML sugere '+fmtMoney(camp.orcamentoSugerido)+')':''} · ROAS objetivo ${camp.roasObjetivo}x${camp.lidoEm?' · lido '+new Date(camp.lidoEm).toLocaleString('pt-BR'):''}</div>
-        <div class="form-grid" style="grid-template-columns:1fr;margin-bottom:10px">
-          <label style="font-size:12px">Produto anunciado (vincula com o estoque/FULL do Doca pra vendas/dia reais e alerta de ruptura)
-            <select data-adsproduto="${camp.id}">
-              <option value="">— nenhum vinculado —</option>
-              ${state.produtos.filter(p=>p.loja===camp.loja).map(p=>`<option value="${p.id}" ${camp.produtoId===p.id?'selected':''}>${esc(p.sku||'')}${p.codigo?' · '+esc(p.codigo):''}</option>`).join('')}
-            </select>
-          </label>
-        </div>
-        <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th></th><th class="num">30D</th><th class="num">15D</th><th class="num">7D</th></tr></thead><tbody>
-          <tr><td>Vendas atribuídas (ads)</td><td class="num okv">${fmtInt(p30.vendasAtribuidas)}</td><td class="num okv">${fmtInt(p15.vendasAtribuidas)}</td><td class="num okv">${fmtInt(p7.vendasAtribuidas)}</td></tr>
-          <tr><td>Outras vendas (orgânicas)</td><td class="num">${fmtInt(p30.outrasVendas)}</td><td class="num">${fmtInt(p15.outrasVendas)}</td><td class="num">${fmtInt(p7.outrasVendas)}</td></tr>
-          <tr><td>TACOS</td><td class="num ${p30.tacos>c.tacosTeto?'pend':''}">${p30.tacos.toFixed(1)}%</td><td class="num ${p15.tacos>c.tacosTeto?'pend':''}">${p15.tacos.toFixed(1)}%</td><td class="num ${p7.tacos>c.tacosTeto?'pend':''}">${p7.tacos.toFixed(1)}%</td></tr>
-          <tr><td>ROAS realizado</td><td class="num">${(p30.roasRealizado||0).toFixed(1)}x</td><td class="num">${(p15.roasRealizado||0).toFixed(1)}x</td><td class="num">${(p7.roasRealizado||0).toFixed(1)}x</td></tr>
-          <tr><td>Cliques</td><td class="num">${fmtInt(p30.cliques)} <span class="muted" style="font-weight:400">(${(p30.cliques/30).toFixed(0)}/dia)</span></td><td class="num">${fmtInt(p15.cliques)} <span class="muted" style="font-weight:400">(${(p15.cliques/15).toFixed(0)}/dia)</span></td><td class="num">${fmtInt(p7.cliques)} <span class="muted" style="font-weight:400">(${(p7.cliques/7).toFixed(0)}/dia)</span></td></tr>
-          <tr><td>Impressões</td><td class="num">${fmtInt(p30.impressoes)} <span class="muted" style="font-weight:400">(${(p30.impressoes/30).toFixed(0)}/dia)</span></td><td class="num">${fmtInt(p15.impressoes)} <span class="muted" style="font-weight:400">(${(p15.impressoes/15).toFixed(0)}/dia)</span></td><td class="num">${fmtInt(p7.impressoes)} <span class="muted" style="font-weight:400">(${(p7.impressoes/7).toFixed(0)}/dia)</span></td></tr>
-          <tr><td>CPC</td><td class="num">${fmtMoney(p30.cpc)}</td><td class="num">${fmtMoney(p15.cpc)}</td><td class="num">${fmtMoney(p7.cpc)}</td></tr>
-          <tr><td>Leilões ganhos</td><td class="num">${p30.exibidoPct.toFixed(1)}%</td><td class="num">${p15.exibidoPct.toFixed(1)}%</td><td class="num">${p7.exibidoPct.toFixed(1)}%</td></tr>
-          <tr><td>Sem orçamento</td><td class="num ${p30.semOrcamentoPct>0?'pend':''}">${p30.semOrcamentoPct.toFixed(1)}%</td><td class="num ${p15.semOrcamentoPct>0?'pend':''}">${p15.semOrcamentoPct.toFixed(1)}%</td><td class="num ${p7.semOrcamentoPct>0?'pend':''}">${p7.semOrcamentoPct.toFixed(1)}%</td></tr>
-          <tr><td>Sem classificação</td><td class="num">${p30.semClassifPct.toFixed(1)}%</td><td class="num">${p15.semClassifPct.toFixed(1)}%</td><td class="num">${p7.semClassifPct.toFixed(1)}%</td></tr>
-        </tbody></table></div>
-        <div class="aviso" style="margin-top:12px;flex-direction:column;align-items:stretch;gap:6px">
-          <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">Sugestões (base: últimos ${A.base.rotulo})</b>
-          ${A.sugestoes.map(s=>`<div style="display:flex;gap:8px"><span>${s.tipo==='roas'?'🎯':s.tipo==='atencao'?'⚠':s.tipo==='ok'?'✓':'ℹ'}</span><span>${esc(s.texto)}</span></div>`).join('')}
-          ${hst?`<div style="display:flex;gap:8px;border-top:1px solid var(--line2);padding-top:8px;margin-top:2px"><span>📊</span><span>Com base no histórico, o ROAS objetivo <b>${hst.melhor.roas}x</b> teve o melhor resultado (TACOS médio ${hst.melhor.tacosMedio.toFixed(1)}%, média de ${hst.melhor.vendasMedia.toFixed(1)} vendas/leitura em 30d, ${hst.melhor.leituras} leitura(s)).</span></div>`
-          :`<div style="display:flex;gap:8px;border-top:1px solid var(--line2);padding-top:8px;margin-top:2px"><span>📊</span><span>Ainda não há histórico com ROAS objetivo diferentes pra comparar — vai se formando a cada leitura nova.</span></div>`}
-          ${pq?`<div style="display:flex;gap:8px;border-top:1px solid var(--line2);padding-top:8px;margin-top:2px"><span>🔑</span><span>${pq.naMeta?`Perto da meta de TACOS (~${c.tacosTeto}%), essa campanha já fez em média <b>${pq.naMeta.vendasDiaMedia.toFixed(1)} vendas/dia</b> com ROAS objetivo ${pq.naMeta.roas}x.`:'Ainda não há leitura com TACOS perto da meta pra responder "quantas vendas/dia com TACOS na meta?".'}${pq.precisaPara10?` Pra bater as 10 vendas/dia, o histórico mostra que foi preciso ROAS objetivo <b>${pq.precisaPara10.roas}x</b> (TACOS médio ${pq.precisaPara10.tacosMedio.toFixed(1)}%).`:''} <span style="opacity:.7">Histórico por ROAS: ${pq.resumo.map(r=>`${r.roas}x→${r.vendasDiaMedia.toFixed(1)}/dia (${r.tacosMedio.toFixed(1)}%)`).join(' · ')}</span></span></div>`:''}
-        </div>
-        </div>`:''}
-      </div>`;
-    }).join(''):`<p class="empty-inline">${adsSoUrgente?'Nenhuma campanha em ação urgente no momento. 🎉':'Nenhuma leitura ainda para '+esc(c.loja)+'. Copie o prompt acima e rode no Cowork pra começar.'}</p>`}
-  `;
-  document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); };
-  document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } snapshot('ajuste da meta de TACOS'); c.tacosTeto=v; persist(); };
-  document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } snapshot('ajuste da margem média'); c.margemPct=v; persist(); };
-  document.getElementById('adPrompt').onclick=()=>copiarTexto(promptAds(),'Prompt copiado. Rode no Cowork com a aba do Mercado Livre desta loja aberta.');
-  document.getElementById('adColar').onclick=abrirColarAds;
-  document.getElementById('adOrdenar').onchange=e=>{ adsOrdenacao=e.target.value; renderAds(); };
-  document.getElementById('adUrgente').onchange=e=>{ adsSoUrgente=e.target.checked; renderAds(); };
-  el.querySelectorAll('[data-adsproduto]').forEach(sel=>sel.onchange=e=>{
-    const id=sel.dataset.adsproduto; const camp=camps.find(x=>x.id===id); if(!camp) return;
-    camp.produtoId=e.target.value||null; persist(); renderAds();
-  });
-  el.querySelectorAll('[data-adstoggle]').forEach(h=>h.onclick=()=>{
-    const id=h.dataset.adstoggle;
-    if(adsExpandido.has(id)) adsExpandido.delete(id); else adsExpandido.add(id);
-    renderAds();
-  });
-}
 /* ---------- Ads: puxado direto da API (Product Ads / Mercado Ads) ----------
    Substitui o renderAds() manual acima (ficou parado, sem uso, caso algum pedaço da análise
    dele — scores, sugestões etc — sirva de referência depois). Por enquanto só mostra tudo que
@@ -4492,8 +4040,64 @@ async function adsSincronizarLoja(loja){
   const alvo=adsApiLoja(loja);
   alvo.periodos=jData.periodos||{};
   alvo.atualizadoEm=jData.atualizadoEm;
+  /* loga 1 leitura de hoje por campanha (janela de 7 dias, mais estável) pro histórico que
+     alimenta o ponto de inflexão TACOS × ROAS - sozinho, sem precisar de colagem manual. */
+  const p7=alvo.periodos.d7;
+  if(p7&&p7.results) registrarHistoricoAds(loja,p7.results);
   persist();
   return jData;
+}
+/* histórico diário de TACOS/ROAS/vendas por campanha, alimentado sozinho a cada "Atualizar"
+   (puxa da API) - guarda 1 leitura por campanha por dia (sincronizar de novo no mesmo dia
+   substitui a leitura de hoje em vez de duplicar). É a base pra achar o ponto de inflexão
+   TACOS × ROAS de cada campanha (ver pontoInflexaoAds) - sem precisar de colagem manual. */
+function adsHistArr(){ if(!Array.isArray(state.adsHist)) state.adsHist=[]; return state.adsHist; }
+function registrarHistoricoAds(loja,campanhas){
+  const arr=adsHistArr();
+  const dia=hoje();
+  campanhas.forEach(camp=>{
+    const m=camp.metrics||{};
+    const vendasDia=((m.units_quantity||0)+(m.organic_units_quantity||0))/7;
+    const reg={data:dia,loja,campanhaId:camp.id,campanhaNome:camp.title||camp.name||camp.id,
+      roasObjetivo:camp.roas_target||0,orcamento:camp.budget||0,tacos:calcTacos(m),roasRealizado:m.roas||0,vendasDia};
+    const i=arr.findIndex(x=>x.data===dia&&x.loja===loja&&x.campanhaId===camp.id);
+    if(i>=0) arr[i]=reg; else arr.push(reg);
+  });
+  /* guarda só os últimos 400 registros por loja+campanha pra não crescer pra sempre */
+  const chaves=[...new Set(arr.map(h=>h.loja+'|'+h.campanhaId))];
+  chaves.forEach(ch=>{
+    const i=ch.indexOf('|'), loja2=ch.slice(0,i), cid=ch.slice(i+1);
+    const meus=arr.filter(h=>h.loja===loja2&&String(h.campanhaId)===cid);
+    if(meus.length>400){ const foraIds=new Set(meus.slice(0,meus.length-400).map(x=>x.data));
+      state.adsHist=arr.filter(h=>!(h.loja===loja2&&String(h.campanhaId)===cid&&foraIds.has(h.data))); }
+  });
+}
+/* responde 2 perguntas com o histórico de 1 campanha, agrupando as leituras por qual ROAS
+   objetivo estava configurado em cada uma (cada valor de ROAS objetivo = 1 "experimento"):
+   1) meta de vendas/dia: qual ROAS objetivo já sustentou essa meta, e com que TACOS médio.
+   2) ponto de inflexão: dentre todos os experimentos já feitos, qual teve o melhor equilíbrio
+      de TACOS baixo + ROAS alto + vendas altas ao mesmo tempo (o "ponto máximo de otimização"
+      que a campanha já alcançou de verdade, não uma meta hipotética). */
+function pontoInflexaoAds(loja,campanhaId,metaVendasDia){
+  const regs=adsHistArr().filter(h=>h.loja===loja&&String(h.campanhaId)===String(campanhaId));
+  if(regs.length<2) return null;
+  const porRoas={};
+  regs.forEach(h=>{ (porRoas[h.roasObjetivo]=porRoas[h.roasObjetivo]||[]).push(h); });
+  const resumo=Object.keys(porRoas).map(k=>{
+    const l=porRoas[k];
+    const tacosMedio=l.reduce((a,x)=>a+x.tacos,0)/l.length;
+    const roasMedio=l.reduce((a,x)=>a+x.roasRealizado,0)/l.length;
+    const vendasDiaMedia=l.reduce((a,x)=>a+x.vendasDia,0)/l.length;
+    return {roas:Number(k),tacosMedio,roasMedio,vendasDiaMedia,leituras:l.length};
+  });
+  if(resumo.length<2) return null;
+  const bateMeta=resumo.filter(r=>r.vendasDiaMedia>=metaVendasDia).sort((a,b)=>a.tacosMedio-b.tacosMedio)[0]||null;
+  /* score simples e explicável: mais vendas × mais ROAS ÷ menos TACOS - cada experimento com
+     leitura de verdade concorre nesse número, o maior vence. Exige tacosMedio>0 pra não deixar
+     um dia com custo zero (sem investir nada) ganhar por divisão por zero. */
+  const candidatos=resumo.filter(r=>r.tacosMedio>0&&r.vendasDiaMedia>0);
+  const otimo=candidatos.length?candidatos.slice().sort((a,b)=>(b.vendasDiaMedia*b.roasMedio/b.tacosMedio)-(a.vendasDiaMedia*a.roasMedio/a.tacosMedio))[0]:null;
+  return {resumo:resumo.sort((a,b)=>a.roas-b.roas),bateMeta,otimo};
 }
 /* TACOS (Total Advertising Cost of Sale) = custo do anúncio dividido pela receita TOTAL do
    produto anunciado (venda atribuída ao anúncio + venda orgânica dele) — diferente do ACOS,
@@ -4708,6 +4312,13 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
+          ${(()=>{ const pi=pontoInflexaoAds(c.loja,camp.id,10); if(!pi) return `<p class="hint" style="margin:6px 0 10px">📊 Ainda não há histórico suficiente pra achar o ponto de inflexão TACOS × ROAS desta campanha — vai se formando a cada vez que clicar em Atualizar (1 leitura por dia).</p>`;
+            return `<div class="aviso" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
+              <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">📊 TACOS × ROAS — histórico desta campanha</b>
+              <div>🎯 ${pi.bateMeta?`Pra bater <b>10 vendas/dia</b>, o histórico mostra que bastou ROAS objetivo <b>${pi.bateMeta.roas}x</b> (TACOS médio ${pi.bateMeta.tacosMedio.toFixed(1)}%, ROAS realizado médio ${pi.bateMeta.roasMedio.toFixed(2)}x, ${pi.bateMeta.leituras} leitura(s)).`:'Ainda não há ROAS objetivo que tenha sustentado 10 vendas/dia em média no histórico.'}</div>
+              <div>🏆 ${pi.otimo?`Ponto de inflexão (melhor equilíbrio já alcançado): ROAS objetivo <b>${pi.otimo.roas}x</b> — TACOS médio ${pi.otimo.tacosMedio.toFixed(1)}%, ROAS realizado ${pi.otimo.roasMedio.toFixed(2)}x, ${pi.otimo.vendasDiaMedia.toFixed(1)} vendas/dia (${pi.otimo.leituras} leitura(s)).`:'Ainda não há experimento suficiente pra apontar o ponto ótimo.'}</div>
+              <div style="opacity:.7;font-size:12px">Histórico por ROAS objetivo: ${pi.resumo.map(r=>`${r.roas}x → ${r.vendasDiaMedia.toFixed(1)}/dia · TACOS ${r.tacosMedio.toFixed(1)}% · ROAS real ${r.roasMedio.toFixed(2)}x (${r.leituras}L)`).join(' · ')}</div>
+            </div>`; })()}
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;margin:2px 0 8px">
             <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>
             🏅 Anúncio tem a etiqueta/selo de "Mais vendido" no Mercado Livre <span class="muted">(marque manualmente ao conferir)</span>
