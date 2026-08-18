@@ -4012,23 +4012,19 @@ async function adsBuscarPersonalizado(loja){
    Lucro Bruto" chama /financas/resumo de novo na hora, igual ao padrão já usado no Amauri e no
    Personalizado acima (sem precisar de um botão separado). */
 let adsLucroResultado=null, adsLucroCarregando=false, adsLucroErro=null, adsLucroPeriodoCalculado=null;
+let adsLucroProgresso=null; // {feito,total,etapa} - progresso real do job em background
 async function calcularLucroAdsPeriodo(loja,periodoApi){
   const personalizado=periodoApi==='personalizado';
   if(personalizado&&(!adsPersonalizadoDe||!adsPersonalizadoAte)) return;
-  adsLucroCarregando=true; adsLucroErro=null; renderAds();
+  adsLucroCarregando=true; adsLucroErro=null; adsLucroProgresso=null; renderAds();
   try{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
     const mapaPeriodo={d1:'hoje',d7:'7d',d15:'15d',d30:'30d'};
-    const params=new URLSearchParams({loja,periodo:personalizado?'personalizado':(mapaPeriodo[periodoApi]||'7d')});
-    if(personalizado){ params.set('de',adsPersonalizadoDe); params.set('ate',adsPersonalizadoAte); }
-    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
-    let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
-    if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao calcular (HTTP '+r.status+').'));
-    adsLucroResultado=j.resumo;
+    const periodo=personalizado?'personalizado':(mapaPeriodo[periodoApi]||'7d');
+    const resumo=await fetchResumoJob(loja,periodo,adsPersonalizadoDe,adsPersonalizadoAte,(p)=>{ adsLucroProgresso=p; renderAds(); });
+    adsLucroResultado=resumo;
     adsLucroPeriodoCalculado=periodoApi;
   }catch(e){ adsLucroErro=e.message; }
-  finally{ adsLucroCarregando=false; renderAds(); }
+  finally{ adsLucroCarregando=false; adsLucroProgresso=null; renderAds(); }
 }
 /* itens de resumo.ads.itens (gasto de Ads calculado por item_id, ver buscarItensAdsPeriodo no
    backend) que pertencem a esta campanha - normalmente 1, mas soma se vier mais de um */
@@ -4413,6 +4409,7 @@ function renderAds(){
       ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
       ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
+      ${adsLucroCarregando?(adsLucroProgresso&&adsLucroProgresso.total?barraProgresso(adsLucroProgresso.feito,adsLucroProgresso.total,'💰 '+(adsLucroProgresso.etapa||'Calculando custo/lucro do período...')):barraIndeterminada('💰 Calculando custo/lucro do período...')):''}
       ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
     </div>
@@ -4526,9 +4523,13 @@ function renderAds(){
   if(btnPersCalc) btnPersCalc.onclick=()=>{
     /* antes só calculava o Lucro/custo quando o filtro já estava em "Maior Lucro Bruto" -
        por isso o custo ficava em branco no personalizado mesmo trocando de filtro depois.
-       Agora calcula sempre, igual ao "Atualizar" nos outros períodos. */
+       Agora calcula sempre, igual ao "Atualizar" nos outros períodos. A Sugestão de ROAS (90
+       dias, sempre a mesma janela independente do período escolhido aqui em cima) também
+       precisa disparar aqui, porque o botão "Atualizar" (que normalmente dispara ela) fica
+       escondido quando o período é personalizado. */
     adsBuscarPersonalizado(c.loja);
     calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
+    iniciarSugestaoRoasLoja(c.loja);
   };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
