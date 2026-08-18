@@ -4028,6 +4028,20 @@ async function calcularLucroAdsPeriodo(loja,periodoApi){
 }
 /* itens de resumo.ads.itens (gasto de Ads calculado por item_id, ver buscarItensAdsPeriodo no
    backend) que pertencem a esta campanha - normalmente 1, mas soma se vier mais de um */
+/* acha o objeto de campanha (precisa pra chamar margemContribuicaoCampanha) pelo id, procurando
+   em qualquer período já carregado no state dessa loja - não depende do período selecionado na
+   tela nesse momento, porque a Sugestão de ROAS roda em background e pode terminar depois de
+   trocar de período. */
+function _campanhaPorId(loja,campanhaId){
+  const dados=adsApiLoja(loja);
+  const periodos=dados&&dados.periodos||{};
+  for(const k of ['d30','d15','d7','d1']){
+    const arr=(periodos[k]&&periodos[k].results)||[];
+    const achada=arr.find(c=>String(c.id)===String(campanhaId));
+    if(achada) return achada;
+  }
+  return null;
+}
 function itensDaCampanhaAds(camp){
   const itens=(adsLucroResultado&&adsLucroResultado.ads&&adsLucroResultado.ads.itens)||[];
   return itens.filter(it=>String(it.campaignId)===String(camp.id));
@@ -4077,7 +4091,7 @@ function custoAdsCampanhaCalculado(camp){
 let adsSugestaoRoasJobId=null, adsSugestaoRoasStatus='idle', adsSugestaoRoasProgresso=null, adsSugestaoRoasErro=null;
 let _adsSugestaoRoasPollTimer=null;
 function adsSugestaoRoasArr(){ if(!state.adsSugestaoRoas||typeof state.adsSugestaoRoas!=='object') state.adsSugestaoRoas={}; return state.adsSugestaoRoas; }
-function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct){
+function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct,metaTacos){
   const dias=[];
   porDia.forEach(d=>{
     const c=d.campanhas&&d.campanhas[campanhaId]; if(!c) return;
@@ -4112,9 +4126,90 @@ function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct){
   const nR=norm(resumo.map(r=>r.roasM),false);
   const nC=norm(resumo.map(r=>r.custoM),true);
   const nL=norm(resumo.map(r=>r.lucroM),false);
-  resumo.forEach((r,i)=>{ r.score=(nT[i]+nV[i]+nR[i]+nC[i]+nL[i])/5; });
-  resumo.sort((a,b)=>b.score-a.score);
-  return {ranking:resumo,sugestao:resumo[0],diasAmostrados:dias.length};
+  resumo.forEach((r,i)=>{ r.score=(nT[i]+nV[i]+nR[i]+nC[i]+nL[i])/5; r.eficiencia=r.custoM>0?r.lucroM/r.custoM:0; r.scoreIdeal=r.vendasM*r.lucroM*r.eficiencia; });
+  /* critério de escolha (pedido do Felipe, 18/08): dentro da meta de TACOS (1/3 da margem do
+     produto), escolhe a faixa de ROAS com maior "score ideal" = vendas/dia x lucro bruto/dia x
+     eficiência (lucro por real gasto) - as 3 coisas que ele quer maximizar juntas. Só entram
+     faixas com pelo menos 5 dias de amostra (dias<3-4 são fáceis de serem só dia de sorte, como
+     já vimos acontecer com o Afiador de Faca). Se nenhuma faixa com amostra suficiente bater a
+     meta de TACOS, não força uma sugestão - devolve null e mostra a faixa mais próxima só como
+     referência, pra não inventar confiança que os dados não têm. */
+  const N_MIN=5;
+  const elegiveis=resumo.filter(r=>r.dias>=N_MIN&&r.tacosM<=metaTacos);
+  let sugestao=null,dentroMeta=false,maisProxima=null;
+  if(elegiveis.length){ elegiveis.sort((a,b)=>b.scoreIdeal-a.scoreIdeal); sugestao=elegiveis[0]; dentroMeta=true; }
+  else { const comAmostra=resumo.filter(r=>r.dias>=N_MIN); if(comAmostra.length) maisProxima=[...comAmostra].sort((a,b)=>a.tacosM-b.tacosM)[0]; }
+  resumo.sort((a,b)=>b.scoreIdeal-a.scoreIdeal);
+  return {ranking:resumo,sugestao,dentroMeta,maisProxima,metaTacos,diasAmostrados:dias.length,metodo:'realizado_proxy'};
+}
+/* mesma ideia da funcao acima, mas agrupando pelo ROAS OBJETIVO REAL (via objetivoRealNaData,
+   alimentado pelo historico de mudancas) em vez do ROAS REALIZADO - metodo mais confiavel porque
+   usa o valor que realmente estava configurado em cada dia, nao uma aproximacao. So funciona pra
+   dias cobertos pelo historico de mudancas (os de fora ficam de fora do calculo) e exige pelo
+   menos 2 objetivos diferentes testados (senao nao da pra comparar nada). */
+function _adsCalcularBucketsCampanhaPorObjetivoReal(porDia,loja,campanhaId,margemPct,metaTacos){
+  const hist=historicoObjetivoCampanha(loja,campanhaId);
+  if(!hist.length) return null;
+  const dias=[];
+  porDia.forEach(d=>{
+    const c=d.campanhas&&d.campanhas[campanhaId]; if(!c) return;
+    if(!(c.cost>0)) return;
+    const obj=objetivoRealNaData(loja,campanhaId,d.date);
+    if(obj==null) return;
+    const receita=(c.total_amount||0)+(c.organic_units_amount||0);
+    if(receita<=0) return;
+    const tacos=(c.cost||0)/receita*100;
+    const vendasDia=(c.units_quantity||0)+(c.organic_units_quantity||0);
+    dias.push({date:d.date,cost:c.cost||0,receita,tacos,vendasDia,roas:c.roas||0,objetivo:obj});
+  });
+  if(dias.length<3) return null;
+  const porObjetivo={};
+  dias.forEach(d=>{ (porObjetivo[d.objetivo]=porObjetivo[d.objetivo]||[]).push(d); });
+  if(Object.keys(porObjetivo).length<2) return null;
+  let resumo=Object.keys(porObjetivo).map(k=>{
+    const l=porObjetivo[k];
+    const tacosM=l.reduce((a,x)=>a+x.tacos,0)/l.length;
+    const vendasM=l.reduce((a,x)=>a+x.vendasDia,0)/l.length;
+    const roasM=l.reduce((a,x)=>a+x.roas,0)/l.length;
+    const custoM=l.reduce((a,x)=>a+x.cost,0)/l.length;
+    const receitaM=l.reduce((a,x)=>a+x.receita,0)/l.length;
+    const margemM=receitaM*(margemPct/100);
+    const lucroM=margemM-custoM;
+    const eficiencia=custoM>0?lucroM/custoM:0;
+    return {faixa:Number(k),dias:l.length,tacosM,vendasM,roasM,custoM,receitaM,margemM,lucroM,eficiencia,scoreIdeal:vendasM*lucroM*eficiencia};
+  }).filter(r=>r.dias>=3);
+  if(resumo.length<2) return null;
+  const N_MIN=5;
+  const elegiveis=resumo.filter(r=>r.dias>=N_MIN&&r.tacosM<=metaTacos);
+  let sugestao=null,dentroMeta=false,maisProxima=null;
+  if(elegiveis.length){ elegiveis.sort((a,b)=>b.scoreIdeal-a.scoreIdeal); sugestao=elegiveis[0]; dentroMeta=true; }
+  else { const comAmostra=resumo.filter(r=>r.dias>=N_MIN); if(comAmostra.length) maisProxima=[...comAmostra].sort((a,b)=>a.tacosM-b.tacosM)[0]; }
+  resumo.sort((a,b)=>b.scoreIdeal-a.scoreIdeal);
+  return {ranking:resumo,sugestao,dentroMeta,maisProxima,metaTacos,diasAmostrados:dias.length,metodo:'objetivo_real'};
+}
+/* mini-editor do historico de ROAS objetivo de 1 campanha - lista, adiciona 1 por 1, ou
+   importa em lote colando varias linhas de uma vez (formato livre, ver parseImportacaoObjetivo).
+   Fica dentro do detalhe expandido da campanha, em Ads. */
+function renderHistoricoObjetivoCampanha(loja,campanhaId){
+  const hist=historicoObjetivoCampanha(loja,campanhaId);
+  const chave=loja+'|'+campanhaId;
+  return `<details style="margin:0 0 10px">
+    <summary style="cursor:pointer;font-size:12.5px;color:var(--muted)">🕐 Histórico de ROAS objetivo desta campanha (${hist.length} registro(s)) — clique pra ver/editar</summary>
+    <div style="margin-top:8px">
+      ${hist.length?`<table class="tbl-produtos" style="margin-bottom:8px"><thead><tr><th>Desde</th><th class="num">ROAS objetivo</th><th></th></tr></thead><tbody>
+        ${hist.map(h=>`<tr><td>${fmtData(h.desde)}</td><td class="num">${h.roas}x</td><td><button class="btn sm danger-outline" data-remobjhist="${chave}|${h.desde}">✕</button></td></tr>`).join('')}
+      </tbody></table>`:`<p class="hint" style="margin:0 0 8px">Nenhum registro ainda — o Doca grava sozinho quando detectar mudança no "Atualizar", mas você pode adicionar datas passadas aqui pra deixar a sugestão mais confiável mais rápido.</p>`}
+      <div class="acoes-linha" style="flex-wrap:wrap;gap:6px">
+        <input type="date" style="width:auto" data-objhistdata="${chave}">
+        <input type="text" inputmode="decimal" placeholder="ROAS ex: 6,5" style="width:90px" data-objhistroas="${chave}">
+        <button class="btn sm" data-objhistadd="${chave}">+ Adicionar</button>
+      </div>
+      <label style="display:block;font-size:11.5px;color:var(--muted);margin-top:8px">Ou cole em lote (uma mudança por linha, ex: "21/05/2026 = 6" ou "18/06 pra 7"):
+        <textarea rows="3" style="width:100%;margin-top:4px" placeholder="21/05/2026 = 6&#10;18/06 = 7&#10;29/06 = 6,67" data-objhistlote="${chave}"></textarea>
+      </label>
+      <button class="btn sm" style="margin-top:6px" data-objhistimportar="${chave}">Importar lote</button>
+    </div>
+  </details>`;
 }
 async function iniciarSugestaoRoasLoja(loja){
   try{
@@ -4139,12 +4234,29 @@ function _adsPollSugestaoRoas(loja){
       adsSugestaoRoasProgresso=j.progresso;
       if(j.status==='rodando'){ renderAds(); _adsPollSugestaoRoas(loja); return; }
       if(j.status==='erro'){ adsSugestaoRoasStatus='erro'; adsSugestaoRoasErro=j.erro||'Falha desconhecida.'; renderAds(); return; }
-      const margemPct=adsCfg().margemPct||18;
+      const margemPadrao=adsCfg().margemPct||18;
       const porDia=j.resultado.porDia;
       const idsCampanhas=new Set();
       porDia.forEach(d=>Object.keys(d.campanhas||{}).forEach(id=>idsCampanhas.add(id)));
       const porCampanha={};
-      idsCampanhas.forEach(id=>{ const res=_adsCalcularBucketsCampanha(porDia,id,margemPct); if(res) porCampanha[id]=res; });
+      idsCampanhas.forEach(id=>{
+        /* meta de TACOS = 1/3 da margem REAL do produto desta campanha (regra do Felipe, 18/08:
+           "a meta não é 6%, é 1/3 da margem do produto, pra cada produto vc vai ter que fazer o
+           cálculo") - não dá mais pra usar uma % genérica igual pra todas as campanhas da loja.
+           Usa margemContribuicaoCampanha (custo/tarifa/frete/imposto reais do produto, mesma conta
+           do card "Margem de Contribuição" em Ads) quando disponível; só cai pro padrão da loja se
+           o produto ainda não tem custo cadastrado ou o Lucro Bruto do período não rodou ainda. */
+        const camp=_campanhaPorId(loja,id);
+        let margemPct=margemPadrao, margemFonte='padrao_da_loja';
+        if(camp){
+          const mc=margemContribuicaoCampanha(camp,loja);
+          if(mc&&mc.faturamento>0){ margemPct=mc.margem/mc.faturamento*100; margemFonte='produto_real'; }
+        }
+        const metaTacos=margemPct/3;
+        let res=_adsCalcularBucketsCampanhaPorObjetivoReal(porDia,loja,id,margemPct,metaTacos);
+        if(!res) res=_adsCalcularBucketsCampanha(porDia,id,margemPct,metaTacos);
+        if(res){ res.margemPct=margemPct; res.margemFonte=margemFonte; porCampanha[id]=res; }
+      });
       const arr=adsSugestaoRoasArr();
       arr[loja]={calculadoEm:Date.now(),porCampanha};
       persist();
@@ -4189,6 +4301,50 @@ async function adsSincronizarLoja(loja){
    substitui a leitura de hoje em vez de duplicar). É a base pra achar o ponto de inflexão
    TACOS × ROAS de cada campanha (ver pontoInflexaoAds) - sem precisar de colagem manual. */
 function adsHistArr(){ if(!Array.isArray(state.adsHist)) state.adsHist=[]; return state.adsHist; }
+/* historico de ROAS OBJETIVO real (diferente do adsHist acima, que registra o ROAS REALIZADO por
+   dia) - aqui cada entrada diz "a partir desta data, o objetivo configurado passou a ser X".
+   Alimentado de duas formas: (1) automaticamente, toda vez que "Atualizar" roda e o objetivo
+   atual e diferente do ultimo conhecido, grava a mudanca com a data de hoje; (2) manualmente, na
+   tela de detalhe da campanha, quando o usuario ja sabe datas de mudancas passadas (antes do
+   Doca comecar a registrar sozinho). E a base pra bucketizar o estudo de 90 dias pelo objetivo
+   REAL configurado em cada dia, em vez do ROAS que calhou de ser realizado (proxy mais fraco,
+   usado so quando nao ha historico real suficiente ainda). */
+function adsObjetivoHistArr(){ if(!Array.isArray(state.adsObjetivoHist)) state.adsObjetivoHist=[]; return state.adsObjetivoHist; }
+function registrarMudancaObjetivo(loja,campanhaId,desde,roas){
+  const arr=adsObjetivoHistArr();
+  const cid=String(campanhaId);
+  const i=arr.findIndex(x=>x.loja===loja&&String(x.campanhaId)===cid&&x.desde===desde);
+  if(i>=0) arr[i].roas=roas; else arr.push({loja,campanhaId:cid,desde,roas});
+}
+function removerMudancaObjetivo(loja,campanhaId,desde){
+  state.adsObjetivoHist=adsObjetivoHistArr().filter(x=>!(x.loja===loja&&String(x.campanhaId)===String(campanhaId)&&x.desde===desde));
+}
+function historicoObjetivoCampanha(loja,campanhaId){
+  return adsObjetivoHistArr().filter(x=>x.loja===loja&&String(x.campanhaId)===String(campanhaId)).sort((a,b)=>a.desde<b.desde?-1:(a.desde>b.desde?1:0));
+}
+function objetivoRealNaData(loja,campanhaId,data){
+  const hist=historicoObjetivoCampanha(loja,campanhaId).filter(x=>x.desde<=data);
+  if(!hist.length) return null;
+  return hist[hist.length-1].roas;
+}
+/* aceita colar varias linhas tipo "21/05/2026 = 6" ou "18/06 pra 7" (ano opcional, assume o
+   atual) - extrai data + numero de cada linha, ignora o resto do texto */
+function parseImportacaoObjetivo(texto){
+  const linhas=String(texto||'').split(/\n+/).map(l=>l.trim()).filter(Boolean);
+  const anoAtual=new Date().getFullYear();
+  const out=[];
+  linhas.forEach(l=>{
+    const m=l.match(/(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?[^\d]+(\d+(?:[.,]\d+)?)/);
+    if(!m) return;
+    const dd=m[1].padStart(2,'0'), mm=m[2].padStart(2,'0');
+    let aaaa=m[3]?m[3]:String(anoAtual);
+    if(aaaa.length===2) aaaa='20'+aaaa;
+    const roas=Number(m[4].replace(',','.'));
+    if(isNaN(roas)) return;
+    out.push({desde:`${aaaa}-${mm}-${dd}`,roas});
+  });
+  return out;
+}
 function registrarHistoricoAds(loja,campanhas){
   const arr=adsHistArr();
   const dia=hoje();
@@ -4199,6 +4355,13 @@ function registrarHistoricoAds(loja,campanhas){
       roasObjetivo:camp.roas_target||0,orcamento:camp.budget||0,tacos:calcTacos(m),roasRealizado:m.roas||0,vendasDia};
     const i=arr.findIndex(x=>x.data===dia&&x.loja===loja&&x.campanhaId===camp.id);
     if(i>=0) arr[i]=reg; else arr.push(reg);
+    /* detecta mudanca de ROAS objetivo sozinho: se o valor atual for diferente do ultimo
+       registrado no historico real, grava a mudanca com a data de hoje (pedido do Felipe -
+       comeca a registrar quando perceber alteracao de roas). */
+    const objAtual=camp.roas_target||0;
+    const histObj=historicoObjetivoCampanha(loja,camp.id);
+    const ultimoObj=histObj.length?histObj[histObj.length-1]:null;
+    if(!ultimoObj||Number(ultimoObj.roas)!==Number(objAtual)) registrarMudancaObjetivo(loja,camp.id,dia,objAtual);
   });
   /* guarda só os últimos 400 registros por loja+campanha pra não crescer pra sempre */
   const chaves=[...new Set(arr.map(h=>h.loja+'|'+h.campanhaId))];
@@ -4381,14 +4544,14 @@ function renderAds(){
         ${botaoPeriodo('adPersonalizadoBtn',adsPersonalizadoDe,adsPersonalizadoAte)}
         `:`
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
-        <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}"></label>
+        <label>Meta de TACOS (1/3 da margem)<input id="adTeto" type="number" value="${(c.margemPct/3).toFixed(1)}" disabled title="Calculado automaticamente como 1/3 da Margem (%) ao lado - não é mais digitado manualmente"></label>
         `}
       </div>
       ${personalizado?`
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         <button class="btn gold" id="adPersonalizadoCalcular" ${adsPersonalizadoCarregando||!adsPersonalizadoDe||!adsPersonalizadoAte?'disabled':''}>${adsPersonalizadoCarregando?'Calculando...':'🔍 Calcular'}</button>
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}" style="width:70px"></label>
-        <label>Meta de TACOS (%)<input id="adTeto" type="number" min="0" step="0.5" value="${c.tacosTeto}" style="width:70px"></label>
+        <label>Meta de TACOS (1/3 margem)<input id="adTeto" type="number" value="${(c.margemPct/3).toFixed(1)}" style="width:70px" disabled title="Calculado automaticamente como 1/3 da Margem (%) ao lado"></label>
       </div>
       ${adsPersonalizadoErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsPersonalizadoErro)}</p>`:''}
       `:''}
@@ -4433,7 +4596,13 @@ function renderAds(){
           const sug=adsSugestaoRoasArr()[c.loja];
           const dc=sug&&sug.porCampanha[camp.id];
           if(!dc) return '';
-          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Sugestão de ROAS objetivo (90 dias, maior lucro + eficiência): ${dc.sugestao.faixa}x — lucro médio ${fmtMoney(dc.sugestao.lucroM)}/dia">💡 sugestão ROAS ${dc.sugestao.faixa}x</span>`;
+          if(!dc.sugestao){
+            return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Nenhum ROAS testado com amostra suficiente (mín. 5 dias) ficou dentro da meta de TACOS de ${dc.metaTacos.toFixed(1)}% (1/3 da margem) nos últimos 90 dias">⚠ sem ROAS dentro da meta de TACOS</span>`;
+          }
+          const real=dc.metodo==='objetivo_real';
+          const icone=real?'🔒':'💡';
+          const rotulo=real?'sugestão ROAS (real)':'sugestão ROAS (estimada)';
+          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="${real?'Baseado no histórico REAL de objetivo configurado':'Estimado por ROAS realizado - ainda não há histórico de mudança suficiente pra essa campanha'} (90 dias, dentro da meta de TACOS de ${dc.metaTacos.toFixed(1)}%): ${dc.sugestao.faixa}x — lucro médio ${fmtMoney(dc.sugestao.lucroM)}/dia">${icone} ${rotulo} ${dc.sugestao.faixa}x</span>`;
         })();
         return `<tr>
           <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
@@ -4472,14 +4641,27 @@ function renderAds(){
               if(adsSugestaoRoasStatus==='rodando') return `<p class="hint" style="margin:6px 0 10px">💡 Calculando a sugestão de ROAS objetivo (90 dias, todas as campanhas)...</p>`;
               return `<p class="hint" style="margin:6px 0 10px">💡 Sugestão de ROAS objetivo: clique em "Atualizar" pra calcular com base nos últimos 90 dias reais desta campanha.</p>`;
             }
+            const real=dadosCamp.metodo==='objetivo_real';
+            const margemReal=dadosCamp.margemFonte==='produto_real';
+            const margemLabel=margemReal?`margem real do produto: ${dadosCamp.margemPct.toFixed(1)}%`:`margem padrão da loja: ${dadosCamp.margemPct.toFixed(1)}% (produto sem custo cadastrado ou Lucro Bruto do período ainda não calculado — clique Atualizar de novo depois que o Lucro Bruto carregar pra usar a margem real)`;
+            const rankingHtml=dadosCamp.ranking.slice(0,6).map(r=>`${r.faixa}x → lucro ${fmtMoney(r.lucroM)}/dia (R${r.eficiencia.toFixed(2)}/real) · custo ${fmtMoney(r.custoM)}/dia · TACOS ${r.tacosM.toFixed(1)}% · ${r.vendasM.toFixed(1)}/dia (${r.dias}d)${r.tacosM<=dadosCamp.metaTacos?' ✓ dentro da meta':''}`).join(' · ');
+            if(!dadosCamp.sugestao){
+              return `<div class="aviso" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
+                <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">⚠ Sugestão de ROAS objetivo (90 dias) · meta de TACOS ${dadosCamp.metaTacos.toFixed(1)}% (1/3 da ${margemLabel})</b>
+                <div>Nenhum ROAS testado com amostra suficiente (mín. 5 dias) ficou dentro da meta de TACOS nos últimos 90 dias.${dadosCamp.maisProxima?` O mais próximo foi <b>${dadosCamp.maisProxima.faixa}x</b>, com TACOS médio de ${dadosCamp.maisProxima.tacosM.toFixed(2)}% (${dadosCamp.maisProxima.dias} dia(s) de amostra) — ainda acima da meta.`:''}</div>
+                <div style="opacity:.7;font-size:12px">Outras faixas testadas: ${rankingHtml}</div>
+                <div style="opacity:.6;font-size:11px">Calculado em ${new Date(sug.calculadoEm).toLocaleString('pt-BR')} · ${dadosCamp.diasAmostrados} dia(s) com venda no período. Pra fechar a meta, ou testa um ROAS mais alto ao vivo e acompanha o resultado, ou revisa se 1/3 da margem é realista pra esse produto especificamente.${margemReal?'':' ⚠ '+margemLabel}</div>
+              </div>`;
+            }
             const s=dadosCamp.sugestao;
             return `<div class="aviso" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
-              <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">💡 Sugestão de ROAS objetivo (90 dias, maior lucro + eficiência)</b>
-              <div>Deixar o ROAS objetivo em <b>${s.faixa}x</b> — TACOS médio ${s.tacosM.toFixed(2)}%, ${s.vendasM.toFixed(1)} vendas/dia, ROAS realizado ${s.roasM.toFixed(2)}x, custo médio ${fmtMoney(s.custoM)}/dia → lucro médio <b class="${s.lucroM>=0?'okv':'pend'}">${fmtMoney(s.lucroM)}/dia</b> (${s.dias} dia(s) de amostra, hoje está em ${camp.roas_target||0}x).</div>
-              <div style="opacity:.7;font-size:12px">Outras faixas testadas: ${dadosCamp.ranking.slice(0,5).map(r=>`${r.faixa}x → lucro ${fmtMoney(r.lucroM)}/dia · TACOS ${r.tacosM.toFixed(1)}% · ${r.vendasM.toFixed(1)}/dia (${r.dias}d)`).join(' · ')}</div>
-              <div style="opacity:.6;font-size:11px">Calculado em ${new Date(sug.calculadoEm).toLocaleString('pt-BR')} · ${dadosCamp.diasAmostrados} dia(s) com venda no período.</div>
+              <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">${real?'🔒':'💡'} Sugestão de ROAS objetivo (90 dias, dentro da meta de TACOS de ${dadosCamp.metaTacos.toFixed(1)}%) · ${real?'baseado no histórico REAL de objetivo':'estimado por ROAS realizado (proxy)'}</b>
+              <div>Deixar o ROAS objetivo em <b>${s.faixa}x</b> — TACOS médio ${s.tacosM.toFixed(2)}%, ${s.vendasM.toFixed(1)} vendas/dia, ROAS realizado ${s.roasM.toFixed(2)}x, custo médio ${fmtMoney(s.custoM)}/dia → lucro médio <b class="${s.lucroM>=0?'okv':'pend'}">${fmtMoney(s.lucroM)}/dia</b>, R${s.eficiencia.toFixed(2)} de lucro por real gasto em Ads (${s.dias} dia(s) de amostra, hoje está em ${camp.roas_target||0}x).</div>
+              <div style="opacity:.7;font-size:12px">Outras faixas testadas: ${rankingHtml}</div>
+              <div style="opacity:.6;font-size:11px">Calculado em ${new Date(sug.calculadoEm).toLocaleString('pt-BR')} · ${dadosCamp.diasAmostrados} dia(s) com venda no período · meta baseada na ${margemLabel}.${real?'':' Cadastre o histórico de mudanças de objetivo abaixo pra deixar essa sugestão mais confiável.'}</div>
             </div>`;
           })()}
+          ${renderHistoricoObjetivoCampanha(c.loja,camp.id)}
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;margin:2px 0 8px">
             <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>
             🏅 Anúncio tem a etiqueta/selo de "Mais vendido" no Mercado Livre <span class="muted">(marque manualmente ao conferir)</span>
@@ -4499,7 +4681,6 @@ function renderAds(){
     renderAds();
   };
   document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
-  document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.tacosTeto=v; persist(); renderAds(); };
   const btnAtualizar=document.getElementById('adAtualizar');
   if(btnAtualizar) btnAtualizar.onclick=async()=>{
     adsSincronizando=true; renderAds();
@@ -4540,6 +4721,38 @@ function renderAds(){
     dados.tagMaisVendido[chk.dataset.adstag]=chk.checked;
     persist();
     toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
+    renderAds();
+  });
+  /* histórico de ROAS objetivo por campanha - remover, adicionar 1 a 1, importar em lote */
+  el.querySelectorAll('[data-remobjhist]').forEach(b=>b.onclick=()=>{
+    const partes=String(b.dataset.remobjhist).split('|');
+    const desde=partes.pop(), cid=partes.pop(), loja=partes.join('|');
+    removerMudancaObjetivo(loja,cid,desde);
+    persist();
+    renderAds();
+  });
+  el.querySelectorAll('[data-objhistadd]').forEach(b=>b.onclick=()=>{
+    const chave=String(b.dataset.objhistadd);
+    const elData=el.querySelector(`[data-objhistdata="${chave}"]`);
+    const elRoas=el.querySelector(`[data-objhistroas="${chave}"]`);
+    const i=chave.indexOf('|'), loja=chave.slice(0,i), cid=chave.slice(i+1);
+    const desde=elData&&elData.value;
+    const roas=elRoas?parseMoeda(elRoas.value):NaN;
+    if(!desde||isNaN(roas)){ alert('Preencha a data e o ROAS objetivo.'); return; }
+    registrarMudancaObjetivo(loja,cid,desde,roas);
+    persist();
+    toast('Mudança registrada.');
+    renderAds();
+  });
+  el.querySelectorAll('[data-objhistimportar]').forEach(b=>b.onclick=()=>{
+    const chave=String(b.dataset.objhistimportar);
+    const elLote=el.querySelector(`[data-objhistlote="${chave}"]`);
+    const i=chave.indexOf('|'), loja=chave.slice(0,i), cid=chave.slice(i+1);
+    const linhas=parseImportacaoObjetivo(elLote?elLote.value:'');
+    if(!linhas.length){ alert('Não consegui reconhecer nenhuma linha. Use o formato "21/05/2026 = 6".'); return; }
+    linhas.forEach(l=>registrarMudancaObjetivo(loja,cid,l.desde,l.roas));
+    persist();
+    toast(linhas.length+' registro(s) importado(s).');
     renderAds();
   });
 }
@@ -4964,6 +5177,8 @@ let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
   const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
+  const margemPosAds=margem-resumo.ads.custo;
+  const margemPosAdsPct=resumo.faturamento>0?(margemPosAds/resumo.faturamento*100):0;
   const margemLiquidaPct=resumo.faturamento>0?(margemLiquida/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
@@ -5002,6 +5217,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
         <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
         <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
         <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento${badge(margem,margensAnt?margensAnt.margem:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição menos o gasto de Ads do período - só informativo, não desconta de novo na Margem Líquida (que já desconta via fatura ML pendente)">Margem pós Ads: <b class="${margemPosAds>=0?'okv':'pend'}">${fmtMoney(margemPosAds)}</b> (${margemPosAdsPct.toFixed(1)}% do faturamento)</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
@@ -5084,6 +5300,13 @@ async function calcularFechamentoSocios(){
 function renderSociosCard(){
   const loja='TorvStore';
   const mes=financasFiltroMes;
+  /* meses com algo lançado (despesas OU retirada/reembolso de qualquer sócio) + o mês atual -
+     assim dá pra navegar direto por aqui pra ver o que já foi lançado, sem precisar ir na aba
+     Despesas só pra trocar de mês (pedido do Felipe). */
+  const mesesDespesas=despesasArr().filter(despesaBateFiltroLoja).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
+  const s=sociosLoja(loja);
+  const mesesSocios2=[...s.felipe,...s.thiago].map(x=>(x.data||'').slice(0,7)).filter(Boolean);
+  const mesesSocios=[...new Set([...mesesDespesas,...mesesSocios2,mes])].sort().reverse();
   const listaFelipe=movimentosSocioMes(loja,'felipe',mes);
   const listaThiago=movimentosSocioMes(loja,'thiago',mes);
   const retiradaFelipe=totalPorTipo(listaFelipe,'retirada'), reembolsoFelipe=totalPorTipo(listaFelipe,'reembolso');
@@ -5121,7 +5344,10 @@ function renderSociosCard(){
   return `
     <div class="card" style="margin-top:16px">
       <h3 style="margin-top:0">💸 Retiradas e Reembolsos — Felipe &amp; Thiago (${esc(loja)})</h3>
-      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
+      <div class="form-grid" style="grid-template-columns:220px 1fr;gap:10px;align-items:end;margin-bottom:10px">
+        <label>Mês<select id="scMesSel">${mesesSocios.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${mesLabel(m)}</option>`).join('')}</select></label>
+        <p class="hint" style="margin:0">Lance aqui em ${esc(mesLabel(mes))}: <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
+      </div>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select id="socQuem"><option value="felipe">Felipe</option><option value="thiago">Thiago</option></select></label>
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
@@ -5362,6 +5588,8 @@ function renderFinancas(){
   });
   const btnFecharSocios=document.getElementById('btnFecharSocios');
   if(btnFecharSocios) btnFecharSocios.onclick=calcularFechamentoSocios;
+  const scMesSel=document.getElementById('scMesSel');
+  if(scMesSel) scMesSel.onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
   el.querySelectorAll('[data-rankver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.rankver);
     if(resumoRankingAberto.has(id)) resumoRankingAberto.delete(id); else resumoRankingAberto.add(id);
