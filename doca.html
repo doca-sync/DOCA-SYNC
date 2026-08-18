@@ -4016,6 +4016,92 @@ function custoAdsCampanhaCalculado(camp){
   const achada=campanhas.find(cc=>String(cc.id)===String(camp.id));
   return achada?(achada.cost||0):null;
 }
+/* ---------- Sugestão de ROAS objetivo (baseada em 90 dias reais, TODAS as campanhas) ----------
+   Roda em background (job assíncrono no servidor, mesmo padrão da Auditoria mensal) porque
+   puxar 90 dias de todas as campanhas de uma loja não cabe numa chamada HTTP normal (leva uns
+   60-90s). O servidor baixa 1 dia de cada vez (90 chamadas na API do ML, não 90×campanha — cada
+   chamada já devolve TODAS as campanhas daquele dia de uma vez). Aqui no front, pra cada
+   campanha: agrupa os dias pelo ROAS REALIZADO (arredondado) e, dentro de cada faixa com pelo
+   menos 3 dias de amostra (pra não confiar em dia isolado), tira a média de TACOS/vendas por
+   dia/ROAS/custo de Ads/lucro (margem de contribuição estimada pela % de margem configurada
+   menos o custo de Ads). A faixa vencedora é a que tem a maior nota combinando, com peso igual:
+   TACOS baixo + vendas altas + ROAS alto + custo baixo + lucro alto — as 5 coisas que dão a
+   "maior eficiência com mais lucro" pedida. */
+let adsSugestaoRoasJobId=null, adsSugestaoRoasStatus='idle', adsSugestaoRoasProgresso=null, adsSugestaoRoasErro=null;
+let _adsSugestaoRoasPollTimer=null;
+function adsSugestaoRoasArr(){ if(!state.adsSugestaoRoas||typeof state.adsSugestaoRoas!=='object') state.adsSugestaoRoas={}; return state.adsSugestaoRoas; }
+function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct){
+  const dias=[];
+  porDia.forEach(d=>{
+    const c=d.campanhas&&d.campanhas[campanhaId]; if(!c) return;
+    const receita=(c.total_amount||0)+(c.organic_units_amount||0);
+    if(receita<=0) return;
+    const tacos=(c.cost||0)/receita*100;
+    const vendasDia=(c.units_quantity||0)+(c.organic_units_quantity||0);
+    dias.push({date:d.date,cost:c.cost||0,receita,tacos,vendasDia,roas:c.roas||0});
+  });
+  if(dias.length<3) return null;
+  const porFaixa={};
+  dias.forEach(d=>{ const f=Math.round(d.roas); (porFaixa[f]=porFaixa[f]||[]).push(d); });
+  let resumo=Object.keys(porFaixa).map(k=>{
+    const l=porFaixa[k];
+    const tacosM=l.reduce((a,x)=>a+x.tacos,0)/l.length;
+    const vendasM=l.reduce((a,x)=>a+x.vendasDia,0)/l.length;
+    const roasM=l.reduce((a,x)=>a+x.roas,0)/l.length;
+    const custoM=l.reduce((a,x)=>a+x.cost,0)/l.length;
+    const receitaM=l.reduce((a,x)=>a+x.receita,0)/l.length;
+    const margemM=receitaM*(margemPct/100);
+    const lucroM=margemM-custoM;
+    return {faixa:Number(k),dias:l.length,tacosM,vendasM,roasM,custoM,receitaM,margemM,lucroM};
+  }).filter(r=>r.dias>=3);
+  if(!resumo.length) return null;
+  const norm=(vals,inv)=>{ const lo=Math.min(...vals),hi=Math.max(...vals); if(hi===lo) return vals.map(()=>0.5); return vals.map(v=>inv?(hi-v)/(hi-lo):(v-lo)/(hi-lo)); };
+  const nT=norm(resumo.map(r=>r.tacosM),true);
+  const nV=norm(resumo.map(r=>r.vendasM),false);
+  const nR=norm(resumo.map(r=>r.roasM),false);
+  const nC=norm(resumo.map(r=>r.custoM),true);
+  const nL=norm(resumo.map(r=>r.lucroM),false);
+  resumo.forEach((r,i)=>{ r.score=(nT[i]+nV[i]+nR[i]+nC[i]+nL[i])/5; });
+  resumo.sort((a,b)=>b.score-a.score);
+  return {ranking:resumo,sugestao:resumo[0],diasAmostrados:dias.length};
+}
+async function iniciarSugestaoRoasLoja(loja){
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro.');
+    adsSugestaoRoasStatus='rodando'; adsSugestaoRoasErro=null; adsSugestaoRoasProgresso={feito:0,total:90}; renderAds();
+    const r=await fetch(`${base}/debug/ads/estudo-diario-loja/iniciar?loja=${encodeURIComponent(loja)}&dias=90`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao iniciar (HTTP '+r.status+').'));
+    adsSugestaoRoasJobId=j.jobId;
+    _adsPollSugestaoRoas(loja);
+  }catch(e){ adsSugestaoRoasStatus='erro'; adsSugestaoRoasErro=e.message; renderAds(); }
+}
+function _adsPollSugestaoRoas(loja){
+  if(_adsSugestaoRoasPollTimer) clearTimeout(_adsSugestaoRoasPollTimer);
+  _adsSugestaoRoasPollTimer=setTimeout(async()=>{
+    try{
+      const base=backendUrl();
+      const r=await fetch(`${base}/debug/ads/estudo-diario-loja/status?id=${encodeURIComponent(adsSugestaoRoasJobId)}`);
+      let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+      if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao consultar status (HTTP '+r.status+').'));
+      adsSugestaoRoasProgresso=j.progresso;
+      if(j.status==='rodando'){ renderAds(); _adsPollSugestaoRoas(loja); return; }
+      if(j.status==='erro'){ adsSugestaoRoasStatus='erro'; adsSugestaoRoasErro=j.erro||'Falha desconhecida.'; renderAds(); return; }
+      const margemPct=adsCfg().margemPct||18;
+      const porDia=j.resultado.porDia;
+      const idsCampanhas=new Set();
+      porDia.forEach(d=>Object.keys(d.campanhas||{}).forEach(id=>idsCampanhas.add(id)));
+      const porCampanha={};
+      idsCampanhas.forEach(id=>{ const res=_adsCalcularBucketsCampanha(porDia,id,margemPct); if(res) porCampanha[id]=res; });
+      const arr=adsSugestaoRoasArr();
+      arr[loja]={calculadoEm:Date.now(),porCampanha};
+      persist();
+      adsSugestaoRoasStatus='concluido';
+      renderAds();
+    }catch(e){ adsSugestaoRoasStatus='erro'; adsSugestaoRoasErro=e.message; renderAds(); }
+  },2500);
+}
 /* ---------- Ads: puxado direto da API (Product Ads / Mercado Ads) ----------
    Substitui o renderAds() manual acima (ficou parado, sem uso, caso algum pedaço da análise
    dele — scores, sugestões etc — sirva de referência depois). Por enquanto só mostra tudo que
@@ -4272,6 +4358,12 @@ function renderAds(){
       ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
       ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
+      ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; const pct=p.total?Math.round(p.feito/p.total*100):0; return `
+      <div style="margin-top:10px">
+        <div class="hint" style="margin-bottom:4px">💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)... ${p.feito}/${p.total} dias (${pct}%)</div>
+        <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--gold,#d4a83c);transition:width .3s"></div></div>
+      </div>`; })():''}
+      ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Campanha</th>
@@ -4284,13 +4376,13 @@ function renderAds(){
         const tacosComp=comp?calcTacos(comp):null;
         const tacosAlto=tacos>c.margemPct;
         const av=avalAtual.get(camp.id);
-        const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${[
+        const notaRoas=av?` <span class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700;margin-left:0.5cm" title="${[
           ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
           `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
         ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
-        const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
+        const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
         return `<tr>
-          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}</td>
+          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -4319,6 +4411,21 @@ function renderAds(){
               <div>🏆 ${pi.otimo?`Ponto de inflexão (melhor equilíbrio já alcançado): ROAS objetivo <b>${pi.otimo.roas}x</b> — TACOS médio ${pi.otimo.tacosMedio.toFixed(1)}%, ROAS realizado ${pi.otimo.roasMedio.toFixed(2)}x, ${pi.otimo.vendasDiaMedia.toFixed(1)} vendas/dia (${pi.otimo.leituras} leitura(s)).`:'Ainda não há experimento suficiente pra apontar o ponto ótimo.'}</div>
               <div style="opacity:.7;font-size:12px">Histórico por ROAS objetivo: ${pi.resumo.map(r=>`${r.roas}x → ${r.vendasDiaMedia.toFixed(1)}/dia · TACOS ${r.tacosMedio.toFixed(1)}% · ROAS real ${r.roasMedio.toFixed(2)}x (${r.leituras}L)`).join(' · ')}</div>
             </div>`; })()}
+          ${(()=>{
+            const sug=adsSugestaoRoasArr()[c.loja];
+            const dadosCamp=sug&&sug.porCampanha[camp.id];
+            if(!dadosCamp){
+              if(adsSugestaoRoasStatus==='rodando') return `<p class="hint" style="margin:6px 0 10px">💡 Calculando a sugestão de ROAS objetivo (90 dias, todas as campanhas)...</p>`;
+              return `<p class="hint" style="margin:6px 0 10px">💡 Sugestão de ROAS objetivo: clique em "Atualizar" pra calcular com base nos últimos 90 dias reais desta campanha.</p>`;
+            }
+            const s=dadosCamp.sugestao;
+            return `<div class="aviso" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
+              <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">💡 Sugestão de ROAS objetivo (90 dias, maior lucro + eficiência)</b>
+              <div>Deixar o ROAS objetivo em <b>${s.faixa}x</b> — TACOS médio ${s.tacosM.toFixed(2)}%, ${s.vendasM.toFixed(1)} vendas/dia, ROAS realizado ${s.roasM.toFixed(2)}x, custo médio ${fmtMoney(s.custoM)}/dia → lucro médio <b class="${s.lucroM>=0?'okv':'pend'}">${fmtMoney(s.lucroM)}/dia</b> (${s.dias} dia(s) de amostra, hoje está em ${camp.roas_target||0}x).</div>
+              <div style="opacity:.7;font-size:12px">Outras faixas testadas: ${dadosCamp.ranking.slice(0,5).map(r=>`${r.faixa}x → lucro ${fmtMoney(r.lucroM)}/dia · TACOS ${r.tacosM.toFixed(1)}% · ${r.vendasM.toFixed(1)}/dia (${r.dias}d)`).join(' · ')}</div>
+              <div style="opacity:.6;font-size:11px">Calculado em ${new Date(sug.calculadoEm).toLocaleString('pt-BR')} · ${dadosCamp.diasAmostrados} dia(s) com venda no período.</div>
+            </div>`;
+          })()}
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;margin:2px 0 8px">
             <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>
             🏅 Anúncio tem a etiqueta/selo de "Mais vendido" no Mercado Livre <span class="muted">(marque manualmente ao conferir)</span>
@@ -4328,17 +4435,14 @@ function renderAds(){
     </tbody></table></div>
     <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
-  document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds(); };
-  document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; if(adsFiltro==='lucro') calcularLucroAdsPeriodo(c.loja,adsPeriodoApi); else renderAds(); };
+  document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
+  document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
   document.getElementById('adFiltro').onchange=e=>{
+    /* só troca a ordenação — NÃO recalcula mais nada aqui. O cálculo de Lucro Bruto e a
+       Sugestão de ROAS agora só rodam quando aperta "Atualizar" (evita ficar martelando o
+       backend a cada troca de filtro/período/loja). */
     adsFiltro=e.target.value;
-    /* qualquer filtro escolhido já calcula o Lucro (não só "Maior Lucro Bruto") - é o que faz
-       aparecer as tags "✓ lucro > ads" / "⚠ lucro < ads" em cada linha, então elas ficam
-       visíveis em qualquer ordenação, sem precisar trocar pro filtro de lucro só pra ver isso.
-       Não recalcula de novo se já tem um resultado fresco pro mesmo período (evita ficar
-       martelando o backend a cada troca de filtro). */
-    if(!adsLucroResultado||adsLucroPeriodoCalculado!==adsPeriodoApi) calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
-    else renderAds();
+    renderAds();
   };
   document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
   document.getElementById('adTeto').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.tacosTeto=v; persist(); renderAds(); };
@@ -4348,9 +4452,11 @@ function renderAds(){
     try{
       await adsSincronizarLoja(c.loja);
       toast('Ads atualizado.');
-      /* recalcula o Lucro Bruto junto - senão as tags "✓ lucro > ads"/"⚠ lucro < ads" ficam
-         com o número antigo (de antes do Atualizar) até a pessoa mexer no filtro. */
+      /* recalcula o Lucro Bruto e dispara a Sugestão de ROAS (90 dias, todas as campanhas) -
+         essa segunda parte roda em background e não trava o Atualizar (a barra de progresso
+         aparece sozinha na tela enquanto ela roda). */
       calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
+      iniciarSugestaoRoasLoja(c.loja);
     }
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
