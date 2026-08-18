@@ -2354,7 +2354,7 @@ async function rodarEstudoDiarioAds(jobId, loja, campanhaId, dias) {
     job.status = 'erro'; job.erro = e.message;
   }
 }
-app.post('/debug/ads/estudo-diario/iniciar', async (req, res) => {
+app.get('/debug/ads/estudo-diario/iniciar', async (req, res) => {
   try {
     const loja = req.query.loja;
     const campanhaId = String(req.query.campanhaId || '');
