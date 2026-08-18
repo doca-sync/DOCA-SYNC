@@ -4132,7 +4132,7 @@ function _adsCalcularBucketsCampanha(porDia,campanhaId,margemPct,metaTacos){
     const margemM=receitaM*(margemPct/100);
     const lucroM=margemM-custoM;
     return {faixa:Number(k),dias:l.length,tacosM,vendasM,roasM,custoM,receitaM,margemM,lucroM};
-  }).filter(r=>r.dias>=3&&r.faixa>0);
+  }).filter(r=>r.dias>=2&&r.faixa>0);
   if(!resumo.length) return null;
   resumo.forEach(r=>{ r.eficiencia=r.custoM>0?r.lucroM/r.custoM:0; r.scoreIdeal=r.vendasM*r.lucroM*r.eficiencia; });
   /* critério final (pedido do Felipe, 18/08 — várias rodadas de ajuste): dentro da meta de TACOS
@@ -4290,6 +4290,7 @@ function _adsPollSugestaoRoas(loja){
         porCampanha[id]={
           melhor:proxy.melhor,
           elegiveis:proxy.elegiveis,
+          ranking:proxy.ranking,
           maisProxima:proxy.maisProxima,
           metaTacos:proxy.metaTacos,
           metaTolerada:proxy.metaTolerada,
@@ -4691,11 +4692,15 @@ function renderAds(){
               return `<div>${idx===0?'⭐':'&nbsp;&nbsp;'} <b>${r.faixa}x</b> (N=${r.dias}): TACOS ${r.tacosM.toFixed(2)}%, ${r.vendasM.toFixed(1)} vendas/dia, lucro ${fmtMoney(r.lucroM)}/dia, eficiência ${fmtMoney(r.eficiencia)}${idx===0?' <b style="color:var(--gold,#d4a83c)">— melhor cenário</b>':''}</div>`;
             };
             if(!dadosCamp.melhor){
-              const proxHtml=dadosCamp.maisProxima?`<div style="opacity:.7;font-size:12px">Faixa mais próxima da meta (fora dela): ${dadosCamp.maisProxima.faixa}x — TACOS ${dadosCamp.maisProxima.tacosM.toFixed(1)}%, ${dadosCamp.maisProxima.vendasM.toFixed(1)} vendas/dia (${dadosCamp.maisProxima.dias}d)</div>`:'';
+              /* mesmo sem nenhuma faixa dentro da meta de TACOS, mostra o ranking inteiro (as
+                 melhores por score, fora da meta) pra ele decidir - pedido do Felipe 18/08: nao
+                 faz sentido esconder tudo so porque nada bateu a meta a risca. */
+              const linhaForaMeta=(r,idx)=>`<div>${idx===0?'🔸':'&nbsp;&nbsp;'} <b>${r.faixa}x</b> (N=${r.dias}): TACOS ${r.tacosM.toFixed(2)}%, ${r.vendasM.toFixed(1)} vendas/dia, lucro ${fmtMoney(r.lucroM)}/dia, eficiência ${fmtMoney(r.eficiencia)} <span class="muted" style="font-size:11px">(fora da meta)</span></div>`;
+              const rankingHtml=(dadosCamp.ranking||[]).slice(0,6).map(linhaForaMeta).join('');
               return `<div class="aviso" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
                 <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">⚠ Sugestão de ROAS objetivo (90 dias) · meta de TACOS ${dadosCamp.metaTolerada.toFixed(1)}% (1/3 da ${margemLabel} + tolerância de 15%)</b>
-                <div>Nenhum ROAS testado com amostra suficiente (2+ dias) ficou dentro da meta de TACOS nos últimos 90 dias.</div>
-                ${proxHtml}
+                <div>Nenhum ROAS testado com amostra suficiente (2+ dias) ficou dentro da meta de TACOS nos últimos 90 dias — mas seguem os melhores cenários já testados, mesmo fora da meta, pra você decidir:</div>
+                ${rankingHtml}
                 <div style="opacity:.6;font-size:11px">Calculado em ${new Date(sug.calculadoEm).toLocaleString('pt-BR')} · ${dadosCamp.diasAmostrados} dia(s) com venda no período. Pra fechar a meta, ou testa um ROAS mais alto ao vivo e acompanha o resultado, ou revisa se 1/3 da margem é realista pra esse produto especificamente.${margemReal?'':' ⚠ '+margemLabel}</div>
               </div>`;
             }
