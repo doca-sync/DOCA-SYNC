@@ -583,10 +583,9 @@ let nuvemGravando=false, nuvemGravarDeNovo=false;
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtMoney(v){ return 'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 /* barra de status reutilizável pra qualquer operação que demore (Ads, Auditoria, Fechamento de
-   todas as lojas etc). barraProgresso mostra % de verdade (quando dá pra contar feito/total,
-   tipo "3 de 18 lojas"). barraIndeterminada é pra operação de 1 chamada só (não dá pra saber
-   quanto falta) - mostra uma barrinha animada indo e voltando, só pra avisar "ainda tô
-   trabalhando", sem inventar uma porcentagem falsa. */
+   todas as lojas, Resumo Financeiro, Amauri etc). barraProgresso mostra % de verdade (quando dá
+   pra contar feito/total). barraIndeterminada é pra quando não dá pra saber quanto falta - mostra
+   uma barrinha animada, só pra avisar "ainda tô trabalhando", sem inventar porcentagem falsa. */
 function barraProgresso(feito,total,label){
   const pct=total?Math.round(feito/total*100):0;
   return `<div style="margin-top:10px">
@@ -602,6 +601,39 @@ function barraIndeterminada(label){
     </div>
     <style>@keyframes _barraIndetAnim{0%{left:-35%}100%{left:100%}}</style>
   </div>`;
+}
+/* versão "job" de /financas/resumo — igual ao padrão que já criamos pro Ads (inicia, devolve
+   jobId na hora, roda em background) - pra qualquer tela poder mostrar status de progresso REAL
+   (0-100%) em vez de só "carregando...". onProgress(progresso) é chamado a cada atualização
+   (progresso = {feito,total,etapa}); a Promise resolve com o "resumo" (mesmo formato que
+   j.resumo do endpoint síncrono antigo) quando terminar. */
+function fetchResumoJob(loja,periodo,de,ate,onProgress){
+  return new Promise((resolve,reject)=>{
+    (async()=>{
+      try{
+        const base=backendUrl();
+        if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+        const params=new URLSearchParams({loja,periodo});
+        if(periodo==='personalizado'){ params.set('de',de); params.set('ate',ate); }
+        const r=await fetch(`${base}/financas/resumo-job/iniciar?${params.toString()}`);
+        let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+        if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao iniciar (HTTP '+r.status+').'));
+        const jobId=j.jobId;
+        const poll=async()=>{
+          try{
+            const r2=await fetch(`${base}/financas/resumo-job/status?id=${encodeURIComponent(jobId)}`);
+            let j2; try{ j2=await r2.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+            if(!r2.ok||!j2.ok) throw new Error(j2.erro||('Erro ao consultar status (HTTP '+r2.status+').'));
+            if(onProgress) onProgress(j2.progresso);
+            if(j2.status==='rodando'){ setTimeout(poll,1200); return; }
+            if(j2.status==='erro'){ reject(new Error(j2.erro||'Falha desconhecida.')); return; }
+            resolve(j2.resultado.resumo);
+          }catch(e){ reject(e); }
+        };
+        poll();
+      }catch(e){ reject(e); }
+    })();
+  });
 }
 /* le valor em R$ digitado no padrão brasileiro (vírgula como decimal, ex: "1234,56") — os
    campos de valor usam type="text" (não "number") justamente pra deixar digitar vírgula, que o
@@ -4718,6 +4750,7 @@ let financasResumoDe='', financasResumoAte='';
 let financasResumoResultado=null; // último resumo buscado (guarda o objeto inteiro devolvido pelo backend)
 let financasResumoCarregando=false;
 let financasResumoErro=null;
+let financasResumoProgresso=null; // {feito,total,etapa} - progresso real do job em background
 /* período anterior (mesmo tanto de dias, imediatamente antes) - pra mostrar ▲/▼ de crescimento
    ou queda comparando com o período pesquisado. Busca sozinho, em segundo plano, logo depois do
    período principal - se falhar, o resumo continua igual, só sem o indicativo. */
@@ -4744,25 +4777,18 @@ async function buscarResumoAnteriorAutomatico(loja,de,ate){
   finally{ financasResumoAnteriorCarregando=false; renderFinancas(); }
 }
 async function pesquisarResumoFinanceiro(){
-  financasResumoCarregando=true; financasResumoErro=null; financasResumoAnterior=null; renderFinancas();
+  financasResumoCarregando=true; financasResumoErro=null; financasResumoAnterior=null; financasResumoProgresso=null; renderFinancas();
   try{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-    const params=new URLSearchParams({loja:financasResumoLoja,periodo:financasResumoPeriodo});
-    if(financasResumoPeriodo==='personalizado'){
-      if(!financasResumoDe||!financasResumoAte) throw new Error('Informe as duas datas do período personalizado.');
-      params.set('de',financasResumoDe); params.set('ate',financasResumoAte);
-    }
-    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
-    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo financeiro (status '+r.status+').'));
-    financasResumoResultado=j.resumo;
-    if(j.resumo&&j.resumo.periodo) buscarResumoAnteriorAutomatico(financasResumoLoja,j.resumo.periodo.de,j.resumo.periodo.ate);
+    if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
+    const resumo=await fetchResumoJob(financasResumoLoja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{ financasResumoProgresso=p; renderFinancas(); });
+    financasResumoResultado=resumo;
+    if(resumo&&resumo.periodo) buscarResumoAnteriorAutomatico(financasResumoLoja,resumo.periodo.de,resumo.periodo.ate);
   }catch(e){ financasResumoErro=e.message; }
-  finally{ financasResumoCarregando=false; renderFinancas(); }
+  finally{ financasResumoCarregando=false; financasResumoProgresso=null; renderFinancas(); }
 }
 let financasSubAba='resumo'; // 'resumo' | 'despesas' | 'retiradas' - sub-abas dentro de Financas
 let financasFechTodasCarregando=false, financasFechTodasErro=null;
+let financasFechTodasProgresso=null; // {feito,total,etapa} - "feito"/"total" contam lojas (etapa mostra a loja+% dela)
 let auditoriaLoja=STORES[0];
 let auditoriaDe='', auditoriaAte='';
 let auditoriaJobId=null, auditoriaStatus=null, auditoriaProgresso=null, auditoriaResultado=null, auditoriaErro=null;
@@ -4840,29 +4866,26 @@ function renderAuditoriaMes(){
    busca /financas/resumo loja por loja (com uma pequena pausa entre elas pra nao estourar limite
    de chamadas por segundo) e monta um relatorio pra impressao comparando faturamento, margem de
    contribuicao, lucro bruto e margem liquida entre as lojas. */
-let financasFechTodasProgresso=null;
 async function calcularFechamentoTodasLojas(){
   if(financasFechTodasCarregando) return;
-  financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length}; renderFinancas();
+  financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
   try{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
     if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
     const resultados=[];
-    for(const loja of STORES){
-      const params=new URLSearchParams({loja,periodo:financasResumoPeriodo});
-      if(financasResumoPeriodo==='personalizado'){ params.set('de',financasResumoDe); params.set('ate',financasResumoAte); }
-      const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
-      let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend pra '+loja+'.'); }
-      if(!r.ok||!j.ok) throw new Error((j.erro||('Erro HTTP '+r.status))+' ('+loja+')');
-      resultados.push({loja,resumo:j.resumo,m:calcularMargensResumo(j.resumo,loja)});
-      financasFechTodasProgresso.feito++;
+    for(let i=0;i<STORES.length;i++){
+      const loja=STORES[i];
+      const resumo=await fetchResumoJob(loja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{
+        financasFechTodasProgresso={feito:i,total:STORES.length,etapa:`${loja}: ${p&&p.etapa?p.etapa:''} (${p?p.feito:0}%)`};
+        renderFinancas();
+      });
+      resultados.push({loja,resumo,m:calcularMargensResumo(resumo,loja)});
+      financasFechTodasProgresso={feito:i+1,total:STORES.length,etapa:`${loja} concluída`};
       renderFinancas();
       await sleep(150);
     }
     imprimirRelatorioFechamentoTodasLojas(resultados);
   }catch(e){ financasFechTodasErro=e.message; }
-  finally{ financasFechTodasCarregando=false; renderFinancas(); }
+  finally{ financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); }
 }
 function imprimirRelatorioFechamentoTodasLojas(resultados){
   const win=window.open('','_blank');
@@ -5035,23 +5058,19 @@ let novoPagAmauriData='';
 let sociosFechamentoMes=null;
 let sociosFechamentoCarregando=false;
 let sociosFechamentoErro=null;
+let sociosFechamentoProgresso=null; // {feito,total,etapa}
 async function calcularFechamentoSocios(){
-  sociosFechamentoCarregando=true; sociosFechamentoErro=null; renderFinancas();
+  sociosFechamentoCarregando=true; sociosFechamentoErro=null; sociosFechamentoProgresso=null; renderFinancas();
   try{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
     const mes=financasFiltroMes;
     const [ano,mm]=mes.split('-').map(Number);
     const de=`${mes}-01`;
     const ate=`${mes}-${String(new Date(ano,mm,0).getDate()).padStart(2,'0')}`;
-    const params=new URLSearchParams({loja:'TorvStore',periodo:'personalizado',de,ate});
-    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
-    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo financeiro (status '+r.status+').'));
-    sociosFechamento=j.resumo;
+    const resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,(p)=>{ sociosFechamentoProgresso=p; renderFinancas(); });
+    sociosFechamento=resumo;
     sociosFechamentoMes=mes;
   }catch(e){ sociosFechamentoErro=e.message; }
-  finally{ sociosFechamentoCarregando=false; renderFinancas(); }
+  finally{ sociosFechamentoCarregando=false; sociosFechamentoProgresso=null; renderFinancas(); }
 }
 function renderSociosCard(){
   const loja='TorvStore';
@@ -5069,7 +5088,7 @@ function renderSociosCard(){
     :(ajuste<-0.004?`<span class="pend">${nome} devolve <b>${fmtMoney(-ajuste)}</b></span>`:'<span class="muted">Já equilibrado</span>');
   let fechamentoHtml;
   if(sociosFechamentoCarregando){
-    fechamentoHtml=barraIndeterminada('📊 Calculando fechamento de sócios...');
+    fechamentoHtml=sociosFechamentoProgresso&&sociosFechamentoProgresso.total?barraProgresso(sociosFechamentoProgresso.feito,sociosFechamentoProgresso.total,'📊 '+(sociosFechamentoProgresso.etapa||'Calculando fechamento de sócios...')):barraIndeterminada('📊 Calculando fechamento de sócios...');
   }else if(sociosFechamentoErro){
     fechamentoHtml=`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(sociosFechamentoErro)}</p>`;
   }else if(sociosFechamento&&sociosFechamentoMes===mes){
@@ -5153,14 +5172,14 @@ function renderFinancas(){
           <input type="text" inputmode="decimal" style="width:60px" id="frAliquota" value="${finLoja(financasResumoLoja).aliquotaImposto?String(finLoja(financasResumoLoja).aliquotaImposto).replace('.',','):''}" placeholder="0,0">
         </label>
       </div>
-      ${financasResumoCarregando?barraIndeterminada('🔍 Buscando o resumo financeiro...'):''}
       ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
+      ${financasResumoCarregando?(financasResumoProgresso&&financasResumoProgresso.total?barraProgresso(financasResumoProgresso.feito,financasResumoProgresso.total,'🔍 '+(financasResumoProgresso.etapa||'Buscando resumo financeiro...')):barraIndeterminada('🔍 Buscando resumo financeiro...')):''}
       ${financasResumoResultado?renderResumoFinanceiroResultado(financasResumoResultado,financasResumoLoja):''}
       <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px">
         <button class="btn" id="btnFecharTodasLojas" ${financasFechTodasCarregando?'disabled':''}>${financasFechTodasCarregando?'Calculando...':'📋 Calcular fechamento de todas as lojas'}</button>
-        <span class="hint" style="margin:0">Gera um relatório pra impressão com o mesmo período escolhido acima, comparando faturamento, margem de contribuição e margem líquida das ${STORES.length} lojas.</span>
+        <span class="hint" style="margin:0">Gera um relatório pra impressão com o mesmo período escolhido acima, comparando faturamento, margem de contribuição, lucro bruto e margem líquida das ${STORES.length} lojas.</span>
       </div>
-      ${financasFechTodasCarregando&&financasFechTodasProgresso?barraProgresso(financasFechTodasProgresso.feito,financasFechTodasProgresso.total,'📋 Buscando loja por loja...'):''}
+      ${financasFechTodasCarregando&&financasFechTodasProgresso?barraProgresso(financasFechTodasProgresso.feito,financasFechTodasProgresso.total,'📋 '+(financasFechTodasProgresso.etapa||'Calculando fechamento...')):''}
       ${financasFechTodasErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasFechTodasErro)}</p>`:''}
     </div>
     `:''}
@@ -5415,24 +5434,17 @@ let amauriResumoPeriodo='personalizado', amauriResumoDe='', amauriResumoAte='';
 let amauriResumoResultado=null, amauriResumoCarregando=false, amauriResumoErro=null;
 let amauriCustosAberto=new Set();
 let amauriSubAba='periodo'; // 'produtos' | 'periodo' - sub-abas dentro de Amauri (periodo primeiro)
+let amauriResumoProgresso=null; // {feito,total,etapa}
 async function pesquisarResumoAmauri(){
   if(!amauriResumoDe||!amauriResumoAte) return;
-  amauriResumoCarregando=true; amauriResumoErro=null; renderAmauri();
+  amauriResumoCarregando=true; amauriResumoErro=null; amauriResumoProgresso=null; renderAmauri();
   try{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-    const params=new URLSearchParams({loja:'TorvStore',periodo:amauriResumoPeriodo});
-    if(amauriResumoPeriodo==='personalizado'){
-      if(!amauriResumoDe||!amauriResumoAte) throw new Error('Informe as duas datas do período personalizado.');
-      params.set('de',amauriResumoDe); params.set('ate',amauriResumoAte);
-    }
-    const r=await fetch(`${base}/financas/resumo?${params.toString()}`);
-    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o resumo (status '+r.status+').'));
-    amauriResumoResultado=j.resumo;
+    if(amauriResumoPeriodo==='personalizado'&&(!amauriResumoDe||!amauriResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
+    const resumo=await fetchResumoJob('TorvStore',amauriResumoPeriodo,amauriResumoDe,amauriResumoAte,(p)=>{ amauriResumoProgresso=p; renderAmauri(); });
+    amauriResumoResultado=resumo;
     autoPreencherAdsAmauri();
   }catch(e){ amauriResumoErro=e.message; }
-  finally{ amauriResumoCarregando=false; renderAmauri(); }
+  finally{ amauriResumoCarregando=false; amauriResumoProgresso=null; renderAmauri(); }
 }
 /* linha de cálculo de um produto: casa pelo mlItemId (igual o Resumo Financeiro), usando valor e
    pedidos por item que o backend manda desde a v56 (antes só mandava a quantidade).
@@ -5690,8 +5702,8 @@ function renderAmauri(){
         <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando||!amauriResumoDe||!amauriResumoAte?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
         ${amauriResumoResultado?'<button class="btn" id="btnImprimirAmauri">🖨️ Imprimir relatório</button>':''}
       </div>
-      ${amauriResumoCarregando?barraIndeterminada('🔍 Calculando o fechamento do Amauri...'):''}
       ${amauriResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(amauriResumoErro)}</p>`:''}
+      ${amauriResumoCarregando?(amauriResumoProgresso&&amauriResumoProgresso.total?barraProgresso(amauriResumoProgresso.feito,amauriResumoProgresso.total,'🔍 '+(amauriResumoProgresso.etapa||'Calculando o fechamento do Amauri...')):barraIndeterminada('🔍 Calculando o fechamento do Amauri...')):''}
       ${amauriResumoResultado?`
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · ${fmtInt(amauriResumoResultado.pedidosValidos)} pedido(s) válido(s)${amauriResumoResultado.pedidosCancelados?' · '+fmtInt(amauriResumoResultado.pedidosCancelados)+' cancelado(s) (loja toda, não só os produtos do Amauri)':''}</p>
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
