@@ -4723,38 +4723,6 @@ function renderAds(){
     toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
     renderAds();
   });
-  /* histórico de ROAS objetivo por campanha - remover, adicionar 1 a 1, importar em lote */
-  el.querySelectorAll('[data-remobjhist]').forEach(b=>b.onclick=()=>{
-    const partes=String(b.dataset.remobjhist).split('|');
-    const desde=partes.pop(), cid=partes.pop(), loja=partes.join('|');
-    removerMudancaObjetivo(loja,cid,desde);
-    persist();
-    renderAds();
-  });
-  el.querySelectorAll('[data-objhistadd]').forEach(b=>b.onclick=()=>{
-    const chave=String(b.dataset.objhistadd);
-    const elData=el.querySelector(`[data-objhistdata="${chave}"]`);
-    const elRoas=el.querySelector(`[data-objhistroas="${chave}"]`);
-    const i=chave.indexOf('|'), loja=chave.slice(0,i), cid=chave.slice(i+1);
-    const desde=elData&&elData.value;
-    const roas=elRoas?parseMoeda(elRoas.value):NaN;
-    if(!desde||isNaN(roas)){ alert('Preencha a data e o ROAS objetivo.'); return; }
-    registrarMudancaObjetivo(loja,cid,desde,roas);
-    persist();
-    toast('Mudança registrada.');
-    renderAds();
-  });
-  el.querySelectorAll('[data-objhistimportar]').forEach(b=>b.onclick=()=>{
-    const chave=String(b.dataset.objhistimportar);
-    const elLote=el.querySelector(`[data-objhistlote="${chave}"]`);
-    const i=chave.indexOf('|'), loja=chave.slice(0,i), cid=chave.slice(i+1);
-    const linhas=parseImportacaoObjetivo(elLote?elLote.value:'');
-    if(!linhas.length){ alert('Não consegui reconhecer nenhuma linha. Use o formato "21/05/2026 = 6".'); return; }
-    linhas.forEach(l=>registrarMudancaObjetivo(loja,cid,l.desde,l.roas));
-    persist();
-    toast(linhas.length+' registro(s) importado(s).');
-    renderAds();
-  });
 }
 
 
@@ -4953,6 +4921,50 @@ function removerMovimentoSocio(loja,socio,id){
   snapshot('remoção de lançamento de '+socio);
   s[socio]=s[socio].filter(x=>x.id!==id);
   persist();
+}
+/* edita um lançamento de retirada/reembolso já salvo (tipo, sócio, descrição, valor, data) - até
+   permite mover o lançamento de um sócio pra outro, caso tenha sido cadastrado errado. */
+function editarMovimentoSocio(loja,socioOriginal,id,{socio,tipo,descricao,valor,data}){
+  const s=sociosLoja(loja);
+  const d=s[socioOriginal].find(x=>x.id===id);
+  if(!d) return {ok:false,msg:'Lançamento não encontrado.'};
+  if(!(valor>0)) return {ok:false,msg:'Informe um valor válido.'};
+  if(!data) return {ok:false,msg:'Informe a data.'};
+  if(tipo!=='retirada'&&tipo!=='reembolso') return {ok:false,msg:'Tipo inválido.'};
+  snapshot('edição de lançamento de '+socioOriginal);
+  d.tipo=tipo; d.descricao=(descricao||'').trim(); d.valor=Number(valor); d.data=data;
+  if(socio&&socio!==socioOriginal){
+    s[socioOriginal]=s[socioOriginal].filter(x=>x.id!==id);
+    s[socio].push(d);
+  }
+  persist();
+  return {ok:true};
+}
+function abrirEditarSocioModal(loja,socio,id){
+  const s=sociosLoja(loja);
+  const d=s[socio].find(x=>x.id===id); if(!d) return;
+  const body=openModal(false);
+  body.innerHTML=`<h3>Editar lançamento</h3>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <label>Sócio<select id="seQuem"><option value="felipe" ${socio==='felipe'?'selected':''}>Felipe</option><option value="thiago" ${socio==='thiago'?'selected':''}>Thiago</option></select></label>
+      <label>Tipo<select id="seTipo"><option value="retirada" ${d.tipo==='retirada'?'selected':''}>Retirada</option><option value="reembolso" ${d.tipo==='reembolso'?'selected':''}>Reembolso</option></select></label>
+      <label style="grid-column:1/-1">Descrição<input id="seDescricao" type="text" value="${esc(d.descricao)}"></label>
+      <label>Valor (R$)<input id="seValor" type="number" min="0" step="0.01" value="${d.valor}"></label>
+      <label>Data<input id="seData" type="date" value="${esc(d.data)}"></label>
+    </div>
+    <div class="modal-actions"><button class="btn" id="btnCancelarEditSocio">Cancelar</button><button class="btn acc" id="btnSalvarEditSocio">Salvar alterações</button></div>`;
+  document.getElementById('btnCancelarEditSocio').onclick=closeModal;
+  document.getElementById('btnSalvarEditSocio').onclick=()=>{
+    const r=editarMovimentoSocio(loja,socio,id,{
+      socio:document.getElementById('seQuem').value,
+      tipo:document.getElementById('seTipo').value,
+      descricao:document.getElementById('seDescricao').value.trim(),
+      valor:Number(document.getElementById('seValor').value),
+      data:document.getElementById('seData').value,
+    });
+    if(!r.ok){ alert(r.msg); return; }
+    closeModal(); toast('Lançamento atualizado.'); renderFinancas();
+  };
 }
 function movimentosSocioMes(loja,socio,mes){
   return sociosLoja(loja)[socio].filter(x=>(x.data||'').slice(0,7)===mes).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
@@ -5300,20 +5312,13 @@ async function calcularFechamentoSocios(){
 function renderSociosCard(){
   const loja='TorvStore';
   const mes=financasFiltroMes;
-  /* meses com algo lançado (despesas OU retirada/reembolso de qualquer sócio) + o mês atual -
-     assim dá pra navegar direto por aqui pra ver o que já foi lançado, sem precisar ir na aba
-     Despesas só pra trocar de mês (pedido do Felipe). */
-  const mesesDespesas=despesasArr().filter(despesaBateFiltroLoja).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
-  const s=sociosLoja(loja);
-  const mesesSocios2=[...s.felipe,...s.thiago].map(x=>(x.data||'').slice(0,7)).filter(Boolean);
-  const mesesSocios=[...new Set([...mesesDespesas,...mesesSocios2,mes])].sort().reverse();
   const listaFelipe=movimentosSocioMes(loja,'felipe',mes);
   const listaThiago=movimentosSocioMes(loja,'thiago',mes);
   const retiradaFelipe=totalPorTipo(listaFelipe,'retirada'), reembolsoFelipe=totalPorTipo(listaFelipe,'reembolso');
   const retiradaThiago=totalPorTipo(listaThiago,'retirada'), reembolsoThiago=totalPorTipo(listaThiago,'reembolso');
   const tagTipo=t=>t==='reembolso'?'<span class="badge okv">Reembolso</span>':'<span class="badge">Retirada</span>';
   const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
-      ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}">✕</button></td></tr>`).join('')}
+      ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}">✕</button></td></tr>`).join('')}
     </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
   const linhaAjuste=(nome,ajuste)=>ajuste>0.004
     ?`<span class="okv">Pagamento de <b>${fmtMoney(ajuste)}</b> pra ${nome}</span>`
@@ -5344,10 +5349,7 @@ function renderSociosCard(){
   return `
     <div class="card" style="margin-top:16px">
       <h3 style="margin-top:0">💸 Retiradas e Reembolsos — Felipe &amp; Thiago (${esc(loja)})</h3>
-      <div class="form-grid" style="grid-template-columns:220px 1fr;gap:10px;align-items:end;margin-bottom:10px">
-        <label>Mês<select id="scMesSel">${mesesSocios.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${mesLabel(m)}</option>`).join('')}</select></label>
-        <p class="hint" style="margin:0">Lance aqui em ${esc(mesLabel(mes))}: <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
-      </div>
+      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento, a margem líquida do mês é dividida 50/50 e o reembolso é abatido a favor de quem pagou.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select id="socQuem"><option value="felipe">Felipe</option><option value="thiago">Thiago</option></select></label>
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
@@ -5580,16 +5582,20 @@ function renderFinancas(){
     toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(socio==='felipe'?'Felipe':'Thiago')+' lançado(a).');
     renderFinancas();
   };
+  el.querySelectorAll('[data-editsocio]').forEach(b=>b.onclick=()=>{
+    const [socio,id]=b.dataset.editsocio.split('|');
+    abrirEditarSocioModal('TorvStore',socio,id);
+  });
   el.querySelectorAll('[data-remsocio]').forEach(b=>b.onclick=()=>{
     const [socio,id]=b.dataset.remsocio.split('|');
-    removerMovimentoSocio('TorvStore',socio,id);
-    toast('Lançamento removido.');
-    renderFinancas();
+    confirmAction('Excluir esse lançamento?',()=>{
+      removerMovimentoSocio('TorvStore',socio,id);
+      toast('Lançamento removido.');
+      renderFinancas();
+    });
   });
   const btnFecharSocios=document.getElementById('btnFecharSocios');
   if(btnFecharSocios) btnFecharSocios.onclick=calcularFechamentoSocios;
-  const scMesSel=document.getElementById('scMesSel');
-  if(scMesSel) scMesSel.onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
   el.querySelectorAll('[data-rankver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.rankver);
     if(resumoRankingAberto.has(id)) resumoRankingAberto.delete(id); else resumoRankingAberto.add(id);
