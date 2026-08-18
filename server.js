@@ -2305,19 +2305,22 @@ app.get('/debug/ads/diario', async (req, res) => {
    chamada que o /debug/ads/campanhas ja usa sem aggregation_type (essa sim confirmadamente
    respeita o filtro por campanha, devolve um array com o "id" certo de cada uma) - mais lento
    (1 chamada de API por dia, com pausa entre elas pra nao estourar rate limit) mas confiavel.
-   Ex.: /debug/ads/estudo-diario?loja=TorvStore&campanhaId=353706387&dias=30 */
-app.get('/debug/ads/estudo-diario', async (req, res) => {
+   v2 (assincrono): puxar dia a dia demora mais que os ~30s que uma chamada HTTP normal aguenta
+   (principalmente com o backoff de rate limit entrando depois de varios dias seguidos), entao
+   agora roda como job em BACKGROUND, igual a Auditoria mensal:
+   1) POST /debug/ads/estudo-diario/iniciar?loja=X&campanhaId=Y&dias=30 -> devolve {jobId} na hora
+   2) GET  /debug/ads/estudo-diario/status?id=JOBID -> {status,progresso,resultado} */
+const estudoAdsJobs = new Map();
+function gerarJobIdAds() { return 'ads_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+async function rodarEstudoDiarioAds(jobId, loja, campanhaId, dias) {
+  const job = estudoAdsJobs.get(jobId);
   try {
-    const loja = req.query.loja;
-    const campanhaId = String(req.query.campanhaId || '');
-    const dias = Math.min(90, Math.max(1, parseInt(req.query.dias || '30', 10)));
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
     const { primeiro } = await buscarAdvertiserId(loja);
     const siteId = primeiro && primeiro.site_id;
     const advertiserId = primeiro && primeiro.advertiser_id;
     const resultado = [];
     const avisos = [];
+    job.progresso = { feito: 0, total: dias };
     for (let i = dias - 1; i >= 0; i--) {
       const dia = dataYMD(Date.now() - i * 864e5);
       try {
@@ -2342,10 +2345,33 @@ app.get('/debug/ads/estudo-diario', async (req, res) => {
         avisos.push(`Falha no dia ${dia}: ${e.message}`);
         resultado.push({ date: dia, cost: 0, direct_amount: 0, indirect_amount: 0, total_amount: 0, organic_units_amount: 0, organic_units_quantity: 0, units_quantity: 0, roas: 0, acos: 0, sov: 0, erro: e.message });
       }
+      job.progresso.feito++;
       await sleep(300);
     }
-    res.json({ ok: true, loja, campanhaId, dias, resultado, avisos });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
+    job.resultado = { loja, campanhaId, dias, resultado, avisos };
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro'; job.erro = e.message;
+  }
+}
+app.post('/debug/ads/estudo-diario/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const campanhaId = String(req.query.campanhaId || '');
+    const dias = Math.min(90, Math.max(1, parseInt(req.query.dias || '30', 10)));
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
+    const jobId = gerarJobIdAds();
+    estudoAdsJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: dias }, resultado: null, erro: null, criadoEm: Date.now() });
+    rodarEstudoDiarioAds(jobId, loja, campanhaId, dias); // fire-and-forget
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/debug/ads/estudo-diario/status', (req, res) => {
+  const jobId = req.query.id;
+  const job = estudoAdsJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
+  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
    Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
