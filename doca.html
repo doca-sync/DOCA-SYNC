@@ -582,6 +582,27 @@ let nuvemGravando=false, nuvemGravarDeNovo=false;
 /* ---------- helpers ---------- */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtMoney(v){ return 'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+/* barra de status reutilizável pra qualquer operação que demore (Ads, Auditoria, Fechamento de
+   todas as lojas etc). barraProgresso mostra % de verdade (quando dá pra contar feito/total,
+   tipo "3 de 18 lojas"). barraIndeterminada é pra operação de 1 chamada só (não dá pra saber
+   quanto falta) - mostra uma barrinha animada indo e voltando, só pra avisar "ainda tô
+   trabalhando", sem inventar uma porcentagem falsa. */
+function barraProgresso(feito,total,label){
+  const pct=total?Math.round(feito/total*100):0;
+  return `<div style="margin-top:10px">
+    <div class="hint" style="margin-bottom:4px">${esc(label)} ${fmtInt(feito)}/${fmtInt(total)} (${pct}%)</div>
+    <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--gold,#d4a83c);transition:width .3s"></div></div>
+  </div>`;
+}
+function barraIndeterminada(label){
+  return `<div style="margin-top:10px">
+    <div class="hint" style="margin-bottom:4px">${esc(label)}</div>
+    <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden;position:relative">
+      <div style="position:absolute;top:0;height:100%;width:35%;left:-35%;background:var(--gold,#d4a83c);animation:_barraIndetAnim 1.1s ease-in-out infinite"></div>
+    </div>
+    <style>@keyframes _barraIndetAnim{0%{left:-35%}100%{left:100%}}</style>
+  </div>`;
+}
 /* le valor em R$ digitado no padrão brasileiro (vírgula como decimal, ex: "1234,56") — os
    campos de valor usam type="text" (não "number") justamente pra deixar digitar vírgula, que o
    input number do navegador bloqueia. Também aceita ponto, por segurança, caso alguém digite
@@ -4358,11 +4379,7 @@ function renderAds(){
       ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
       ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
-      ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; const pct=p.total?Math.round(p.feito/p.total*100):0; return `
-      <div style="margin-top:10px">
-        <div class="hint" style="margin-bottom:4px">💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)... ${p.feito}/${p.total} dias (${pct}%)</div>
-        <div style="height:8px;border-radius:4px;background:rgba(255,255,255,.08);overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--gold,#d4a83c);transition:width .3s"></div></div>
-      </div>`; })():''}
+      ${adsSugestaoRoasStatus==='rodando'?barraProgresso((adsSugestaoRoasProgresso||{}).feito||0,(adsSugestaoRoasProgresso||{}).total||90,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'):''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
@@ -4381,8 +4398,14 @@ function renderAds(){
           `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
         ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
         const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
+        const sugCampTag=(()=>{
+          const sug=adsSugestaoRoasArr()[c.loja];
+          const dc=sug&&sug.porCampanha[camp.id];
+          if(!dc) return '';
+          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Sugestão calculada nos últimos 90 dias: faixa de ROAS realizado ${dc.sugestao.faixa}x deu o melhor resultado (lucro + eficiência) — hoje o objetivo está em ${camp.roas_target||0}x">💡 sugestão ROAS ${dc.sugestao.faixa}x</span>`;
+        })();
         return `<tr>
-          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}</td>
+          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -4787,7 +4810,7 @@ function renderAuditoriaMes(){
         <button class="btn gold" id="audIniciar" ${auditoriaStatus==='rodando'?'disabled':''}>${auditoriaStatus==='rodando'?'Rodando...':'▶ Rodar auditoria'}</button>
       </div>
       ${auditoriaErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(auditoriaErro)}</p>`:''}
-      ${auditoriaStatus==='rodando'?`<p class="hint" style="margin-top:10px">${auditoriaProgresso?esc(auditoriaProgresso):'Buscando pedidos...'}</p>`:''}
+      ${auditoriaStatus==='rodando'?(auditoriaProgresso&&auditoriaProgresso.total?barraProgresso(auditoriaProgresso.feito,auditoriaProgresso.total,'🔍 Conferindo pedidos...'):barraIndeterminada('🔍 Buscando pedidos...')):''}
       ${res?`
       <h4 style="margin:18px 0 6px">📋 Fechamento confirmado do período (${res.pedidos_validos} válidos, ${res.pedidos_cancelados} cancelados${res.pedidos_mesmo_carrinho?`, ${res.pedidos_mesmo_carrinho} em carrinho compartilhado (não duplicados)`:''})</h4>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
@@ -4817,9 +4840,10 @@ function renderAuditoriaMes(){
    busca /financas/resumo loja por loja (com uma pequena pausa entre elas pra nao estourar limite
    de chamadas por segundo) e monta um relatorio pra impressao comparando faturamento, margem de
    contribuicao, lucro bruto e margem liquida entre as lojas. */
+let financasFechTodasProgresso=null;
 async function calcularFechamentoTodasLojas(){
   if(financasFechTodasCarregando) return;
-  financasFechTodasCarregando=true; financasFechTodasErro=null; renderFinancas();
+  financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length}; renderFinancas();
   try{
     const base=backendUrl();
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -4832,6 +4856,8 @@ async function calcularFechamentoTodasLojas(){
       let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend pra '+loja+'.'); }
       if(!r.ok||!j.ok) throw new Error((j.erro||('Erro HTTP '+r.status))+' ('+loja+')');
       resultados.push({loja,resumo:j.resumo,m:calcularMargensResumo(j.resumo,loja)});
+      financasFechTodasProgresso.feito++;
+      renderFinancas();
       await sleep(150);
     }
     imprimirRelatorioFechamentoTodasLojas(resultados);
@@ -5043,7 +5069,7 @@ function renderSociosCard(){
     :(ajuste<-0.004?`<span class="pend">${nome} devolve <b>${fmtMoney(-ajuste)}</b></span>`:'<span class="muted">Já equilibrado</span>');
   let fechamentoHtml;
   if(sociosFechamentoCarregando){
-    fechamentoHtml=`<p class="hint" style="margin-top:10px">Calculando...</p>`;
+    fechamentoHtml=barraIndeterminada('📊 Calculando fechamento de sócios...');
   }else if(sociosFechamentoErro){
     fechamentoHtml=`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(sociosFechamentoErro)}</p>`;
   }else if(sociosFechamento&&sociosFechamentoMes===mes){
@@ -5127,12 +5153,14 @@ function renderFinancas(){
           <input type="text" inputmode="decimal" style="width:60px" id="frAliquota" value="${finLoja(financasResumoLoja).aliquotaImposto?String(finLoja(financasResumoLoja).aliquotaImposto).replace('.',','):''}" placeholder="0,0">
         </label>
       </div>
+      ${financasResumoCarregando?barraIndeterminada('🔍 Buscando o resumo financeiro...'):''}
       ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
       ${financasResumoResultado?renderResumoFinanceiroResultado(financasResumoResultado,financasResumoLoja):''}
       <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px">
         <button class="btn" id="btnFecharTodasLojas" ${financasFechTodasCarregando?'disabled':''}>${financasFechTodasCarregando?'Calculando...':'📋 Calcular fechamento de todas as lojas'}</button>
-        <span class="hint" style="margin:0">Gera um relatório pra impressão com o mesmo período escolhido acima, comparando faturamento, margem de contribuição, lucro bruto e margem líquida das ${STORES.length} lojas.</span>
+        <span class="hint" style="margin:0">Gera um relatório pra impressão com o mesmo período escolhido acima, comparando faturamento, margem de contribuição e margem líquida das ${STORES.length} lojas.</span>
       </div>
+      ${financasFechTodasCarregando&&financasFechTodasProgresso?barraProgresso(financasFechTodasProgresso.feito,financasFechTodasProgresso.total,'📋 Buscando loja por loja...'):''}
       ${financasFechTodasErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasFechTodasErro)}</p>`:''}
     </div>
     `:''}
@@ -5662,6 +5690,7 @@ function renderAmauri(){
         <button class="btn gold" id="amPesquisar" ${amauriResumoCarregando||!amauriResumoDe||!amauriResumoAte?'disabled':''}>${amauriResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
         ${amauriResumoResultado?'<button class="btn" id="btnImprimirAmauri">🖨️ Imprimir relatório</button>':''}
       </div>
+      ${amauriResumoCarregando?barraIndeterminada('🔍 Calculando o fechamento do Amauri...'):''}
       ${amauriResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(amauriResumoErro)}</p>`:''}
       ${amauriResumoResultado?`
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · ${fmtInt(amauriResumoResultado.pedidosValidos)} pedido(s) válido(s)${amauriResumoResultado.pedidosCancelados?' · '+fmtInt(amauriResumoResultado.pedidosCancelados)+' cancelado(s) (loja toda, não só os produtos do Amauri)':''}</p>
