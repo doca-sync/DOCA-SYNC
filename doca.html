@@ -5312,11 +5312,9 @@ function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
        período é curto (ex: "Hoje") e não faz sentido comparar 1 dia de faturamento com o ciclo
        inteiro de custo acumulado. */
     const diasSel=diasNoPeriodoResumo(r.resumo.periodo.de,r.resumo.periodo.ate);
-    const diasDecorridosCiclo=Math.max(1,new Date().getDate());
-    const fatorRateio=Math.min(1,diasSel/diasDecorridosCiclo);
-    const faturaMlRateada=r.m.faturaMlAtual*fatorRateio;
+    const faturaMlRateada=(r.m.faturaMlAtual/diasNoMesAtual())*diasSel;
     const margemLiquidaRateada=r.m.margem-r.m.custosPeriodo-faturaMlRateada;
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos};
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0};
   });
   const totalPedidos=porLoja.reduce((s,r)=>s+r.pedidos,0);
   const totalUnidades=porLoja.reduce((s,r)=>s+r.unidades,0);
@@ -5342,6 +5340,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
         ${metrica('Margem Líquida (rateada)',fmtMoney(r.margemLiquidaRateada),r.margemLiquidaRateada<0,pctDe(r.margemLiquidaRateada,r.faturamento))}
         ${metrica('Margem Líquida (custo total)',fmtMoney(r.margemLiquidaTotal),r.margemLiquidaTotal<0,pctDe(r.margemLiquidaTotal,r.faturamento))}
       </div>
+      ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td></tr>`).join('')}
       </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
@@ -5458,6 +5457,12 @@ function despesasPeriodoLoja(loja,de,ate){
 /* quantos dias tem o período [de,ate] (inclusive) e quantos dias já se passaram no mês de
    referência - usado só pra ratear a fatura ML pendente (ver calcularMargensResumo abaixo). */
 function diasNoPeriodoResumo(de,ate){ return Math.max(1,Math.round((new Date(ate)-new Date(de))/864e5)+1); }
+/* total de dias do mês corrente (28-31) - usado pra ratear a fatura ML pendente: valor da fatura
+   ÷ dias do mês = valor por dia, vezes os dias do período escolhido - pedido do Felipe 19/08
+   (antes dividia pelos dias já decorridos no mês, o que inflava o rateio conforme o mês avançava;
+   dividir pelo total de dias do mês dá uma taxa diária estável, sempre a mesma independente do
+   dia em que for consultado) */
+function diasNoMesAtual(){ const d=new Date(); return new Date(d.getFullYear(),d.getMonth()+1,0).getDate(); }
 function calcularMargensResumo(resumo,loja){
   const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -5491,9 +5496,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
      proporcional aos dias do período escolhido, pra não afundar o número quando o período é
      curto (ex: "Hoje") comparado ao ciclo inteiro de custo acumulado. */
   const diasSelResumo=diasNoPeriodoResumo(resumo.periodo.de,resumo.periodo.ate);
-  const diasDecorridosCicloResumo=Math.max(1,new Date().getDate());
-  const fatorRateioResumo=Math.min(1,diasSelResumo/diasDecorridosCicloResumo);
-  const faturaMlRateadaResumo=faturaMlAtual*fatorRateioResumo;
+  const faturaMlRateadaResumo=(faturaMlAtual/diasNoMesAtual())*diasSelResumo;
   const margemLiquidaRateada=margem-custosPeriodo-faturaMlRateadaResumo;
   const margemLiquidaRateadaPct=resumo.faturamento>0?(margemLiquidaRateada/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
@@ -5538,7 +5541,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA (RATEADA)</div>
         <b style="font-size:22px" class="${margemLiquidaRateada>=0?'okv':'pend'}">${fmtMoney(margemLiquidaRateada)}</b>
-        <div class="hint" style="margin:2px 0 0" title="Fatura ML pendente (${fmtMoney(faturaMlAtual)} acumulado no ciclo até hoje) rateada por ${(fatorRateioResumo*100).toFixed(0)}% (dias do período ÷ dias já passados no ciclo) = ${fmtMoney(faturaMlRateadaResumo)} descontada aqui, em vez do valor cheio">${margemLiquidaRateadaPct.toFixed(1)}% do faturamento · fatura ML rateada: ${fmtMoney(faturaMlRateadaResumo)}</div>
+        <div class="hint" style="margin:2px 0 0" title="Fatura ML pendente (${fmtMoney(faturaMlAtual)} acumulado no ciclo até hoje) ÷ ${diasNoMesAtual()} dias do mês × ${diasSelResumo} dia(s) do período = ${fmtMoney(faturaMlRateadaResumo)} descontada aqui, em vez do valor cheio">${margemLiquidaRateadaPct.toFixed(1)}% do faturamento · fatura ML rateada: ${fmtMoney(faturaMlRateadaResumo)}</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
