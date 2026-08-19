@@ -201,12 +201,6 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
   box-shadow:0 16px 44px -12px rgba(0,0,0,.9);max-width:92vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 
-#tarefaAlerta{position:fixed;top:0;left:0;right:0;z-index:260;display:none;align-items:center;gap:10px;flex-wrap:wrap;
-  background:linear-gradient(135deg,#4a1f10,#6b1f14);border-bottom:1px solid rgba(255,197,61,.5);color:#fff;
-  padding:12px 18px;font-size:13.5px;font-weight:600;box-shadow:0 8px 24px -8px rgba(0,0,0,.7)}
-#tarefaAlerta.show{display:flex}
-#tarefaAlerta .tarefa-alerta-x{margin-left:auto;background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12.5px;font-weight:700}
-
 .drop{border:2px dashed rgba(162,119,255,.45);border-radius:var(--r);padding:22px;text-align:center;background:var(--paper);margin-bottom:18px;transition:.18s}
 .drop.dragover{background:rgba(139,92,246,.16);border-color:var(--gold)}
 .drop b{display:block;font-family:Sora;font-size:14.5px;margin-bottom:4px;text-transform:uppercase}
@@ -499,8 +493,6 @@ tr.l-env{background:rgba(139,92,246,.07)}
     </nav>
   </div>
 </header>
-
-<div id="tarefaAlerta"></div>
 
 <div class="filebar">
   <div class="wrap in">
@@ -2617,6 +2609,7 @@ function renderTarefas(){
   if(!state.listas.length) state.listas=[{id:'lista_geral',nome:'GERAL'}];
   if(!listaAtual||!state.listas.some(l=>l.id===listaAtual)) listaAtual=state.listas[0].id;
   const tarefas=tarefasDaLista(listaAtual);
+  const listaAtualObj=state.listas.find(l=>l.id===listaAtual);
   el.innerHTML=`
     <h1 class="page-title">Tarefas</h1>
     <div class="listas-bar">
@@ -2627,6 +2620,7 @@ function renderTarefas(){
       }).join('')}
       <button class="lista-chip nova" id="btnNovaLista" title="Criar outra lista">+ Nova lista</button>
       ${state.listas.length?`<span class="lista-acoes">
+        <button class="btn sm ${listaAtualObj&&listaAtualObj.resetaMensal?'acc':''}" id="btnResetaMensalLista" title="${listaAtualObj&&listaAtualObj.resetaMensal?'Tarefas concluídas nesta lista não somem — ficam com ✓ e voltam a pedir conclusão sozinhas no mês seguinte. Clique para desativar.':'Ativar: tarefas concluídas nesta lista não somem mais, ficam marcadas com ✓ e voltam a pedir conclusão sozinhas no mês seguinte.'}">🔁 Mensal</button>
         <button class="btn sm" id="btnRenomearLista" title="Renomear esta lista">✎</button>
         ${state.listas.length>1?`<button class="btn sm danger-outline" id="btnExcluirLista" title="Excluir esta lista">✕</button>`:''}
       </span>`:''}
@@ -2643,6 +2637,8 @@ function renderTarefas(){
         const venc=t.data&&t.data<h, hj=t.data===h;
         const idx=tarefas.indexOf(t);
         const subs=t.subs||[], feitas=subs.filter(s=>s.feito).length;
+        const mensal=!!(listaAtualObj&&listaAtualObj.resetaMensal);
+        const feitaEsteMes=mensal&&tarefaFeitaEsteMes(t);
         return `<div class="tarefa" draggable="true" data-tid="${t.id}">
           <div class="tarefa-topo">
             <span class="tarefa-grip" title="Arraste para mudar a prioridade">⠿</span>
@@ -2650,7 +2646,7 @@ function renderTarefas(){
               <button data-sobe="${t.id}" ${idx===0?'disabled':''} title="Subir">▲</button>
               <button data-desce="${t.id}" ${idx===tarefas.length-1?'disabled':''} title="Descer">▼</button>
             </span>
-            <button class="tarefa-check" data-concluir="${t.id}" title="Concluir tarefa"></button>
+            <button class="tarefa-check ${feitaEsteMes?'feito':''}" data-concluir="${t.id}" title="${mensal?(feitaEsteMes?'Feita este mês — clique para reabrir':'Marcar como feita este mês (não some, volta a pedir no mês seguinte)'):'Concluir tarefa'}"></button>
             <input class="tarefa-tit" type="text" value="${esc(t.titulo)}" data-tit="${t.id}" placeholder="Sem título">
             <button type="button" class="tarefa-resumo" data-abrir="${t.id}" title="Data, horário, repetição e observação">${t.data?`📅 ${fmtData(t.data).slice(0,5)}`:''}${t.repetirMensal?' 🔁':''}${(!t.data&&!t.repetirMensal)?'⋯':''}</button>
             ${subs.length?`<span class="sub-cont ${feitas===subs.length?'ok':''}" title="Subtarefas concluídas">${feitas}/${subs.length}</span>`:''}
@@ -2680,7 +2676,7 @@ function renderTarefas(){
         </div>`;
       }).join('')}
     </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}
-    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. Ao concluir, a tarefa some (dá pra recuperar no <b>Desfazer</b>).</p>`;
+    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. ${listaAtualObj&&listaAtualObj.resetaMensal?'Modo <b>🔁 Mensal</b> ativado nesta lista: ao concluir, a tarefa fica marcada com ✓ mas não some — volta a pedir conclusão sozinha no mês seguinte.':'Ao concluir, a tarefa some (dá pra recuperar no <b>Desfazer</b>).'}</p>`;
 
   const btnTfData=document.getElementById('tfData');
   if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
@@ -2731,12 +2727,21 @@ function renderTarefas(){
 
   el.querySelectorAll('[data-concluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.concluir);
+    if(listaAtualObj&&listaAtualObj.resetaMensal){
+      // lista "Mensal": não some - só alterna feito/reabrir, reseta sozinha no mês seguinte
+      if(tarefaFeitaEsteMes(t)){ desconcluirTarefa(b.dataset.concluir); toast('Tarefa reaberta: '+((t&&t.titulo)||'')); }
+      else { concluirTarefaMensal(b.dataset.concluir); toast('✓ Concluída este mês: '+((t&&t.titulo)||'')); }
+      renderTarefas();
+      return;
+    }
     b.classList.add('feito');
     setTimeout(()=>{
       const r=concluirTarefa(b.dataset.concluir);
       toast(r&&r.repetiu?`🔁 Concluída — volta em ${fmtData(r.novaData)}: ${(t&&t.titulo)||''}`:('Tarefa concluída: '+((t&&t.titulo)||'')));
     },180);
   });
+  const btnResetaMensalLista=document.getElementById('btnResetaMensalLista');
+  if(btnResetaMensalLista) btnResetaMensalLista.onclick=()=>{ alternarResetaMensalLista(listaAtual); renderTarefas(); };
   el.querySelectorAll('[data-excluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.excluir);
     confirmAction(`Excluir a tarefa "${(t&&t.titulo)||''}"? Dá pra reverter no botão Desfazer.`,()=>{
@@ -6328,6 +6333,31 @@ function concluirTarefa(id){
   persist();
   return {ok:true,repetiu:false};
 }
+/* mês atual "AAAA-MM", pra controlar as tarefas de lista "resetaMensal" - pedido do Felipe 19/08:
+   tarefa de lista "Gestão Ativa" não pode sumir ao concluir (quer continuar vendo o item, só
+   marcado como feito), mas precisa voltar a pedir conclusão de novo no mês seguinte, sozinho -
+   sem precisar reabrir na mão. Como concluidoMes guarda o mês em que foi concluída, comparar
+   contra o mês atual a cada render já resolve o "reset" sozinho, sem precisar de nenhum job. */
+function mesAtualStr(){ return hoje().slice(0,7); }
+function tarefaFeitaEsteMes(t){ return !!(t&&t.concluidoMes===mesAtualStr()); }
+function concluirTarefaMensal(id){
+  const t=state.tarefas.find(x=>x.id===id); if(!t) return;
+  snapshot('conclusão (mensal, não some) da tarefa "'+(t.titulo||'').slice(0,30)+'"');
+  t.concluidoMes=mesAtualStr();
+  persist();
+}
+function desconcluirTarefa(id){
+  const t=state.tarefas.find(x=>x.id===id); if(!t) return;
+  snapshot('reabertura da tarefa "'+(t.titulo||'').slice(0,30)+'"');
+  t.concluidoMes=null;
+  persist();
+}
+function alternarResetaMensalLista(listaId){
+  const l=state.listas.find(x=>x.id===listaId); if(!l) return;
+  snapshot((l.resetaMensal?'desativar':'ativar')+' modo mensal da lista "'+(l.nome||'')+'"');
+  l.resetaMensal=!l.resetaMensal;
+  persist();
+}
 function moverTarefa(id,paraId){
   if(id===paraId) return;
   const de=state.tarefas.findIndex(t=>t.id===id);
@@ -7650,9 +7680,11 @@ function irParaAba(nome){
   document.querySelectorAll('.tabpanel').forEach(p=>p.classList.add('hidden'));
   const p=document.getElementById('tab-'+nome); if(p) p.classList.remove('hidden');
   if(sub) irParaSub(sub);
+  if(nome==='tarefas') mostrarAlertaTarefasDoDia();
   try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){}
 }
 document.querySelectorAll('#mainNav button').forEach(b=>{ b.onclick=()=>irParaAba(b.dataset.tab); });
+mostrarAlertaTarefasDoDia();
 document.querySelectorAll('#subFull button').forEach(b=>{ b.onclick=()=>irParaSub(b.dataset.sub); });
 document.getElementById('btnArquivo').onclick=menuArquivo;
 document.getElementById('btnBackup').onclick=baixarBackup;
@@ -7758,48 +7790,33 @@ tentarReconectar();
   }
 })();
 
-/* alerta na tela quando uma tarefa chega na data (e hora, se houver) programada - pedido do
-   Felipe 19/08. Roda a cada 60s enquanto a aba fica aberta. Cada tarefa só dispara o alerta uma
-   vez POR DATA (guardado no localStorage, sobrevive a recarregar a página) - pedido do Felipe
-   19/08 (2ª rodada): uma tarefa atrasada não pode ficar avisando toda vez que abre o Doca; uma
-   vez visto o aviso, só volta a alertar se a data mudar - ou seja, numa tarefa mensal recorrente,
-   só no mês seguinte (quando ela reagenda pra próxima data). Tarefa concluída some de
-   state.tarefas (ver concluirTarefa), então nem entra mais nesse cálculo. */
-function tarefasAlertadasStorage(){
-  try{ return JSON.parse(localStorage.getItem('doca_tarefas_alertadas')||'{}'); }catch(e){ return {}; }
-}
-function salvarTarefasAlertadasStorage(obj){
-  try{ localStorage.setItem('doca_tarefas_alertadas',JSON.stringify(obj)); }catch(e){}
-}
-function mostrarAlertaTarefas(lista){
-  const el=document.getElementById('tarefaAlerta'); if(!el) return;
-  el.innerHTML=`⏰ <b>${lista.length} tarefa${lista.length>1?'s':''} no prazo:</b> ${lista.slice(0,4).map(t=>esc(t.titulo)).join(' · ')}${lista.length>4?' ...':''} <button class="tarefa-alerta-x" id="tarefaAlertaX">Ok, fechar</button>`;
-  el.classList.add('show');
-  document.getElementById('tarefaAlertaX').onclick=()=>el.classList.remove('show');
-}
-function checarTarefasVencendo(){
-  const h=hoje(); // "AAAA-MM-DD" de hoje, string ISO comparável direto
+/* alerta de tarefas do dia - pedido do Felipe 19/08 (3ª rodada, versão final):
+   - só tarefas com data de HOJE (nem atrasada, nem futura)
+   - aparece TODA VEZ que abre o programa ou entra na aba Tarefas (não guarda "já vi" em lugar
+     nenhum) - enquanto a tarefa não for concluída, o aviso volta a aparecer
+   - modal no meio da tela (reaproveita openModal/closeModal), não banner no topo */
+function tarefasDeHojePendentes(){
+  const h=hoje();
   const hhmm=new Date().toTimeString().slice(0,5);
-  const devidas=(state.tarefas||[]).filter(t=>{
-    const d=String(t.data||'').slice(0,10); // garante string "AAAA-MM-DD" pura, sem hora/timestamp junto
-    if(!d) return false;              // sem data definida - nunca alerta
-    if(d>h) return false;             // data no futuro - ainda não chegou o dia, NÃO alerta
-    if(d===h&&t.hora&&t.hora>hhmm) return false; // é hoje mas a hora ainda não chegou
-    return true;                      // data já passou (ou é hoje e a hora já chegou) - alerta
+  return (state.tarefas||[]).filter(t=>{
+    const d=String(t.data||'').slice(0,10);
+    if(d!==h) return false;                       // só hoje - passado e futuro não mostram
+    if(t.hora&&t.hora>hhmm) return false;          // é hoje mas a hora ainda não chegou
+    return true;
   });
-  const alertadas=tarefasAlertadasStorage();
-  // só é "nova" se essa DATA especifica dessa tarefa ainda não foi alertada antes
-  const novas=devidas.filter(t=>alertadas[t.id]!==String(t.data||'').slice(0,10));
-  if(!novas.length) return;
-  novas.forEach(t=>{ alertadas[t.id]=String(t.data||'').slice(0,10); });
-  // limpeza: tira do registro tarefas que já não existem mais (concluídas/excluídas), pra não
-  // crescer pra sempre no localStorage
-  const idsAtivos=new Set((state.tarefas||[]).map(t=>t.id));
-  Object.keys(alertadas).forEach(id=>{ if(!idsAtivos.has(id)) delete alertadas[id]; });
-  salvarTarefasAlertadasStorage(alertadas);
-  mostrarAlertaTarefas(devidas);
 }
-setInterval(checarTarefasVencendo,60*1000);
+function mostrarAlertaTarefasDoDia(){
+  const lista=tarefasDeHojePendentes();
+  if(!lista.length) return;
+  const body=openModal(false);
+  body.innerHTML=`<h3>⏰ ${lista.length} tarefa${lista.length>1?'s':''} pra hoje</h3>
+    <p class="hint" style="margin:0 0 12px">Ainda não concluída${lista.length>1?'s':''}:</p>
+    <div class="table-wrap"><table class="tbl-produtos"><tbody>
+      ${lista.map(t=>`<tr><td>${esc(t.titulo)}${t.hora?` <span class="muted" style="font-size:11px">(${esc(t.hora)})</span>`:''}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="modal-actions"><button class="btn gold" id="btnFecharAlertaTarefasDoDia">Ok, entendi</button></div>`;
+  document.getElementById('btnFecharAlertaTarefasDoDia').onclick=closeModal;
+}
 checarTarefasVencendo();
 
 /* re-sync periódico só do financeiro (Mercado Pago), enquanto a aba do Doca fica aberta.
