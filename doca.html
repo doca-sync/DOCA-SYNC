@@ -5398,6 +5398,16 @@ function renderResumoFinanceiroResultado(resumo,loja){
   const margemPosAds=margem-resumo.ads.custo;
   const margemPosAdsPct=resumo.faturamento>0?(margemPosAds/resumo.faturamento*100):0;
   const margemLiquidaPct=resumo.faturamento>0?(margemLiquida/resumo.faturamento*100):0;
+  /* Margem Líquida (rateada) - pedido do Felipe 19/08: mostrar junto da Margem Líquida "de custo
+     total" (a de cima, que desconta a fatura ML pendente inteira). Essa aqui divide a fatura
+     proporcional aos dias do período escolhido, pra não afundar o número quando o período é
+     curto (ex: "Hoje") comparado ao ciclo inteiro de custo acumulado. */
+  const diasSelResumo=diasNoPeriodoResumo(resumo.periodo.de,resumo.periodo.ate);
+  const diasDecorridosCicloResumo=Math.max(1,new Date().getDate());
+  const fatorRateioResumo=Math.min(1,diasSelResumo/diasDecorridosCicloResumo);
+  const faturaMlRateadaResumo=faturaMlAtual*fatorRateioResumo;
+  const margemLiquidaRateada=margem-custosPeriodo-faturaMlRateadaResumo;
+  const margemLiquidaRateadaPct=resumo.faturamento>0?(margemLiquidaRateada/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
   /* badge ▲/▼ comparando com o período anterior equivalente (mesmo tanto de dias, logo antes) -
@@ -5430,12 +5440,17 @@ function renderResumoFinanceiroResultado(resumo,loja){
       ${cartao('CANCELAMENTOS',resumo.cancelamentosValor,pct(resumo.cancelamentosValor))}
       ${cartao('REEMBOLSOS',resumo.reembolsosValor,pct(resumo.reembolsosValor))}
     </div>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM DE CONTRIBUIÇÃO</div>
         <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
         <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento${badge(margem,margensAnt?margensAnt.margem:null,false)}</div>
         <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição menos o gasto de Ads do período - só informativo, não desconta de novo na Margem Líquida (que já desconta via fatura ML pendente)">Margem pós Ads: <b class="${margemPosAds>=0?'okv':'pend'}">${fmtMoney(margemPosAds)}</b> (${margemPosAdsPct.toFixed(1)}% do faturamento)</div>
+      </div>
+      <div class="card" style="margin:0">
+        <div class="muted" style="font-size:11px">MARGEM LÍQUIDA (RATEADA)</div>
+        <b style="font-size:22px" class="${margemLiquidaRateada>=0?'okv':'pend'}">${fmtMoney(margemLiquidaRateada)}</b>
+        <div class="hint" style="margin:2px 0 0" title="Fatura ML pendente (${fmtMoney(faturaMlAtual)} acumulado no ciclo até hoje) rateada por ${(fatorRateioResumo*100).toFixed(0)}% (dias do período ÷ dias já passados no ciclo) = ${fmtMoney(faturaMlRateadaResumo)} descontada aqui, em vez do valor cheio">${margemLiquidaRateadaPct.toFixed(1)}% do faturamento · fatura ML rateada: ${fmtMoney(faturaMlRateadaResumo)}</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
