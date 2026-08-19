@@ -2642,6 +2642,7 @@ let novaTarefaData='';
    o seletor de data) reseta o campo pro valor padrão vazio e apaga o que a pessoa escreveu -
    pedido do Felipe 19/08 */
 let novaTarefaTitulo='';
+let novoGestaoTipo=null;
 /* avança uma data ISO em 1 mês, ajustando pro último dia quando o mês novo é mais curto */
 function proximoMes(iso){
   if(!iso) return '';
@@ -2678,7 +2679,8 @@ function renderTarefas(){
       <input id="tfTitulo" type="text" placeholder="O que precisa ser feito?" autocomplete="off" value="${esc(novaTarefaTitulo)}">
       ${botaoData('tfData',novaTarefaData,{placeholder:'Data (opcional)',style:'',classe:'sm'})}
       <input id="tfHora" type="time" title="Horário (opcional)">
-      <button type="button" class="btn sm ${novoRepetirMensal?'acc':''}" id="tfRepetir" title="Repetir todo mês nesta data (ex: gestão de promoções e cupons)">🔁 Mensal</button>
+      <button type="button" class="btn sm ${novoGestaoTipo==='mensal'?'acc':''}" id="tfGestaoMensal" title="Criar já em Gestão Ativa mensal: não some ao concluir, fica com ✓ e volta a pedir sozinha no mês seguinte">🔁M</button>
+      <button type="button" class="btn sm ${novoGestaoTipo==='semanal'?'acc':''}" id="tfGestaoSemanal" title="Criar já em Gestão Ativa semanal: não some ao concluir, fica com ✓ e volta a pedir sozinha na semana seguinte">🔁S</button>
       <button class="btn gold" id="btnAddTarefa">+ Adicionar</button>
     </div>
     ${tarefas.length?`<div class="tarefa-lista" id="tarefaLista">
@@ -2707,7 +2709,6 @@ function renderTarefas(){
             ${subs.length?`<span class="sub-cont ${feitas===subs.length?'ok':''}" title="Subtarefas concluídas">${feitas}/${subs.length}</span>`:''}
             ${botaoData('data_'+t.id,t.data,{placeholder:'Data',style:'',classe:'tarefa-data '+(venc?'venc':(hj?'hoje':'')),dataAttr:`data-databtn="${t.id}"`})}
             <input class="tarefa-hora" type="time" value="${esc(t.hora||'')}" data-hora="${t.id}" title="Horário (opcional)">
-            <button class="tarefa-repetir ${t.repetirMensal?'ativo':''}" data-repetir="${t.id}" title="${t.repetirMensal?'Repete todo mês nesta data — clique para desativar':'Repetir todo mês nesta data (ex: gestão de promoções e cupons)'}">🔁</button>
             <button class="tarefa-repetir ${resetaTipo==='mensal'?'ativo':''}" data-gestaomensal="${t.id}" title="${resetaTipo==='mensal'?'Gestão Ativa mensal ativada — clique para desativar':'Ativar Gestão Ativa mensal nesta tarefa: não some ao concluir, fica com ✓ e volta a pedir sozinha no mês seguinte'}">🔁M</button>
             <button class="tarefa-repetir ${resetaTipo==='semanal'?'ativo':''}" data-gestaosemanal="${t.id}" title="${resetaTipo==='semanal'?'Gestão Ativa semanal ativada — clique para desativar':'Ativar Gestão Ativa semanal nesta tarefa: não some ao concluir, fica com ✓ e volta a pedir sozinha na semana seguinte'}">🔁S</button>
             <button class="tarefa-x" data-excluir="${t.id}" title="Excluir tarefa">✕</button>
@@ -2738,17 +2739,21 @@ function renderTarefas(){
   const btnTfData=document.getElementById('tfData');
   if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
   const add=()=>{
-    const tit=document.getElementById('tfTitulo').value.trim();
+    const tituloInput=document.getElementById('tfTitulo');
+    const horaInput=document.getElementById('tfHora');
+    const tit=tituloInput.value.trim();
     if(!tit){ alert('Escreva o que precisa ser feito.'); return; }
-    addTarefa(tit,novaTarefaData,document.getElementById('tfHora').value,novoRepetirMensal,'');
+    const dataEscolhida=novaTarefaData, gestaoEscolhido=novoGestaoTipo, horaEscolhida=horaInput.value;
     novaTarefaData='';
-    novoRepetirMensal=false;
+    novoGestaoTipo=null;
     novaTarefaTitulo='';
+    addTarefa(tit,dataEscolhida,horaEscolhida,false,'',gestaoEscolhido);
     const c=document.getElementById('tfTitulo'); if(c) c.focus();
   };
   const tfTituloEl=document.getElementById('tfTitulo');
   tfTituloEl.oninput=()=>{ novaTarefaTitulo=tfTituloEl.value; };
-  document.getElementById('tfRepetir').onclick=(ev)=>{ novoRepetirMensal=!novoRepetirMensal; ev.currentTarget.classList.toggle('acc',novoRepetirMensal); };
+  document.getElementById('tfGestaoMensal').onclick=()=>{ novoGestaoTipo=novoGestaoTipo==='mensal'?null:'mensal'; renderTarefas(); };
+  document.getElementById('tfGestaoSemanal').onclick=()=>{ novoGestaoTipo=novoGestaoTipo==='semanal'?null:'semanal'; renderTarefas(); };
   el.querySelectorAll('[data-lista]').forEach(b=>b.onclick=()=>{ listaAtual=b.dataset.lista; renderTarefas(); });
   document.getElementById('btnNovaLista').onclick=()=>{
     const body=openModal(false);
@@ -6375,9 +6380,9 @@ function excluirLista(id){
 function tarefasDaLista(id){ return state.tarefas.filter(t=>t.listaId===id); }
 
 /* ---------- tarefas ---------- */
-function addTarefa(titulo,data,hora,repetirMensal,obs){
+function addTarefa(titulo,data,hora,repetirMensal,obs,resetaTipo){
   snapshot('nova tarefa');
-  state.tarefas.unshift({id:gerarId('t'),listaId:listaAtual,titulo:(titulo||'').trim().toUpperCase(),data:data||'',hora:hora||'',repetirMensal:!!repetirMensal,obs:(obs||'').trim(),subs:[],criadoEm:Date.now()});
+  state.tarefas.unshift({id:gerarId('t'),listaId:listaAtual,titulo:(titulo||'').trim().toUpperCase(),data:data||'',hora:hora||'',repetirMensal:!!repetirMensal,obs:(obs||'').trim(),subs:[],criadoEm:Date.now(),resetaTipo:resetaTipo||null});
   persist();
 }
 function updateTarefa(id,patch){
