@@ -1039,17 +1039,25 @@ function migrar(){
   });
   if(!Array.isArray(state.tarefas)) state.tarefas=[];
   if(!Array.isArray(state.listas)) state.listas=[];
-  /* migração: campo antigo resetaMensal (boolean) vira resetaTipo ('mensal'|'semanal') - agora dá
-     pra escolher resetar semanalmente também, não só mensalmente - pedido do Felipe 19/08 */
+  /* migração: campo antigo resetaMensal (boolean, na lista) vira resetaTipo ('mensal'|'semanal') */
   state.listas.forEach(l=>{ if(l.resetaMensal&&!l.resetaTipo) l.resetaTipo='mensal'; });
-  /* migração única: subtarefa já marcada (feito=true, boolean antigo) em lista "Gestão Ativa"
+  /* migração: Gestão Ativa era por LISTA (toda tarefa da lista no mesmo modo) - agora é por
+     TAREFA (dá pra misturar mensal e semanal na mesma lista) - pedido do Felipe 19/08. Carrega
+     o modo que a lista tinha pra cada tarefa dela, uma única vez. */
+  (function migrarGestaoParaTarefa(){
+    state.tarefas.forEach(t=>{
+      if(t.resetaTipo) return;
+      const l=state.listas.find(x=>x.id===t.listaId);
+      if(l&&l.resetaTipo) t.resetaTipo=l.resetaTipo;
+    });
+  })();
+  /* migração única: subtarefa já marcada (feito=true, boolean antigo) em tarefa periódica
      (resetaTipo) que ainda não tem concluidoMes vira "concluída no período atual" - preserva o
      que já tinha sido marcado antes dessa versão existir - pedido do Felipe 19/08 */
   (function migrarSubsPeriodo(){
-    const listasPeriodicas=new Set(state.listas.filter(l=>l.resetaTipo).map(l=>l.id));
     state.tarefas.forEach(t=>{
-      if(!listasPeriodicas.has(t.listaId)||!Array.isArray(t.subs)) return;
-      const periodo=periodoAtualParaLista(t.listaId);
+      if(!t.resetaTipo||!Array.isArray(t.subs)) return;
+      const periodo=periodoAtualParaTarefa(t);
       t.subs.forEach(s=>{ if(s.feito&&s.concluidoMes===undefined) s.concluidoMes=periodo; });
     });
   })();
@@ -2630,6 +2638,10 @@ function renderOnboard(){
 let arrastando=null,arrastandoLista=null,arrastandoSub=null;
 let novoRepetirMensal=false;
 let novaTarefaData='';
+/* guarda o que foi digitado no título antes de enviar - sem isso, qualquer re-render (ex: abrir
+   o seletor de data) reseta o campo pro valor padrão vazio e apaga o que a pessoa escreveu -
+   pedido do Felipe 19/08 */
+let novaTarefaTitulo='';
 /* avança uma data ISO em 1 mês, ajustando pro último dia quando o mês novo é mais curto */
 function proximoMes(iso){
   if(!iso) return '';
@@ -2658,14 +2670,12 @@ function renderTarefas(){
       }).join('')}
       <button class="lista-chip nova" id="btnNovaLista" title="Criar outra lista">+ Nova lista</button>
       ${state.listas.length?`<span class="lista-acoes">
-        <button class="btn sm ${listaAtualObj&&listaAtualObj.resetaTipo==='mensal'?'acc':''}" id="btnResetaMensalLista" title="${listaAtualObj&&listaAtualObj.resetaTipo==='mensal'?'Tarefas concluídas nesta lista não somem — ficam com ✓ e voltam a pedir conclusão sozinhas no mês seguinte. Clique para desativar.':'Ativar: tarefas concluídas nesta lista não somem mais, ficam marcadas com ✓ e voltam a pedir conclusão sozinhas no mês seguinte.'}">🔁 Mensal</button>
-        <button class="btn sm ${listaAtualObj&&listaAtualObj.resetaTipo==='semanal'?'acc':''}" id="btnResetaSemanalLista" title="${listaAtualObj&&listaAtualObj.resetaTipo==='semanal'?'Tarefas concluídas nesta lista não somem — ficam com ✓ e voltam a pedir conclusão sozinhas na semana seguinte. Clique para desativar.':'Ativar: tarefas concluídas nesta lista não somem mais, ficam marcadas com ✓ e voltam a pedir conclusão sozinhas na semana seguinte.'}">🔁 Semanal</button>
         <button class="btn sm" id="btnRenomearLista" title="Renomear esta lista">✎</button>
         ${state.listas.length>1?`<button class="btn sm danger-outline" id="btnExcluirLista" title="Excluir esta lista">✕</button>`:''}
       </span>`:''}
     </div>
     <div class="tarefa-nova">
-      <input id="tfTitulo" type="text" placeholder="O que precisa ser feito?" autocomplete="off">
+      <input id="tfTitulo" type="text" placeholder="O que precisa ser feito?" autocomplete="off" value="${esc(novaTarefaTitulo)}">
       ${botaoData('tfData',novaTarefaData,{placeholder:'Data (opcional)',style:'',classe:'sm'})}
       <input id="tfHora" type="time" title="Horário (opcional)">
       <button type="button" class="btn sm ${novoRepetirMensal?'acc':''}" id="tfRepetir" title="Repetir todo mês nesta data (ex: gestão de promoções e cupons)">🔁 Mensal</button>
@@ -2676,9 +2686,9 @@ function renderTarefas(){
         const venc=t.data&&t.data<h, hj=t.data===h;
         const idx=tarefas.indexOf(t);
         const subs=t.subs||[];
-        const resetaTipo=listaAtualObj&&listaAtualObj.resetaTipo;
-        const mensal=!!resetaTipo; // true pra qualquer modo periódico ativo (mensal OU semanal)
-        const periodoAtualLista=mensal?periodoAtualParaLista(listaAtual):null;
+        const resetaTipo=t.resetaTipo;
+        const mensal=!!resetaTipo; // true pra qualquer modo periódico ativo nesta tarefa (mensal OU semanal)
+        const periodoAtualLista=mensal?periodoAtualParaTarefa(t):null;
         const rotuloPeriodo=resetaTipo==='semanal'?'esta semana':'este mês';
         const rotuloPeriodoSeg=resetaTipo==='semanal'?'na semana seguinte':'no mês seguinte';
         const feitas=mensal?subs.filter(s=>s.concluidoMes===periodoAtualLista).length:subs.filter(s=>s.feito).length;
@@ -2691,13 +2701,15 @@ function renderTarefas(){
               <button data-sobe="${t.id}" ${idx===0?'disabled':''} title="Subir">▲</button>
               <button data-desce="${t.id}" ${idx===tarefas.length-1?'disabled':''} title="Descer">▼</button>
             </span>
-            <button class="tarefa-check ${feitaEsteMes?'feito':''}" ${temSubsMensal?'':`data-concluir="${t.id}"`} title="${temSubsMensal?(feitaEsteMes?('Todas as subtarefas concluídas '+rotuloPeriodo):'Finaliza sozinha quando todas as subtarefas forem concluídas'):(mensal?(feitaEsteMes?('Feita '+rotuloPeriodo+' — clique para reabrir'):('Marcar como feita '+rotuloPeriodo+' (não some, volta a pedir '+rotuloPeriodoSeg+')')):'Concluir tarefa')}"></button>
+            ${temSubsMensal?(feitaEsteMes?`<span class="tarefa-check feito" title="Todas as subtarefas concluídas ${rotuloPeriodo}"></span>`:''):`<button class="tarefa-check ${feitaEsteMes?'feito':''}" data-concluir="${t.id}" title="${mensal?(feitaEsteMes?('Feita '+rotuloPeriodo+' — clique para reabrir'):('Marcar como feita '+rotuloPeriodo+' (não some, volta a pedir '+rotuloPeriodoSeg+')')):'Concluir tarefa'}"></button>`}
             <input class="tarefa-tit" type="text" value="${esc(t.titulo)}" data-tit="${t.id}" placeholder="Sem título">
             <button type="button" class="tarefa-resumo" data-abrir="${t.id}" title="Data, horário, repetição e observação">${t.data?`📅 ${fmtData(t.data).slice(0,5)}`:''}${t.repetirMensal?' 🔁':''}${(!t.data&&!t.repetirMensal)?'⋯':''}</button>
             ${subs.length?`<span class="sub-cont ${feitas===subs.length?'ok':''}" title="Subtarefas concluídas">${feitas}/${subs.length}</span>`:''}
             ${botaoData('data_'+t.id,t.data,{placeholder:'Data',style:'',classe:'tarefa-data '+(venc?'venc':(hj?'hoje':'')),dataAttr:`data-databtn="${t.id}"`})}
             <input class="tarefa-hora" type="time" value="${esc(t.hora||'')}" data-hora="${t.id}" title="Horário (opcional)">
             <button class="tarefa-repetir ${t.repetirMensal?'ativo':''}" data-repetir="${t.id}" title="${t.repetirMensal?'Repete todo mês nesta data — clique para desativar':'Repetir todo mês nesta data (ex: gestão de promoções e cupons)'}">🔁</button>
+            <button class="tarefa-repetir ${resetaTipo==='mensal'?'ativo':''}" data-gestaomensal="${t.id}" title="${resetaTipo==='mensal'?'Gestão Ativa mensal ativada — clique para desativar':'Ativar Gestão Ativa mensal nesta tarefa: não some ao concluir, fica com ✓ e volta a pedir sozinha no mês seguinte'}">🔁M</button>
+            <button class="tarefa-repetir ${resetaTipo==='semanal'?'ativo':''}" data-gestaosemanal="${t.id}" title="${resetaTipo==='semanal'?'Gestão Ativa semanal ativada — clique para desativar':'Ativar Gestão Ativa semanal nesta tarefa: não some ao concluir, fica com ✓ e volta a pedir sozinha na semana seguinte'}">🔁S</button>
             <button class="tarefa-x" data-excluir="${t.id}" title="Excluir tarefa">✕</button>
           </div>
           <textarea class="tarefa-obs" data-obs="${t.id}" rows="1" placeholder="Observações (Enter pula linha)">${esc(t.obs)}</textarea>
@@ -2721,7 +2733,7 @@ function renderTarefas(){
         </div>`;
       }).join('')}
     </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}
-    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. ${listaAtualObj&&listaAtualObj.resetaTipo?('Modo <b>🔁 '+(listaAtualObj.resetaTipo==='semanal'?'Semanal':'Mensal')+'</b> ativado nesta lista: ao concluir, a tarefa fica marcada com ✓ mas não some — volta a pedir conclusão sozinha '+(listaAtualObj.resetaTipo==='semanal'?'na semana seguinte':'no mês seguinte')+'. Tarefas com subtarefas finalizam sozinhas quando todas as subtarefas forem concluídas.'):'Ao concluir, a tarefa some (dá pra recuperar no <b>Desfazer</b>).'}</p>`;
+    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. Toque em <b>🔁M</b> ou <b>🔁S</b> numa tarefa pra ativar Gestão Ativa (mensal ou semanal): ela não some ao concluir, fica com ✓ e volta a pedir conclusão sozinha no período seguinte (tarefas com subtarefas finalizam sozinhas quando todas as subtarefas forem concluídas). Tarefas sem Gestão Ativa somem ao concluir (dá pra recuperar no <b>Desfazer</b>).</p>`;
 
   const btnTfData=document.getElementById('tfData');
   if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
@@ -2731,8 +2743,11 @@ function renderTarefas(){
     addTarefa(tit,novaTarefaData,document.getElementById('tfHora').value,novoRepetirMensal,'');
     novaTarefaData='';
     novoRepetirMensal=false;
+    novaTarefaTitulo='';
     const c=document.getElementById('tfTitulo'); if(c) c.focus();
   };
+  const tfTituloEl=document.getElementById('tfTitulo');
+  tfTituloEl.oninput=()=>{ novaTarefaTitulo=tfTituloEl.value; };
   document.getElementById('tfRepetir').onclick=(ev)=>{ novoRepetirMensal=!novoRepetirMensal; ev.currentTarget.classList.toggle('acc',novoRepetirMensal); };
   el.querySelectorAll('[data-lista]').forEach(b=>b.onclick=()=>{ listaAtual=b.dataset.lista; renderTarefas(); });
   document.getElementById('btnNovaLista').onclick=()=>{
@@ -2772,9 +2787,9 @@ function renderTarefas(){
 
   el.querySelectorAll('[data-concluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.concluir);
-    if(listaAtualObj&&listaAtualObj.resetaTipo){
-      // lista periódica (mensal ou semanal): não some - só alterna feito/reabrir, reseta sozinha no período seguinte
-      const rot=listaAtualObj.resetaTipo==='semanal'?'esta semana':'este mês';
+    if(t&&t.resetaTipo){
+      // tarefa em Gestão Ativa (mensal ou semanal): não some - só alterna feito/reabrir, reseta sozinha no período seguinte
+      const rot=t.resetaTipo==='semanal'?'esta semana':'este mês';
       if(tarefaFeitaEsteMes(t)){ desconcluirTarefa(b.dataset.concluir); toast('Tarefa reaberta: '+((t&&t.titulo)||'')); }
       else { concluirTarefaMensal(b.dataset.concluir); toast('✓ Concluída '+rot+': '+((t&&t.titulo)||'')); }
       renderTarefas();
@@ -2786,10 +2801,8 @@ function renderTarefas(){
       toast(r&&r.repetiu?`🔁 Concluída — volta em ${fmtData(r.novaData)}: ${(t&&t.titulo)||''}`:('Tarefa concluída: '+((t&&t.titulo)||'')));
     },180);
   });
-  const btnResetaMensalLista=document.getElementById('btnResetaMensalLista');
-  if(btnResetaMensalLista) btnResetaMensalLista.onclick=()=>{ alternarResetaTipoLista(listaAtual,'mensal'); renderTarefas(); };
-  const btnResetaSemanalLista=document.getElementById('btnResetaSemanalLista');
-  if(btnResetaSemanalLista) btnResetaSemanalLista.onclick=()=>{ alternarResetaTipoLista(listaAtual,'semanal'); renderTarefas(); };
+  el.querySelectorAll('[data-gestaomensal]').forEach(b=>b.onclick=()=>{ alternarGestaoTipoTarefa(b.dataset.gestaomensal,'mensal'); renderTarefas(); });
+  el.querySelectorAll('[data-gestaosemanal]').forEach(b=>b.onclick=()=>{ alternarGestaoTipoTarefa(b.dataset.gestaosemanal,'semanal'); renderTarefas(); });
   el.querySelectorAll('[data-excluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.excluir);
     confirmAction(`Excluir a tarefa "${(t&&t.titulo)||''}"? Dá pra reverter no botão Desfazer.`,()=>{
@@ -2816,7 +2829,8 @@ function renderTarefas(){
   });
   el.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{
     const [tid,sid]=b.dataset.sub.split('|');
-    if(listaAtualObj&&listaAtualObj.resetaTipo) alternarSubMensal(tid,sid); else alternarSub(tid,sid);
+    const tt=state.tarefas.find(x=>x.id===tid);
+    if(tt&&tt.resetaTipo) alternarSubMensal(tid,sid); else alternarSub(tid,sid);
     renderTarefas();
   });
   el.querySelectorAll('[data-subtit]').forEach(i=>i.onchange=()=>{ const [tid,sid]=i.dataset.subtit.split('|'); editarSub(tid,sid,i.value); });
@@ -6395,15 +6409,14 @@ function mesAtualStr(){ return hoje().slice(0,7); }
 /* chave de semana simples e estável (não é a semana ISO "oficial", só precisa trocar uma vez por
    semana) - pedido do Felipe 19/08, opção semanal de reset em Gestão Ativa */
 function semanaAtualStr(){ return 'S'+Math.floor(Math.floor(Date.now()/864e5)/7); }
-function periodoAtualParaLista(listaId){
-  const l=state.listas.find(x=>x.id===listaId);
-  return (l&&l.resetaTipo==='semanal')?semanaAtualStr():mesAtualStr();
+function periodoAtualParaTarefa(t){
+  return (t&&t.resetaTipo==='semanal')?semanaAtualStr():mesAtualStr();
 }
-function tarefaFeitaEsteMes(t){ return !!(t&&t.concluidoMes===periodoAtualParaLista(t.listaId)); }
+function tarefaFeitaEsteMes(t){ return !!(t&&t.concluidoMes===periodoAtualParaTarefa(t)); }
 function concluirTarefaMensal(id){
   const t=state.tarefas.find(x=>x.id===id); if(!t) return;
   snapshot('conclusão (periódica, não some) da tarefa "'+(t.titulo||'').slice(0,30)+'"');
-  t.concluidoMes=periodoAtualParaLista(t.listaId);
+  t.concluidoMes=periodoAtualParaTarefa(t);
   persist();
 }
 function desconcluirTarefa(id){
@@ -6412,11 +6425,14 @@ function desconcluirTarefa(id){
   t.concluidoMes=null;
   persist();
 }
-function alternarResetaTipoLista(listaId,tipo){
-  const l=state.listas.find(x=>x.id===listaId); if(!l) return;
-  const novo=l.resetaTipo===tipo?null:tipo;
-  snapshot((novo?'ativar':'desativar')+' modo '+tipo+' da lista "'+(l.nome||'')+'"');
-  l.resetaTipo=novo;
+/* Gestão Ativa agora é por tarefa: cada uma escolhe mensal, semanal, ou nenhum (comportamento
+   normal, some ao concluir) - dá pra misturar dentro da mesma lista - pedido do Felipe 19/08 */
+function alternarGestaoTipoTarefa(id,tipo){
+  const t=state.tarefas.find(x=>x.id===id); if(!t) return;
+  const novo=t.resetaTipo===tipo?null:tipo;
+  snapshot((novo?'ativar':'desativar')+' modo '+tipo+' na tarefa "'+(t.titulo||'').slice(0,30)+'"');
+  t.resetaTipo=novo;
+  if(!novo) t.concluidoMes=null;
   persist();
 }
 function moverTarefa(id,paraId){
@@ -6449,7 +6465,7 @@ function alternarSub(tid,sid){
 function alternarSubMensal(tid,sid){
   const t=state.tarefas.find(x=>x.id===tid); if(!t) return;
   const s=(t.subs||[]).find(x=>x.id===sid); if(!s) return;
-  const periodo=periodoAtualParaLista(t.listaId);
+  const periodo=periodoAtualParaTarefa(t);
   const feitoAgora=s.concluidoMes===periodo;
   snapshot(feitoAgora?'reabrir subtarefa (período)':'concluir subtarefa (período)');
   s.concluidoMes=feitoAgora?null:periodo;
@@ -7873,6 +7889,14 @@ tentarReconectar();
    - aparece TODA VEZ que abre o programa ou entra na aba Tarefas (não guarda "já vi" em lugar
      nenhum) - enquanto a tarefa não for concluída, o aviso volta a aparecer
    - modal no meio da tela (reaproveita openModal/closeModal), não banner no topo */
+/* tarefa de Gestão Ativa que já está concluída no período atual (direto ou via subtarefas) não
+   deve aparecer como pendente no alerta do dia - pedido do Felipe 19/08 */
+function tarefaConcluidaNoPeriodo(t){
+  if(!t||!t.resetaTipo) return false;
+  const subs=t.subs||[];
+  if(subs.length){ const periodo=periodoAtualParaTarefa(t); return subs.every(s=>s.concluidoMes===periodo); }
+  return tarefaFeitaEsteMes(t);
+}
 function tarefasDeHojePendentes(){
   const h=hoje();
   const hhmm=new Date().toTimeString().slice(0,5);
@@ -7880,6 +7904,7 @@ function tarefasDeHojePendentes(){
     const d=String(t.data||'').slice(0,10);
     if(d!==h) return false;                       // só hoje - passado e futuro não mostram
     if(t.hora&&t.hora>hhmm) return false;          // é hoje mas a hora ainda não chegou
+    if(tarefaConcluidaNoPeriodo(t)) return false;  // Gestão Ativa já concluída este período - não incomoda de novo
     return true;
   });
 }
