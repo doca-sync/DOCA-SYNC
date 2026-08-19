@@ -574,6 +574,10 @@ let ultimoMod=0;              /* lastModified do arquivo na última vez que lemo
 let alteracaoLocal=false;     /* há mudança nossa ainda não gravada no arquivo */
 let syncTimer=null;
 let intervaloSync=Number(localStorage.getItem('estoque_sync_seg')||30);
+/* marca o instante do último clique/edição local - usado pra dar uma folga ao sync automático
+   (evita que ele sobrescreva um clique/toque recente antes de terminar de gravar) - pedido do
+   Felipe 19/08, bolinha de tarefa voltando vazia / subtarefas sumindo */
+let ultimaAtividadeLocal=0;
 let ultimaVerificacao=null;
 let nuvemAuth=localStorage.getItem('estoque_nuvem_auth')||null;  /* "usuario:senha" em base64 - presença = nuvem ligada */
 let nuvemAtualizadoEm=0;      /* "atualizado_em" (epoch ms) da última leitura/gravação conhecida na nuvem */
@@ -1035,14 +1039,18 @@ function migrar(){
   });
   if(!Array.isArray(state.tarefas)) state.tarefas=[];
   if(!Array.isArray(state.listas)) state.listas=[];
+  /* migração: campo antigo resetaMensal (boolean) vira resetaTipo ('mensal'|'semanal') - agora dá
+     pra escolher resetar semanalmente também, não só mensalmente - pedido do Felipe 19/08 */
+  state.listas.forEach(l=>{ if(l.resetaMensal&&!l.resetaTipo) l.resetaTipo='mensal'; });
   /* migração única: subtarefa já marcada (feito=true, boolean antigo) em lista "Gestão Ativa"
-     (resetaMensal) que ainda não tem concluidoMes vira "concluída este mês" - preserva o que já
-     tinha sido marcado antes dessa versão existir - pedido do Felipe 19/08 */
-  (function migrarSubsMensal(){
-    const listasMensais=new Set(state.listas.filter(l=>l.resetaMensal).map(l=>l.id));
+     (resetaTipo) que ainda não tem concluidoMes vira "concluída no período atual" - preserva o
+     que já tinha sido marcado antes dessa versão existir - pedido do Felipe 19/08 */
+  (function migrarSubsPeriodo(){
+    const listasPeriodicas=new Set(state.listas.filter(l=>l.resetaTipo).map(l=>l.id));
     state.tarefas.forEach(t=>{
-      if(!listasMensais.has(t.listaId)||!Array.isArray(t.subs)) return;
-      t.subs.forEach(s=>{ if(s.feito&&s.concluidoMes===undefined) s.concluidoMes=mesAtualStr(); });
+      if(!listasPeriodicas.has(t.listaId)||!Array.isArray(t.subs)) return;
+      const periodo=periodoAtualParaLista(t.listaId);
+      t.subs.forEach(s=>{ if(s.feito&&s.concluidoMes===undefined) s.concluidoMes=periodo; });
     });
   })();
   if(!Array.isArray(state.notasFiscais)) state.notasFiscais=[];
@@ -1276,7 +1284,7 @@ function limparMarcasFull(){
   /* a marca de "já criado" só vale enquanto o envio existir */
   state.full.itens.forEach(i=>{ if(i.enviado&&!state.envios.some(e=>e.id===i.enviado.envioId)) i.enviado=null; });
 }
-function persist(){ state.produtos.forEach(p=>{sincronizarLotes(p);sincronizarPedidos(p);}); reconciliarTudo(); limparMarcasFull(); saveToLocalStorage(); alteracaoLocal=true; if(fileHandle) saveToFile(); if(nuvemAuth) salvarNaNuvem(); renderAll(); }
+function persist(){ ultimaAtividadeLocal=Date.now(); state.produtos.forEach(p=>{sincronizarLotes(p);sincronizarPedidos(p);}); reconciliarTudo(); limparMarcasFull(); saveToLocalStorage(); alteracaoLocal=true; if(fileHandle) saveToFile(); if(nuvemAuth) salvarNaNuvem(); renderAll(); }
 
 /* ---- carrega o conteúdo do arquivo para a tela ---- */
 async function carregarDoArquivo(silencioso){
@@ -1303,6 +1311,15 @@ function usuarioDigitando(){
   const tag=(a.tagName||'').toUpperCase();
   return tag==='INPUT'||tag==='TEXTAREA'||a.isContentEditable;
 }
+/* além de "está digitando", dá uma folga de alguns segundos depois de QUALQUER clique/edição
+   local (concluir tarefa, marcar subtarefa etc.) - o clique já salva sozinho, só evita que o
+   sync automático de 30s chegue no meio do caminho e sobrescreva com uma versão mais antiga
+   antes da gravação terminar - pedido do Felipe 19/08 */
+function syncDevePular(){
+  if(usuarioDigitando()) return true;
+  if(Date.now()-ultimaAtividadeLocal<6000) return true;
+  return false;
+}
 /* ---- verifica se outro computador alterou o arquivo ---- */
 async function verificarArquivo(){
   if(!fileHandle) return;
@@ -1310,7 +1327,7 @@ async function verificarArquivo(){
     const f=await fileHandle.getFile();
     ultimaVerificacao=new Date();
     if(f.lastModified>ultimoMod+800){
-      if(usuarioDigitando()) return;
+      if(syncDevePular()) return;
       if(alteracaoLocal){
         confirmAction('Este arquivo foi alterado em outro computador, mas você também tem alterações aqui que ainda não foram gravadas. Se carregar a versão do arquivo, você perde o que fez nesta tela. Deseja carregar mesmo assim? (Cancelar mantém o seu e grava por cima na próxima alteração.)',
           ()=>carregarDoArquivo());
@@ -1628,7 +1645,7 @@ async function verificarNuvem(){
     if(j.ok&&j.atualizadoEm){
       const ts=new Date(j.atualizadoEm).getTime();
       if(ts>nuvemAtualizadoEm+800){
-        if(usuarioDigitando()) return;
+        if(syncDevePular()) return;
         if(alteracaoLocal){
           confirmAction('Os dados foram alterados em outro aparelho, mas você também tem alterações aqui que ainda não foram enviadas. Se carregar a versão da nuvem, você perde o que fez nesta tela. Deseja carregar mesmo assim? (Cancelar mantém o que está aqui e envia por cima na próxima alteração.)',
             ()=>{ aplicarEstadoNuvem(j.dados,j.atualizadoEm); renderAll(); });
@@ -2641,7 +2658,8 @@ function renderTarefas(){
       }).join('')}
       <button class="lista-chip nova" id="btnNovaLista" title="Criar outra lista">+ Nova lista</button>
       ${state.listas.length?`<span class="lista-acoes">
-        <button class="btn sm ${listaAtualObj&&listaAtualObj.resetaMensal?'acc':''}" id="btnResetaMensalLista" title="${listaAtualObj&&listaAtualObj.resetaMensal?'Tarefas concluídas nesta lista não somem — ficam com ✓ e voltam a pedir conclusão sozinhas no mês seguinte. Clique para desativar.':'Ativar: tarefas concluídas nesta lista não somem mais, ficam marcadas com ✓ e voltam a pedir conclusão sozinhas no mês seguinte.'}">🔁 Mensal</button>
+        <button class="btn sm ${listaAtualObj&&listaAtualObj.resetaTipo==='mensal'?'acc':''}" id="btnResetaMensalLista" title="${listaAtualObj&&listaAtualObj.resetaTipo==='mensal'?'Tarefas concluídas nesta lista não somem — ficam com ✓ e voltam a pedir conclusão sozinhas no mês seguinte. Clique para desativar.':'Ativar: tarefas concluídas nesta lista não somem mais, ficam marcadas com ✓ e voltam a pedir conclusão sozinhas no mês seguinte.'}">🔁 Mensal</button>
+        <button class="btn sm ${listaAtualObj&&listaAtualObj.resetaTipo==='semanal'?'acc':''}" id="btnResetaSemanalLista" title="${listaAtualObj&&listaAtualObj.resetaTipo==='semanal'?'Tarefas concluídas nesta lista não somem — ficam com ✓ e voltam a pedir conclusão sozinhas na semana seguinte. Clique para desativar.':'Ativar: tarefas concluídas nesta lista não somem mais, ficam marcadas com ✓ e voltam a pedir conclusão sozinhas na semana seguinte.'}">🔁 Semanal</button>
         <button class="btn sm" id="btnRenomearLista" title="Renomear esta lista">✎</button>
         ${state.listas.length>1?`<button class="btn sm danger-outline" id="btnExcluirLista" title="Excluir esta lista">✕</button>`:''}
       </span>`:''}
@@ -2658,8 +2676,12 @@ function renderTarefas(){
         const venc=t.data&&t.data<h, hj=t.data===h;
         const idx=tarefas.indexOf(t);
         const subs=t.subs||[];
-        const mensal=!!(listaAtualObj&&listaAtualObj.resetaMensal);
-        const feitas=mensal?subs.filter(s=>s.concluidoMes===mesAtualStr()).length:subs.filter(s=>s.feito).length;
+        const resetaTipo=listaAtualObj&&listaAtualObj.resetaTipo;
+        const mensal=!!resetaTipo; // true pra qualquer modo periódico ativo (mensal OU semanal)
+        const periodoAtualLista=mensal?periodoAtualParaLista(listaAtual):null;
+        const rotuloPeriodo=resetaTipo==='semanal'?'esta semana':'este mês';
+        const rotuloPeriodoSeg=resetaTipo==='semanal'?'na semana seguinte':'no mês seguinte';
+        const feitas=mensal?subs.filter(s=>s.concluidoMes===periodoAtualLista).length:subs.filter(s=>s.feito).length;
         const temSubsMensal=mensal&&subs.length>0;
         const feitaEsteMes=temSubsMensal?(feitas===subs.length):(mensal&&tarefaFeitaEsteMes(t));
         return `<div class="tarefa" draggable="true" data-tid="${t.id}">
@@ -2669,7 +2691,7 @@ function renderTarefas(){
               <button data-sobe="${t.id}" ${idx===0?'disabled':''} title="Subir">▲</button>
               <button data-desce="${t.id}" ${idx===tarefas.length-1?'disabled':''} title="Descer">▼</button>
             </span>
-            <button class="tarefa-check ${feitaEsteMes?'feito':''}" ${temSubsMensal?'':`data-concluir="${t.id}"`} title="${temSubsMensal?(feitaEsteMes?'Todas as subtarefas concluídas este mês':'Finaliza sozinha quando todas as subtarefas forem concluídas'):(mensal?(feitaEsteMes?'Feita este mês — clique para reabrir':'Marcar como feita este mês (não some, volta a pedir no mês seguinte)'):'Concluir tarefa')}"></button>
+            <button class="tarefa-check ${feitaEsteMes?'feito':''}" ${temSubsMensal?'':`data-concluir="${t.id}"`} title="${temSubsMensal?(feitaEsteMes?('Todas as subtarefas concluídas '+rotuloPeriodo):'Finaliza sozinha quando todas as subtarefas forem concluídas'):(mensal?(feitaEsteMes?('Feita '+rotuloPeriodo+' — clique para reabrir'):('Marcar como feita '+rotuloPeriodo+' (não some, volta a pedir '+rotuloPeriodoSeg+')')):'Concluir tarefa')}"></button>
             <input class="tarefa-tit" type="text" value="${esc(t.titulo)}" data-tit="${t.id}" placeholder="Sem título">
             <button type="button" class="tarefa-resumo" data-abrir="${t.id}" title="Data, horário, repetição e observação">${t.data?`📅 ${fmtData(t.data).slice(0,5)}`:''}${t.repetirMensal?' 🔁':''}${(!t.data&&!t.repetirMensal)?'⋯':''}</button>
             ${subs.length?`<span class="sub-cont ${feitas===subs.length?'ok':''}" title="Subtarefas concluídas">${feitas}/${subs.length}</span>`:''}
@@ -2680,7 +2702,7 @@ function renderTarefas(){
           </div>
           <textarea class="tarefa-obs" data-obs="${t.id}" rows="1" placeholder="Observações (Enter pula linha)">${esc(t.obs)}</textarea>
           ${subs.length?`<div class="subs">
-            ${subs.map((s,si)=>{ const sFeito=mensal?(s.concluidoMes===mesAtualStr()):s.feito; return `<div class="sub ${sFeito?'feita':''}" draggable="true" data-subid="${t.id}|${s.id}">
+            ${subs.map((s,si)=>{ const sFeito=mensal?(s.concluidoMes===periodoAtualLista):s.feito; return `<div class="sub ${sFeito?'feita':''}" draggable="true" data-subid="${t.id}|${s.id}">
               <span class="sub-grip" title="Arraste para reordenar">⠿</span>
               <button class="sub-check" data-sub="${t.id}|${s.id}" title="${sFeito?'Reabrir':'Concluir'}">${sFeito?'✓':''}</button>
               <input class="sub-tit" type="text" value="${esc(s.titulo)}" data-subtit="${t.id}|${s.id}">
@@ -2699,7 +2721,7 @@ function renderTarefas(){
         </div>`;
       }).join('')}
     </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}
-    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. ${listaAtualObj&&listaAtualObj.resetaMensal?'Modo <b>🔁 Mensal</b> ativado nesta lista: ao concluir, a tarefa fica marcada com ✓ mas não some — volta a pedir conclusão sozinha no mês seguinte. Tarefas com subtarefas finalizam sozinhas quando todas as subtarefas forem concluídas.':'Ao concluir, a tarefa some (dá pra recuperar no <b>Desfazer</b>).'}</p>`;
+    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. ${listaAtualObj&&listaAtualObj.resetaTipo?('Modo <b>🔁 '+(listaAtualObj.resetaTipo==='semanal'?'Semanal':'Mensal')+'</b> ativado nesta lista: ao concluir, a tarefa fica marcada com ✓ mas não some — volta a pedir conclusão sozinha '+(listaAtualObj.resetaTipo==='semanal'?'na semana seguinte':'no mês seguinte')+'. Tarefas com subtarefas finalizam sozinhas quando todas as subtarefas forem concluídas.'):'Ao concluir, a tarefa some (dá pra recuperar no <b>Desfazer</b>).'}</p>`;
 
   const btnTfData=document.getElementById('tfData');
   if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
@@ -2750,10 +2772,11 @@ function renderTarefas(){
 
   el.querySelectorAll('[data-concluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.concluir);
-    if(listaAtualObj&&listaAtualObj.resetaMensal){
-      // lista "Mensal": não some - só alterna feito/reabrir, reseta sozinha no mês seguinte
+    if(listaAtualObj&&listaAtualObj.resetaTipo){
+      // lista periódica (mensal ou semanal): não some - só alterna feito/reabrir, reseta sozinha no período seguinte
+      const rot=listaAtualObj.resetaTipo==='semanal'?'esta semana':'este mês';
       if(tarefaFeitaEsteMes(t)){ desconcluirTarefa(b.dataset.concluir); toast('Tarefa reaberta: '+((t&&t.titulo)||'')); }
-      else { concluirTarefaMensal(b.dataset.concluir); toast('✓ Concluída este mês: '+((t&&t.titulo)||'')); }
+      else { concluirTarefaMensal(b.dataset.concluir); toast('✓ Concluída '+rot+': '+((t&&t.titulo)||'')); }
       renderTarefas();
       return;
     }
@@ -2764,7 +2787,9 @@ function renderTarefas(){
     },180);
   });
   const btnResetaMensalLista=document.getElementById('btnResetaMensalLista');
-  if(btnResetaMensalLista) btnResetaMensalLista.onclick=()=>{ alternarResetaMensalLista(listaAtual); renderTarefas(); };
+  if(btnResetaMensalLista) btnResetaMensalLista.onclick=()=>{ alternarResetaTipoLista(listaAtual,'mensal'); renderTarefas(); };
+  const btnResetaSemanalLista=document.getElementById('btnResetaSemanalLista');
+  if(btnResetaSemanalLista) btnResetaSemanalLista.onclick=()=>{ alternarResetaTipoLista(listaAtual,'semanal'); renderTarefas(); };
   el.querySelectorAll('[data-excluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.excluir);
     confirmAction(`Excluir a tarefa "${(t&&t.titulo)||''}"? Dá pra reverter no botão Desfazer.`,()=>{
@@ -2791,7 +2816,7 @@ function renderTarefas(){
   });
   el.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{
     const [tid,sid]=b.dataset.sub.split('|');
-    if(listaAtualObj&&listaAtualObj.resetaMensal) alternarSubMensal(tid,sid); else alternarSub(tid,sid);
+    if(listaAtualObj&&listaAtualObj.resetaTipo) alternarSubMensal(tid,sid); else alternarSub(tid,sid);
     renderTarefas();
   });
   el.querySelectorAll('[data-subtit]').forEach(i=>i.onchange=()=>{ const [tid,sid]=i.dataset.subtit.split('|'); editarSub(tid,sid,i.value); });
@@ -6360,17 +6385,25 @@ function concluirTarefa(id){
   persist();
   return {ok:true,repetiu:false};
 }
-/* mês atual "AAAA-MM", pra controlar as tarefas de lista "resetaMensal" - pedido do Felipe 19/08:
-   tarefa de lista "Gestão Ativa" não pode sumir ao concluir (quer continuar vendo o item, só
-   marcado como feito), mas precisa voltar a pedir conclusão de novo no mês seguinte, sozinho -
-   sem precisar reabrir na mão. Como concluidoMes guarda o mês em que foi concluída, comparar
-   contra o mês atual a cada render já resolve o "reset" sozinho, sem precisar de nenhum job. */
+/* período atual, pra controlar as tarefas de lista "Gestão Ativa" (resetaTipo) - pedido do
+   Felipe 19/08: tarefa dessas listas não pode sumir ao concluir (quer continuar vendo o item, só
+   marcado como feito), mas precisa voltar a pedir conclusão de novo no período seguinte (mês ou
+   semana, à escolha), sozinho - sem precisar reabrir na mão. Como concluidoMes guarda o período
+   em que foi concluída, comparar contra o período atual a cada render já resolve o "reset"
+   sozinho, sem precisar de nenhum job. */
 function mesAtualStr(){ return hoje().slice(0,7); }
-function tarefaFeitaEsteMes(t){ return !!(t&&t.concluidoMes===mesAtualStr()); }
+/* chave de semana simples e estável (não é a semana ISO "oficial", só precisa trocar uma vez por
+   semana) - pedido do Felipe 19/08, opção semanal de reset em Gestão Ativa */
+function semanaAtualStr(){ return 'S'+Math.floor(Math.floor(Date.now()/864e5)/7); }
+function periodoAtualParaLista(listaId){
+  const l=state.listas.find(x=>x.id===listaId);
+  return (l&&l.resetaTipo==='semanal')?semanaAtualStr():mesAtualStr();
+}
+function tarefaFeitaEsteMes(t){ return !!(t&&t.concluidoMes===periodoAtualParaLista(t.listaId)); }
 function concluirTarefaMensal(id){
   const t=state.tarefas.find(x=>x.id===id); if(!t) return;
-  snapshot('conclusão (mensal, não some) da tarefa "'+(t.titulo||'').slice(0,30)+'"');
-  t.concluidoMes=mesAtualStr();
+  snapshot('conclusão (periódica, não some) da tarefa "'+(t.titulo||'').slice(0,30)+'"');
+  t.concluidoMes=periodoAtualParaLista(t.listaId);
   persist();
 }
 function desconcluirTarefa(id){
@@ -6379,10 +6412,11 @@ function desconcluirTarefa(id){
   t.concluidoMes=null;
   persist();
 }
-function alternarResetaMensalLista(listaId){
+function alternarResetaTipoLista(listaId,tipo){
   const l=state.listas.find(x=>x.id===listaId); if(!l) return;
-  snapshot((l.resetaMensal?'desativar':'ativar')+' modo mensal da lista "'+(l.nome||'')+'"');
-  l.resetaMensal=!l.resetaMensal;
+  const novo=l.resetaTipo===tipo?null:tipo;
+  snapshot((novo?'ativar':'desativar')+' modo '+tipo+' da lista "'+(l.nome||'')+'"');
+  l.resetaTipo=novo;
   persist();
 }
 function moverTarefa(id,paraId){
@@ -6415,11 +6449,12 @@ function alternarSub(tid,sid){
 function alternarSubMensal(tid,sid){
   const t=state.tarefas.find(x=>x.id===tid); if(!t) return;
   const s=(t.subs||[]).find(x=>x.id===sid); if(!s) return;
-  const feitoAgora=s.concluidoMes===mesAtualStr();
-  snapshot(feitoAgora?'reabrir subtarefa (mensal)':'concluir subtarefa (mensal)');
-  s.concluidoMes=feitoAgora?null:mesAtualStr();
-  const todasFeitas=(t.subs||[]).length>0&&t.subs.every(x=>x.concluidoMes===mesAtualStr());
-  t.concluidoMes=todasFeitas?mesAtualStr():null;
+  const periodo=periodoAtualParaLista(t.listaId);
+  const feitoAgora=s.concluidoMes===periodo;
+  snapshot(feitoAgora?'reabrir subtarefa (período)':'concluir subtarefa (período)');
+  s.concluidoMes=feitoAgora?null:periodo;
+  const todasFeitas=(t.subs||[]).length>0&&t.subs.every(x=>x.concluidoMes===periodo);
+  t.concluidoMes=todasFeitas?periodo:null;
   persist();
 }
 function editarSub(tid,sid,titulo){
