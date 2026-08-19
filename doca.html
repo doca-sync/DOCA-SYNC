@@ -2643,6 +2643,7 @@ let novaTarefaData='';
    pedido do Felipe 19/08 */
 let novaTarefaTitulo='';
 let novoGestaoTipo=null;
+let renderizandoTarefas=false;
 /* avança uma data ISO em 1 mês, ajustando pro último dia quando o mês novo é mais curto */
 function proximoMes(iso){
   if(!iso) return '';
@@ -2655,6 +2656,7 @@ function proximoMes(iso){
 }
 let listaAtual='';
 function renderTarefas(){
+  renderizandoTarefas=true;
   const el=document.getElementById('tab-tarefas');
   const h=hoje();
   if(!state.listas.length) state.listas=[{id:'lista_geral',nome:'GERAL'}];
@@ -2829,8 +2831,17 @@ function renderTarefas(){
     i.onchange=()=>updateTarefa(i.dataset.obs,{obs:i.value.toUpperCase()});
   });
   el.querySelectorAll('[data-novasub]').forEach(i=>{
-    i.onkeydown=ev=>{ if(ev.key==='Enter'&&i.value.trim()){ ev.preventDefault(); const v=i.value; i.value=''; i.onblur=null; addSub(i.dataset.novasub,v); } };
-    i.onblur=()=>{ if(i.value.trim()) addSub(i.dataset.novasub,i.value); };
+    i.onkeydown=ev=>{
+      if(ev.key==='Enter'&&i.value.trim()){
+        ev.preventDefault();
+        const v=i.value, tid=i.dataset.novasub;
+        i.value=''; i.onblur=null;
+        addSub(tid,v);
+        const novo=document.querySelector(`[data-novasub="${tid}"]`);
+        if(novo) novo.focus();
+      }
+    };
+    i.onblur=()=>{ if(renderizandoTarefas) return; if(i.value.trim()) addSub(i.dataset.novasub,i.value); };
   });
   el.querySelectorAll('[data-sub]').forEach(b=>b.onclick=()=>{
     const [tid,sid]=b.dataset.sub.split('|');
@@ -2920,6 +2931,7 @@ function renderTarefas(){
       if(arrastandoLista){ const ok=reordenarListas(arrastandoLista,ch.dataset.lista); arrastandoLista=null; if(ok) toast('Ordem das listas atualizada.'); }
     };
   });
+  renderizandoTarefas=false;
 }
 
 /* ---------- visão geral ---------- */
