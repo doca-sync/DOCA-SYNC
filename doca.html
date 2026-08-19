@@ -5168,6 +5168,16 @@ function renderAuditoriaMes(){
    contribuicao, lucro bruto e margem liquida entre as lojas. */
 async function calcularFechamentoTodasLojas(){
   if(financasFechTodasCarregando) return;
+  /* abre a aba de impressão JÁ NA HORA DO CLIQUE (síncrono) - o resultado só fica pronto depois de
+     vários awaits (chamadas ao backend, loja por loja), e a maioria dos navegadores bloqueia
+     window.open() quando ele não é uma resposta direta e imediata do clique. Abrindo em branco
+     agora e escrevendo o conteúdo real nela depois (ver imprimirRelatorioFechamentoTodasLojas)
+     evita o aviso de "bloqueador de pop-up" - pedido do Felipe 19/08. */
+  const win=window.open('','_blank');
+  if(win){
+    win.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Fechamento — Todas as Lojas</title></head><body style="font-family:-apple-system,Arial,Helvetica,sans-serif;padding:24px;color:#111"><p>Calculando o fechamento de todas as lojas… isso pode levar um tempo.</p></body></html>');
+    win.document.close();
+  }
   financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
   try{
     if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
@@ -5183,16 +5193,21 @@ async function calcularFechamentoTodasLojas(){
       renderFinancas();
       await sleep(150);
     }
-    imprimirRelatorioFechamentoTodasLojas(resultados);
-  }catch(e){ financasFechTodasErro=e.message; }
+    imprimirRelatorioFechamentoTodasLojas(resultados,win);
+  }catch(e){
+    financasFechTodasErro=e.message;
+    if(win&&!win.closed) win.document.body.innerHTML='<p style="font-family:sans-serif;padding:24px;color:#900">Erro ao calcular o fechamento: '+esc(e.message)+'</p>';
+  }
   finally{ financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); }
 }
 /* relatório de fechamento de todas as lojas - pedido do Felipe 19/08: incluir pedidos/unidades
    por loja, somatória geral, e lista dos produtos vendidos com quantidade. Vai ser visto no
    celular, então o layout é mobile-first (cards empilhados em vez de tabela larga fixa; tabela
-   de produtos só tem 3 colunas estreitas, cabe numa tela de celular sem rolar pro lado). */
-function imprimirRelatorioFechamentoTodasLojas(resultados){
-  const win=window.open('','_blank');
+   de produtos só tem 3 colunas estreitas, cabe numa tela de celular sem rolar pro lado).
+   winExistente: a aba já aberta no clique (ver calcularFechamentoTodasLojas) - evita o bloqueio
+   de pop-up dos navegadores, que só permite abrir janela como resposta DIRETA ao clique. */
+function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
+  const win=(winExistente&&!winExistente.closed)?winExistente:window.open('','_blank');
   if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
   const porLoja=resultados.map(r=>{
     const unidades=(r.resumo.itensVendidos||[]).reduce((s,it)=>s+(it.qtd||0),0);
@@ -5200,51 +5215,65 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       const p=state.produtos.find(x=>x.mlItemId===it.itemId);
       return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0};
     });
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemLiquida:r.m.margemLiquida,produtos};
+    const margemPosAds=r.m.margem-(r.resumo.ads&&r.resumo.ads.custo||0);
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,margemLiquida:r.m.margemLiquida,produtos};
   });
   const totalPedidos=porLoja.reduce((s,r)=>s+r.pedidos,0);
   const totalUnidades=porLoja.reduce((s,r)=>s+r.unidades,0);
   const totalFat=porLoja.reduce((s,r)=>s+r.faturamento,0);
   const totalMargem=porLoja.reduce((s,r)=>s+r.margem,0);
+  const totalMargemPosAds=porLoja.reduce((s,r)=>s+r.margemPosAds,0);
   const totalMargemLiquida=porLoja.reduce((s,r)=>s+r.margemLiquida,0);
   const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
   const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
-  const metrica=(lbl,val)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val">${val}</div></div>`;
+  const metrica=(lbl,val,neg,pctVal)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val${neg?' neg':''}">${val}</div>${pctVal!=null?`<div class="pctv">${pctVal.toFixed(1)}% do faturamento</div>`:''}</div>`;
+  const pctDe=(v,fat)=>fat>0?(v/fat*100):0;
   const cardLoja=r=>`<div class="loja-card">
       <h2>${esc(r.loja)}</h2>
       <div class="metrics">
         ${metrica('Pedidos',fmtInt(r.pedidos))}
         ${metrica('Unidades vendidas',fmtInt(r.unidades))}
         ${metrica('Faturamento',fmtMoney(r.faturamento))}
-        ${metrica('Margem Contribuição',fmtMoney(r.margem))}
-        ${metrica('Margem Líquida',fmtMoney(r.margemLiquida))}
+        ${metrica('Margem Contribuição',fmtMoney(r.margem),r.margem<0,pctDe(r.margem,r.faturamento))}
+        ${metrica('Margem pós Ads',fmtMoney(r.margemPosAds),r.margemPosAds<0,pctDe(r.margemPosAds,r.faturamento))}
+        ${metrica('Margem Líquida',fmtMoney(r.margemLiquida),r.margemLiquida<0,pctDe(r.margemLiquida,r.faturamento))}
       </div>
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td></tr>`).join('')}
       </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
     </div>`;
+  win.document.open();
   win.document.write(`<!doctype html><html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Fechamento — Todas as Lojas</title>
     <style>
       *{box-sizing:border-box}
-      body{font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;padding:16px;color:#111;font-size:15px;max-width:720px;margin:0 auto;background:#fff}
-      h1{font-size:19px;margin:0 0 4px}
-      h2{font-size:15px;margin:0 0 10px;padding-bottom:8px;border-bottom:2px solid #333}
-      .sub{color:#555;font-size:12.5px;margin-bottom:18px}
-      .loja-card{border:1px solid #ddd;border-radius:12px;padding:14px;margin-bottom:14px}
-      .metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;margin-bottom:12px}
-      .metric .lbl{font-size:10.5px;color:#666;text-transform:uppercase;letter-spacing:.03em}
-      .metric .val{font-size:16px;font-weight:bold;margin-top:2px}
-      .vazio{color:#888;font-size:12.5px;margin:4px 0 0}
-      table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
-      th,td{border-bottom:1px solid #eee;padding:7px 4px;text-align:left;word-break:break-word}
-      th{background:#f6f6f6;font-size:10.5px;text-transform:uppercase;color:#555}
+      :root{--night:#0A0418;--violet:#8B5CF6;--violet-l:#B794FF;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
+      html,body{margin:0}
+      body{
+        background:radial-gradient(1100px 520px at 12% -8%,rgba(124,58,237,.20),transparent 62%),
+          radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%), var(--bg);
+        font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;
+        padding:18px;color:var(--text);font-size:15px;max-width:720px;margin:0 auto;line-height:1.5}
+      h1{font-size:19px;margin:0 0 4px;color:var(--text)}
+      h2{font-size:14.5px;margin:0 0 12px;padding-bottom:9px;border-bottom:1px solid var(--line);color:var(--gold);letter-spacing:.03em;text-transform:uppercase}
+      .sub{color:var(--muted);font-size:12.5px;margin-bottom:18px}
+      .loja-card{border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;background:var(--paper)}
+      .metrics{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:12px}
+      .metric .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+      .metric .val{font-size:17px;font-weight:700;margin-top:3px;color:var(--ok)}
+      .metric .val.neg{color:var(--danger)}
+      .metric .pctv{font-size:10.5px;color:var(--muted);margin-top:1px}
+      .vazio{color:var(--muted);font-size:12.5px;margin:4px 0 0}
+      table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+      th,td{border-bottom:1px solid var(--line);padding:8px 5px;text-align:left;word-break:break-word;color:var(--text)}
+      th{font-size:10.5px;text-transform:uppercase;color:var(--muted);font-weight:600}
       td.n,th.n{text-align:right;white-space:nowrap}
-      .tot-card{border:2px solid #333;border-radius:12px;padding:14px;margin-top:8px;background:#fafafa}
-      .tot-card h2{border:none;margin-bottom:10px;padding:0}
+      tr:last-child td{border-bottom:none}
+      .tot-card{border:1px solid var(--violet);border-radius:14px;padding:16px;margin-top:6px;background:linear-gradient(135deg,var(--bg2),var(--paper))}
+      .tot-card h2{border:none;margin-bottom:12px;padding:0;color:var(--violet-l)}
+      .gerado{text-align:center;color:var(--muted);font-size:11px;margin-top:18px}
       @media (min-width:560px){ .metrics{grid-template-columns:repeat(3,1fr)} }
-      @media print{.no-print{display:none} body{max-width:none;padding:0} .loja-card{break-inside:avoid}}
     </style></head><body>
     <h1>Fechamento Financeiro — Todas as Lojas</h1>
     <div class="sub">Período: ${esc(rotuloPeriodo)} · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
@@ -5255,11 +5284,49 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Pedidos',fmtInt(totalPedidos))}
         ${metrica('Unidades vendidas',fmtInt(totalUnidades))}
         ${metrica('Faturamento',fmtMoney(totalFat))}
-        ${metrica('Margem Contribuição',fmtMoney(totalMargem))}
-        ${metrica('Margem Líquida',fmtMoney(totalMargemLiquida))}
+        ${metrica('Margem Contribuição',fmtMoney(totalMargem),totalMargem<0,pctDe(totalMargem,totalFat))}
+        ${metrica('Margem pós Ads',fmtMoney(totalMargemPosAds),totalMargemPosAds<0,pctDe(totalMargemPosAds,totalFat))}
+        ${metrica('Margem Líquida',fmtMoney(totalMargemLiquida),totalMargemLiquida<0,pctDe(totalMargemLiquida,totalFat))}
       </div>
     </div>
-    <button class="no-print" onclick="window.print()" style="margin-top:16px;padding:13px 20px;font-size:15px;cursor:pointer;width:100%;border-radius:10px;border:1px solid #333;background:#fff">Imprimir / Salvar PDF</button>
+    <div class="share-box">
+      <button id="btnCompartilhar" class="btn-share">🔗 Gerar link pra compartilhar</button>
+      <div id="shareResultado"></div>
+    </div>
+    <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
+    <script>
+      (function(){
+        var BACKEND=${JSON.stringify(backendUrl())};
+        var btn=document.getElementById('btnCompartilhar');
+        var out=document.getElementById('shareResultado');
+        btn.onclick=async function(){
+          btn.disabled=true; btn.textContent='Gerando link...';
+          try{
+            if(!BACKEND) throw new Error('URL do backend não configurada.');
+            var htmlCompleto='<!doctype html>'+document.documentElement.outerHTML;
+            var r=await fetch(BACKEND+'/relatorio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html:htmlCompleto})});
+            var j=await r.json();
+            if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao gerar o link.');
+            var url=BACKEND+'/relatorio/'+j.id;
+            out.innerHTML='<div class="share-link"><input type="text" readonly value="'+url+'" id="shareUrlInput"></div>'+
+              '<div class="share-actions">'+
+              '<a class="btn-share wa" href="https://wa.me/?text='+encodeURIComponent('Fechamento Doca: '+url)+'" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>'+
+              '<button class="btn-share" id="btnCopiarLink">📋 Copiar link</button>'+
+              '</div>'+
+              '<p class="share-hint">Link público (sem senha) — quem tiver o link consegue abrir esse relatório, válido por 30 dias.</p>';
+            document.getElementById('btnCopiarLink').onclick=function(){
+              document.getElementById('shareUrlInput').select();
+              navigator.clipboard&&navigator.clipboard.writeText(url);
+              document.getElementById('btnCopiarLink').textContent='✓ Copiado!';
+            };
+            btn.style.display='none';
+          }catch(e){
+            out.innerHTML='<p class="share-hint" style="color:var(--danger)">⚠ '+String(e.message||e)+'</p>';
+            btn.disabled=false; btn.textContent='🔗 Gerar link pra compartilhar';
+          }
+        };
+      })();
+    </script>
     </body></html>`);
   win.document.close();
 }
@@ -5282,6 +5349,9 @@ function despesasPeriodoLoja(loja,de,ate){
 }
 /* margem de contribuição e margem líquida a partir de um resumo (do backend) - função separada
    pra ser reaproveitada tanto no Resumo Financeiro quanto no fechamento dos sócios. */
+/* quantos dias tem o período [de,ate] (inclusive) e quantos dias já se passaram no mês de
+   referência - usado só pra ratear a fatura ML pendente (ver calcularMargensResumo abaixo). */
+function diasNoPeriodoResumo(de,ate){ return Math.max(1,Math.round((new Date(ate)-new Date(de))/864e5)+1); }
 function calcularMargensResumo(resumo,loja){
   const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -5294,9 +5364,20 @@ function calcularMargensResumo(resumo,loja){
   // fatura ML pendente (que carrega o Ads dentro dela).
   const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.reembolsosValor;
   const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
-  const faturaMlAtual=faturaMlPendenteLoja(loja);
+  /* a fatura ML pendente é o valor TOTAL acumulado no ciclo de cobrança até agora (não é filtrada
+     por período) - pedido do Felipe 19/08: se o período escolhido é só 1 dia, não faz sentido
+     descontar o ciclo inteiro acumulado até hoje, senão a Margem Líquida de "Hoje" aparece
+     afundada por custo de dias que nem fazem parte do período selecionado. Rateia proporcional:
+     (dias do período selecionado ÷ dias já decorridos no ciclo até hoje), limitado a 100% (nunca
+     atribui mais do que a fatura realmente tem). Períodos que já cobrem o ciclo inteiro (ex:
+     "Últimos 30 dias") continuam batendo ~100% igual antes. */
+  const faturaMlBruta=faturaMlPendenteLoja(loja);
+  const diasSel=diasNoPeriodoResumo(resumo.periodo.de,resumo.periodo.ate);
+  const diasDecorridosCiclo=Math.max(1,new Date().getDate());
+  const fatorRateio=Math.min(1,diasSel/diasDecorridosCiclo);
+  const faturaMlAtual=faturaMlBruta*fatorRateio;
   const margemLiquida=margem-custosPeriodo-faturaMlAtual;
-  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida};
+  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlBruta,faturaMlAtual,fatorRateio,margemLiquida};
 }
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
    Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
@@ -5305,7 +5386,7 @@ function calcularMargensResumo(resumo,loja){
    custo/trabalho mas não viraram receita de verdade. */
 let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
-  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
+  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlBruta,faturaMlAtual,fatorRateio,margemLiquida}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
   const margemPosAds=margem-resumo.ads.custo;
   const margemPosAdsPct=resumo.faturamento>0?(margemPosAds/resumo.faturamento*100):0;
@@ -5352,7 +5433,8 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(custosPeriodo)} de despesas do período − ${fmtMoney(faturaMlAtual)} de fatura ML pendente <span title="A fatura ML pendente já inclui o Ads cobrado pelo Mercado Livre, por isso o Ads não é descontado de novo aqui (o card ADS acima é só informativo)">(inclui Ads)</span>${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(custosPeriodo)}${pct(custosPeriodo)?' ('+pct(custosPeriodo)+')':''} de despesas do período − ${fmtMoney(faturaMlAtual)}${pct(faturaMlAtual)?' ('+pct(faturaMlAtual)+')':''} de fatura ML pendente <span title="A fatura ML pendente já inclui o Ads cobrado pelo Mercado Livre, por isso o Ads não é descontado de novo aqui (o card ADS acima é só informativo)">(inclui Ads)</span>${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        ${fatorRateio<0.999?`<div class="hint" style="margin:2px 0 0;opacity:.75">Fatura ML rateada pro período escolhido: ${fmtMoney(faturaMlBruta)} acumulado no ciclo até hoje × ${(fatorRateio*100).toFixed(0)}% (dias do período ÷ dias já passados no ciclo) = ${fmtMoney(faturaMlAtual)}</div>`:''}
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
@@ -7556,7 +7638,7 @@ document.getElementById('btnBackup').onclick=baixarBackup;
 document.getElementById('btnDesfazer').onclick=()=>{
   if(!undoStack.length) return;
   const desc=undoStack[undoStack.length-1].desc;
-  confirmAction(`Desfazer: ${desc}?`,desfazer);
+  confirmAction(`Isso vai desfazer: "${desc}" — o Doca volta pro estado de antes dessa ação. Confirmar?`,desfazer);
 };
 document.getElementById('confirmYes').onclick=()=>{
   document.getElementById('confirmOverlay').classList.add('hidden');
@@ -7668,12 +7750,14 @@ function mostrarAlertaTarefas(lista){
   document.getElementById('tarefaAlertaX').onclick=()=>el.classList.remove('show');
 }
 function checarTarefasVencendo(){
-  const h=hoje();
+  const h=hoje(); // "AAAA-MM-DD" de hoje, string ISO comparável direto
   const hhmm=new Date().toTimeString().slice(0,5);
   const devidas=(state.tarefas||[]).filter(t=>{
-    if(!t.data||t.data>h) return false;
-    if(t.data===h&&t.hora&&t.hora>hhmm) return false;
-    return true;
+    const d=String(t.data||'').slice(0,10); // garante string "AAAA-MM-DD" pura, sem hora/timestamp junto
+    if(!d) return false;              // sem data definida - nunca alerta
+    if(d>h) return false;             // data no futuro - ainda não chegou o dia, NÃO alerta
+    if(d===h&&t.hora&&t.hora>hhmm) return false; // é hoje mas a hora ainda não chegou
+    return true;                      // data já passou (ou é hoje e a hora já chegou) - alerta
   });
   const novas=devidas.filter(t=>!tarefasAlertadas.has(t.id));
   if(!novas.length) return;
