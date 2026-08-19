@@ -7917,13 +7917,22 @@ function tarefaConcluidaNoPeriodo(t){
 function tarefasDeHojePendentes(){
   const h=hoje();
   const hhmm=new Date().toTimeString().slice(0,5);
-  return (state.tarefas||[]).filter(t=>{
+  const porData=(state.tarefas||[]).filter(t=>{
     const d=String(t.data||'').slice(0,10);
     if(d!==h) return false;                       // só hoje - passado e futuro não mostram
     if(t.hora&&t.hora>hhmm) return false;          // é hoje mas a hora ainda não chegou
     if(tarefaConcluidaNoPeriodo(t)) return false;  // Gestão Ativa já concluída este período - não incomoda de novo
     return true;
   });
+  /* tarefa de Gestão Ativa (mensal/semanal) é um lembrete recorrente - entra no aviso todo dia
+     enquanto não for concluída no período, independente da data marcada nela (que é opcional e
+     nem sempre é "hoje") - pedido do Felipe 19/08 */
+  const vistos=new Set(porData.map(t=>t.id));
+  (state.tarefas||[]).forEach(t=>{
+    if(!t.resetaTipo||vistos.has(t.id)||tarefaConcluidaNoPeriodo(t)) return;
+    vistos.add(t.id); porData.push(t);
+  });
+  return porData;
 }
 function mostrarAlertaTarefasDoDia(){
   const lista=tarefasDeHojePendentes();
