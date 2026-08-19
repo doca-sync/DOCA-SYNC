@@ -4585,14 +4585,14 @@ function renderAds(){
         ${botaoPeriodo('adPersonalizadoBtn',adsPersonalizadoDe,adsPersonalizadoAte)}
         `:`
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
-        <label>Meta de TACOS (1/3 da margem)<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto - não é mais configurável">${(c.margemPct/3).toFixed(1)}%</span></label>
+        <label>Meta de TACOS<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto - não é mais configurável">1/3 da margem</span></label>
         `}
       </div>
       ${personalizado?`
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         <button class="btn gold" id="adPersonalizadoCalcular" ${adsPersonalizadoCarregando||!adsPersonalizadoDe||!adsPersonalizadoAte?'disabled':''}>${adsPersonalizadoCarregando?'Calculando...':'🔍 Calcular'}</button>
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}" style="width:70px"></label>
-        <label>Meta de TACOS (1/3 margem)<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto">${(c.margemPct/3).toFixed(1)}%</span></label>
+        <label>Meta de TACOS<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto">1/3 da margem</span></label>
       </div>
       ${adsPersonalizadoErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsPersonalizadoErro)}</p>`:''}
       `:''}
@@ -4620,7 +4620,7 @@ function renderAds(){
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Campanha</th>
-      <th class="num">Gasto Ads</th><th class="num">Margem Líquida</th>
+      <th class="num">Margem Bruta</th><th class="num">Gasto Ads</th><th class="num">Margem Líquida</th>
       <th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
@@ -4646,8 +4646,9 @@ function renderAds(){
         })();
         return `<tr>
           <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
+          <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
-          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${(margemContrib>0&&custoAdsCalc<=margemContrib/3)?' <span class="okv" title="Gasto em Ads dentro da meta de TACOS (1/3 da Margem de Contribuição)">✓</span>':''}`:'<span class="muted">—</span>'}</td>
+          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${(margemContrib>0&&custoAdsCalc<=margemContrib/3)?' <span class="okv" title="Gasto em Ads dentro da meta de TACOS (1/3 da Margem Bruta/Contribuição)">✓</span>':''}`:'<span class="muted">—</span>'}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -4657,7 +4658,7 @@ function renderAds(){
           <td class="num">${fmtInt(m.prints||0)}${setaTrendAds(m.prints||0,comp?comp.prints:null,true)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="12">
+        ${aberto?`<tr><td colspan="13">
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
@@ -5320,7 +5321,8 @@ function renderResumoFinanceiroResultado(resumo,loja){
           /* tag de "dentro da meta de TACOS" ao lado do Ads gasto - pedido do Felipe 18/08: meta
              = 1/3 do faturamento do produto no período. So mostra quando ha Ads gasto de fato. */
           const dentroMetaTacosItem=adsAchado!=null&&margemContribItem>0&&adsAchado<=margemContribItem/3;
-          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':`${fmtMoney(adsAchado)}${dentroMetaTacosItem?` <span class="okv" style="font-size:11px;font-weight:700" title="Ads dentro da meta de TACOS (1/3 da Margem de Contribuição: ${fmtMoney(margemContribItem/3)})">✓</span>`:''}`;
+          const pctAds=it.valor&&adsAchado!=null?(adsAchado/it.valor*100):0;
+          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':`${fmtMoney(adsAchado)} <span class="muted" style="font-size:11px">(${pctAds.toFixed(1)}%)</span>${dentroMetaTacosItem?` <span class="okv" style="font-size:11px;font-weight:700" title="Ads dentro da meta de TACOS (1/3 da Margem de Contribuição: ${fmtMoney(margemContribItem/3)})">✓</span>`:''}`;
           const aberto=resumoRankingAberto.has(String(it.itemId));
           const pctMC=it.valor?(margemContribItem/it.valor*100):0;
           const pctML=it.valor?(margemLiquidaItem/it.valor*100):0;
@@ -5333,7 +5335,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
               <div><span class="muted" style="font-size:11px">Frete (vendedor, rateado por peso)</span><br>− ${fmtMoney(it.freteMl||0)}</div>
               <div><span class="muted" style="font-size:11px">Imposto (${aliquota||0}% do faturamento)</span><br>− ${fmtMoney(impostoItem)}</div>
               <div><span class="muted" style="font-size:11px">= Margem de Contribuição</span><br><b>${fmtMoney(margemContribItem)}</b> <span class="muted" style="font-size:11px">(${pctMC.toFixed(1)}%)</span></div>
-              <div><span class="muted" style="font-size:11px">Ads (não entra na M. Contribuição)</span><br>${adsAchado==null?'não encontrado':'− '+fmtMoney(adsAchado)}</div>
+              <div><span class="muted" style="font-size:11px">Ads (não entra na M. Contribuição)</span><br>${adsAchado==null?'não encontrado':'− '+fmtMoney(adsAchado)+' '}${adsAchado!=null?`<span class="muted" style="font-size:11px">(${pctAds.toFixed(1)}%)</span>`:''}</div>
               <div><span class="muted" style="font-size:11px">= Margem Líquida</span><br><b class="${margemLiquidaItem>=0?'okv':'pend'}">${fmtMoney(margemLiquidaItem)}</b> <span class="muted" style="font-size:11px">(${pctML.toFixed(1)}%)</span></div>
             </div>
           </td></tr>`:''}`;
@@ -5612,14 +5614,13 @@ function renderFinancas(){
   });
   const frLoja=document.getElementById('frLoja'), frPeriodo=document.getElementById('frPeriodo');
   if(frLoja) frLoja.onchange=e=>{ financasResumoLoja=e.target.value; financasResumoResultado=null; renderFinancas(); };
-  /* trocar o período (exceto "personalizado", que precisa das duas datas primeiro) já pesquisa
-     de novo sozinho — sem isso, o resumo (incluindo o ranking de produtos) ficava mostrando os
-     dados do período anterior até clicar em Pesquisar de novo. */
+  /* trocar o período (ou a loja) só atualiza a seleção — NÃO pesquisa mais sozinho.
+     Pedido do Felipe 19/08: só calcular quando apertar "Pesquisar" (evita ficar martelando
+     o backend a cada troca de período sem querer). */
   if(frPeriodo) frPeriodo.onchange=e=>{
     financasResumoPeriodo=e.target.value;
     financasResumoResultado=null;
-    if(financasResumoPeriodo==='personalizado'){ renderFinancas(); return; }
-    pesquisarResumoFinanceiro();
+    renderFinancas();
   };
   const frPeriodoBtn=document.getElementById('frPeriodoBtn');
   if(frPeriodoBtn) frPeriodoBtn.onclick=()=>abrirSeletorPeriodo(financasResumoDe,financasResumoAte,(de,ate)=>{
