@@ -4585,14 +4585,14 @@ function renderAds(){
         ${botaoPeriodo('adPersonalizadoBtn',adsPersonalizadoDe,adsPersonalizadoAte)}
         `:`
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
-        <label>Meta de TACOS (1/3 da margem)<input id="adTeto" type="number" value="${(c.margemPct/3).toFixed(1)}" disabled title="Calculado automaticamente como 1/3 da Margem (%) ao lado - não é mais digitado manualmente"></label>
+        <label>Meta de TACOS (1/3 da margem)<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto - não é mais configurável">${(c.margemPct/3).toFixed(1)}%</span></label>
         `}
       </div>
       ${personalizado?`
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         <button class="btn gold" id="adPersonalizadoCalcular" ${adsPersonalizadoCarregando||!adsPersonalizadoDe||!adsPersonalizadoAte?'disabled':''}>${adsPersonalizadoCarregando?'Calculando...':'🔍 Calcular'}</button>
         <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}" style="width:70px"></label>
-        <label>Meta de TACOS (1/3 margem)<input id="adTeto" type="number" value="${(c.margemPct/3).toFixed(1)}" style="width:70px" disabled title="Calculado automaticamente como 1/3 da Margem (%) ao lado"></label>
+        <label>Meta de TACOS (1/3 margem)<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto">${(c.margemPct/3).toFixed(1)}%</span></label>
       </div>
       ${adsPersonalizadoErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsPersonalizadoErro)}</p>`:''}
       `:''}
@@ -4620,6 +4620,7 @@ function renderAds(){
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Campanha</th>
+      <th class="num">Gasto Ads</th><th class="num">Margem Líquida</th>
       <th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
@@ -4645,6 +4646,8 @@ function renderAds(){
         })();
         return `<tr>
           <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
+          <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
+          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${(margemContrib>0&&custoAdsCalc<=margemContrib/3)?' <span class="okv" title="Gasto em Ads dentro da meta de TACOS (1/3 da Margem de Contribuição)">✓</span>':''}`:'<span class="muted">—</span>'}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -4654,13 +4657,13 @@ function renderAds(){
           <td class="num">${fmtInt(m.prints||0)}${setaTrendAds(m.prints||0,comp?comp.prints:null,true)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="10">
+        ${aberto?`<tr><td colspan="12">
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
             <div><span class="muted" style="font-size:11px">ROAS obj.</span><br>${camp.roas_target||0}x</div>
             <div><span class="muted" style="font-size:11px">ROAS</span><br>${(m.roas||0).toFixed(2)}x</div>
-            <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)}</div>
+            <div><span class="muted" style="font-size:11px">Custo</span><br>${fmtMoney(m.cost||0)} ${faturamentoContrib?`<span class="muted" style="font-size:11px">(${((m.cost||0)/faturamentoContrib*100).toFixed(1)}%)</span>`:''}</div>
             ${lucroBruto!=null?`<div><span class="muted" style="font-size:11px">Lucro Bruto (margem − Ads)</span><br><b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b> ${faturamentoContrib?`<span class="muted" style="font-size:11px">(${(lucroBruto/faturamentoContrib*100).toFixed(1)}%)</span>`:''}</div>`:''}
             ${margemContrib!=null?`<div><span class="muted" style="font-size:11px">Margem de Contribuição do produto</span><br>${fmtMoney(margemContrib)} ${faturamentoContrib?`<span class="muted" style="font-size:11px">(${(margemContrib/faturamentoContrib*100).toFixed(1)}%)</span>`:''}</div>`:''}
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
