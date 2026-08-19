@@ -4584,14 +4584,13 @@ function renderAds(){
         ${personalizado?`
         ${botaoPeriodo('adPersonalizadoBtn',adsPersonalizadoDe,adsPersonalizadoAte)}
         `:`
-        <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}"></label>
         <label>Meta de TACOS<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto - não é mais configurável">1/3 da margem</span></label>
+        <span></span>
         `}
       </div>
       ${personalizado?`
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         <button class="btn gold" id="adPersonalizadoCalcular" ${adsPersonalizadoCarregando||!adsPersonalizadoDe||!adsPersonalizadoAte?'disabled':''}>${adsPersonalizadoCarregando?'Calculando...':'🔍 Calcular'}</button>
-        <label>Margem (%)<input id="adMargem" type="number" min="0" step="0.5" value="${c.margemPct}" style="width:70px"></label>
         <label>Meta de TACOS<span style="padding:9px 2px;color:var(--text);font-weight:500;font-size:14px;text-transform:none;font-family:inherit" title="Sempre 1/3 da Margem de Contribuição de cada produto">1/3 da margem</span></label>
       </div>
       ${adsPersonalizadoErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsPersonalizadoErro)}</p>`:''}
@@ -4621,7 +4620,7 @@ function renderAds(){
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Campanha</th>
       <th class="num">Margem Bruta</th><th class="num">Gasto Ads</th><th class="num">Margem Líquida</th>
-      <th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
+      <th class="num">TACOS Meta</th><th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
       ${linhas.map(({camp,m,tacos,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto})=>{
@@ -4649,6 +4648,7 @@ function renderAds(){
           <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
           <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${(margemContrib>0&&custoAdsCalc<=margemContrib/3)?' <span class="okv" title="Gasto em Ads dentro da meta de TACOS (1/3 da Margem Bruta/Contribuição)">✓</span>':''}`:'<span class="muted">—</span>'}</td>
+          <td class="num">${(margemContrib>0&&faturamentoContrib>0)?`<b>${(margemContrib/3/faturamentoContrib*100).toFixed(2)}%</b>`:'<span class="muted">—</span>'}</td>
           <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
@@ -4658,7 +4658,7 @@ function renderAds(){
           <td class="num">${fmtInt(m.prints||0)}${setaTrendAds(m.prints||0,comp?comp.prints:null,true)}</td>
           <td><button class="btn sm" data-adsver="${camp.id}">${aberto?'▲':'▼'}</button></td>
         </tr>
-        ${aberto?`<tr><td colspan="13">
+        ${aberto?`<tr><td colspan="14">
           <div class="form-grid" style="grid-template-columns:repeat(4,1fr);gap:8px 16px;margin:6px 0 10px">
             <div><span class="muted" style="font-size:11px">Orçamento</span><br>${fmtMoney(camp.budget||0)}</div>
             <div><span class="muted" style="font-size:11px">ACOS</span><br>${(m.acos||0).toFixed(2)}%</div>
@@ -4732,7 +4732,8 @@ function renderAds(){
     adsFiltro=e.target.value;
     renderAds();
   };
-  document.getElementById('adMargem').onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
+  const adMargemEl=document.getElementById('adMargem');
+  if(adMargemEl) adMargemEl.onchange=e=>{ const v=Number(e.target.value); if(isNaN(v)||v<0){ alert('Valor inválido.'); renderAds(); return; } c.margemPct=v; persist(); renderAds(); };
   const btnAtualizar=document.getElementById('adAtualizar');
   if(btnAtualizar) btnAtualizar.onclick=async()=>{
     adsSincronizando=true; renderAds();
