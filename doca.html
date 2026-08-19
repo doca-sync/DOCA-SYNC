@@ -5215,15 +5215,29 @@ function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
       const p=state.produtos.find(x=>x.mlItemId===it.itemId);
       return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0};
     });
-    const margemPosAds=r.m.margem-(r.resumo.ads&&r.resumo.ads.custo||0);
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,margemLiquida:r.m.margemLiquida,produtos};
+    const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
+    const margemPosAds=r.m.margem-gastoAds;
+    /* só no relatório de fechamento (não na tela de Finanças) - pedido do Felipe 19/08: mostrar
+       as DUAS versões da Margem Líquida lado a lado. "custo total" é a mesma conta de sempre
+       (r.m.margemLiquida - desconta a fatura ML pendente inteira, o ciclo acumulado até hoje).
+       "rateada" divide essa fatura proporcional aos dias do período escolhido, útil quando o
+       período é curto (ex: "Hoje") e não faz sentido comparar 1 dia de faturamento com o ciclo
+       inteiro de custo acumulado. */
+    const diasSel=diasNoPeriodoResumo(r.resumo.periodo.de,r.resumo.periodo.ate);
+    const diasDecorridosCiclo=Math.max(1,new Date().getDate());
+    const fatorRateio=Math.min(1,diasSel/diasDecorridosCiclo);
+    const faturaMlRateada=r.m.faturaMlAtual*fatorRateio;
+    const margemLiquidaRateada=r.m.margem-r.m.custosPeriodo-faturaMlRateada;
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos};
   });
   const totalPedidos=porLoja.reduce((s,r)=>s+r.pedidos,0);
   const totalUnidades=porLoja.reduce((s,r)=>s+r.unidades,0);
   const totalFat=porLoja.reduce((s,r)=>s+r.faturamento,0);
   const totalMargem=porLoja.reduce((s,r)=>s+r.margem,0);
   const totalMargemPosAds=porLoja.reduce((s,r)=>s+r.margemPosAds,0);
-  const totalMargemLiquida=porLoja.reduce((s,r)=>s+r.margemLiquida,0);
+  const totalGastoAds=porLoja.reduce((s,r)=>s+r.gastoAds,0);
+  const totalMargemLiquidaTotal=porLoja.reduce((s,r)=>s+r.margemLiquidaTotal,0);
+  const totalMargemLiquidaRateada=porLoja.reduce((s,r)=>s+r.margemLiquidaRateada,0);
   const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
   const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
   const metrica=(lbl,val,neg,pctVal)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val${neg?' neg':''}">${val}</div>${pctVal!=null?`<div class="pctv">${pctVal.toFixed(1)}% do faturamento</div>`:''}</div>`;
@@ -5236,7 +5250,9 @@ function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
         ${metrica('Faturamento',fmtMoney(r.faturamento))}
         ${metrica('Margem Contribuição',fmtMoney(r.margem),r.margem<0,pctDe(r.margem,r.faturamento))}
         ${metrica('Margem pós Ads',fmtMoney(r.margemPosAds),r.margemPosAds<0,pctDe(r.margemPosAds,r.faturamento))}
-        ${metrica('Margem Líquida',fmtMoney(r.margemLiquida),r.margemLiquida<0,pctDe(r.margemLiquida,r.faturamento))}
+        ${metrica('Gasto em Ads',fmtMoney(r.gastoAds),false,pctDe(r.gastoAds,r.faturamento))}
+        ${metrica('Margem Líquida (rateada)',fmtMoney(r.margemLiquidaRateada),r.margemLiquidaRateada<0,pctDe(r.margemLiquidaRateada,r.faturamento))}
+        ${metrica('Margem Líquida (custo total)',fmtMoney(r.margemLiquidaTotal),r.margemLiquidaTotal<0,pctDe(r.margemLiquidaTotal,r.faturamento))}
       </div>
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td></tr>`).join('')}
@@ -5286,7 +5302,9 @@ function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
         ${metrica('Faturamento',fmtMoney(totalFat))}
         ${metrica('Margem Contribuição',fmtMoney(totalMargem),totalMargem<0,pctDe(totalMargem,totalFat))}
         ${metrica('Margem pós Ads',fmtMoney(totalMargemPosAds),totalMargemPosAds<0,pctDe(totalMargemPosAds,totalFat))}
-        ${metrica('Margem Líquida',fmtMoney(totalMargemLiquida),totalMargemLiquida<0,pctDe(totalMargemLiquida,totalFat))}
+        ${metrica('Gasto em Ads',fmtMoney(totalGastoAds),false,pctDe(totalGastoAds,totalFat))}
+        ${metrica('Margem Líquida (rateada)',fmtMoney(totalMargemLiquidaRateada),totalMargemLiquidaRateada<0,pctDe(totalMargemLiquidaRateada,totalFat))}
+        ${metrica('Margem Líquida (custo total)',fmtMoney(totalMargemLiquidaTotal),totalMargemLiquidaTotal<0,pctDe(totalMargemLiquidaTotal,totalFat))}
       </div>
     </div>
     <div class="share-box">
@@ -5364,20 +5382,9 @@ function calcularMargensResumo(resumo,loja){
   // fatura ML pendente (que carrega o Ads dentro dela).
   const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.reembolsosValor;
   const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
-  /* a fatura ML pendente é o valor TOTAL acumulado no ciclo de cobrança até agora (não é filtrada
-     por período) - pedido do Felipe 19/08: se o período escolhido é só 1 dia, não faz sentido
-     descontar o ciclo inteiro acumulado até hoje, senão a Margem Líquida de "Hoje" aparece
-     afundada por custo de dias que nem fazem parte do período selecionado. Rateia proporcional:
-     (dias do período selecionado ÷ dias já decorridos no ciclo até hoje), limitado a 100% (nunca
-     atribui mais do que a fatura realmente tem). Períodos que já cobrem o ciclo inteiro (ex:
-     "Últimos 30 dias") continuam batendo ~100% igual antes. */
-  const faturaMlBruta=faturaMlPendenteLoja(loja);
-  const diasSel=diasNoPeriodoResumo(resumo.periodo.de,resumo.periodo.ate);
-  const diasDecorridosCiclo=Math.max(1,new Date().getDate());
-  const fatorRateio=Math.min(1,diasSel/diasDecorridosCiclo);
-  const faturaMlAtual=faturaMlBruta*fatorRateio;
+  const faturaMlAtual=faturaMlPendenteLoja(loja);
   const margemLiquida=margem-custosPeriodo-faturaMlAtual;
-  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlBruta,faturaMlAtual,fatorRateio,margemLiquida};
+  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida};
 }
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
    Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
@@ -5386,7 +5393,7 @@ function calcularMargensResumo(resumo,loja){
    custo/trabalho mas não viraram receita de verdade. */
 let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
-  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlBruta,faturaMlAtual,fatorRateio,margemLiquida}=calcularMargensResumo(resumo,loja);
+  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
   const margemPosAds=margem-resumo.ads.custo;
   const margemPosAdsPct=resumo.faturamento>0?(margemPosAds/resumo.faturamento*100):0;
@@ -5434,7 +5441,6 @@ function renderResumoFinanceiroResultado(resumo,loja){
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
         <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(custosPeriodo)}${pct(custosPeriodo)?' ('+pct(custosPeriodo)+')':''} de despesas do período − ${fmtMoney(faturaMlAtual)}${pct(faturaMlAtual)?' ('+pct(faturaMlAtual)+')':''} de fatura ML pendente <span title="A fatura ML pendente já inclui o Ads cobrado pelo Mercado Livre, por isso o Ads não é descontado de novo aqui (o card ADS acima é só informativo)">(inclui Ads)</span>${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
-        ${fatorRateio<0.999?`<div class="hint" style="margin:2px 0 0;opacity:.75">Fatura ML rateada pro período escolhido: ${fmtMoney(faturaMlBruta)} acumulado no ciclo até hoje × ${(fatorRateio*100).toFixed(0)}% (dias do período ÷ dias já passados no ciclo) = ${fmtMoney(faturaMlAtual)}</div>`:''}
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
@@ -7738,11 +7744,18 @@ tentarReconectar();
 })();
 
 /* alerta na tela quando uma tarefa chega na data (e hora, se houver) programada - pedido do
-   Felipe 19/08. Roda a cada 60s enquanto a aba fica aberta; cada tarefa só dispara o alerta uma
-   vez por sessão (tarefasAlertadas), pra não ficar repetindo o aviso a cada checagem. Como o
-   Doca não tem notificação fora da aba (é só front-end), isso avisa só enquanto o app tá aberto
-   no navegador - por isso funciona bem junto do celular ligado no Doca. */
-let tarefasAlertadas=new Set();
+   Felipe 19/08. Roda a cada 60s enquanto a aba fica aberta. Cada tarefa só dispara o alerta uma
+   vez POR DATA (guardado no localStorage, sobrevive a recarregar a página) - pedido do Felipe
+   19/08 (2ª rodada): uma tarefa atrasada não pode ficar avisando toda vez que abre o Doca; uma
+   vez visto o aviso, só volta a alertar se a data mudar - ou seja, numa tarefa mensal recorrente,
+   só no mês seguinte (quando ela reagenda pra próxima data). Tarefa concluída some de
+   state.tarefas (ver concluirTarefa), então nem entra mais nesse cálculo. */
+function tarefasAlertadasStorage(){
+  try{ return JSON.parse(localStorage.getItem('doca_tarefas_alertadas')||'{}'); }catch(e){ return {}; }
+}
+function salvarTarefasAlertadasStorage(obj){
+  try{ localStorage.setItem('doca_tarefas_alertadas',JSON.stringify(obj)); }catch(e){}
+}
 function mostrarAlertaTarefas(lista){
   const el=document.getElementById('tarefaAlerta'); if(!el) return;
   el.innerHTML=`⏰ <b>${lista.length} tarefa${lista.length>1?'s':''} no prazo:</b> ${lista.slice(0,4).map(t=>esc(t.titulo)).join(' · ')}${lista.length>4?' ...':''} <button class="tarefa-alerta-x" id="tarefaAlertaX">Ok, fechar</button>`;
@@ -7759,9 +7772,16 @@ function checarTarefasVencendo(){
     if(d===h&&t.hora&&t.hora>hhmm) return false; // é hoje mas a hora ainda não chegou
     return true;                      // data já passou (ou é hoje e a hora já chegou) - alerta
   });
-  const novas=devidas.filter(t=>!tarefasAlertadas.has(t.id));
+  const alertadas=tarefasAlertadasStorage();
+  // só é "nova" se essa DATA especifica dessa tarefa ainda não foi alertada antes
+  const novas=devidas.filter(t=>alertadas[t.id]!==String(t.data||'').slice(0,10));
   if(!novas.length) return;
-  novas.forEach(t=>tarefasAlertadas.add(t.id));
+  novas.forEach(t=>{ alertadas[t.id]=String(t.data||'').slice(0,10); });
+  // limpeza: tira do registro tarefas que já não existem mais (concluídas/excluídas), pra não
+  // crescer pra sempre no localStorage
+  const idsAtivos=new Set((state.tarefas||[]).map(t=>t.id));
+  Object.keys(alertadas).forEach(id=>{ if(!idsAtivos.has(id)) delete alertadas[id]; });
+  salvarTarefasAlertadasStorage(alertadas);
   mostrarAlertaTarefas(devidas);
 }
 setInterval(checarTarefasVencendo,60*1000);
