@@ -7684,7 +7684,6 @@ function irParaAba(nome){
   try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){}
 }
 document.querySelectorAll('#mainNav button').forEach(b=>{ b.onclick=()=>irParaAba(b.dataset.tab); });
-mostrarAlertaTarefasDoDia();
 document.querySelectorAll('#subFull button').forEach(b=>{ b.onclick=()=>irParaSub(b.dataset.sub); });
 document.getElementById('btnArquivo').onclick=menuArquivo;
 document.getElementById('btnBackup').onclick=baixarBackup;
@@ -7732,6 +7731,10 @@ window.addEventListener('beforeunload',e=>{
 loadFromLocalStorage();
 renderBloqueio();   /* trava a tela imediatamente, antes de tudo */
 renderAll();
+/* alerta de tarefas de hoje - só agora, depois do loadFromLocalStorage()+renderAll() acima,
+   é que o state tem os dados reais (antes disso ainda era o esqueleto vazio, por isso o
+   alerta nunca aparecia sozinho ao abrir o programa - pedido do Felipe 19/08, 4ª rodada). */
+mostrarAlertaTarefasDoDia();
 tentarReconectar();
 
 /* sincroniza com o Mercado Livre sozinho assim que o Doca abre, se o backend já estiver
