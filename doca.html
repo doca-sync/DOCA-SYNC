@@ -201,6 +201,12 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
   box-shadow:0 16px 44px -12px rgba(0,0,0,.9);max-width:92vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 
+#tarefaAlerta{position:fixed;top:0;left:0;right:0;z-index:260;display:none;align-items:center;gap:10px;flex-wrap:wrap;
+  background:linear-gradient(135deg,#4a1f10,#6b1f14);border-bottom:1px solid rgba(255,197,61,.5);color:#fff;
+  padding:12px 18px;font-size:13.5px;font-weight:600;box-shadow:0 8px 24px -8px rgba(0,0,0,.7)}
+#tarefaAlerta.show{display:flex}
+#tarefaAlerta .tarefa-alerta-x{margin-left:auto;background:rgba(255,255,255,.14);border:none;color:#fff;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:12.5px;font-weight:700}
+
 .drop{border:2px dashed rgba(162,119,255,.45);border-radius:var(--r);padding:22px;text-align:center;background:var(--paper);margin-bottom:18px;transition:.18s}
 .drop.dragover{background:rgba(139,92,246,.16);border-color:var(--gold)}
 .drop b{display:block;font-family:Sora;font-size:14.5px;margin-bottom:4px;text-transform:uppercase}
@@ -493,6 +499,8 @@ tr.l-env{background:rgba(139,92,246,.07)}
     </nav>
   </div>
 </header>
+
+<div id="tarefaAlerta"></div>
 
 <div class="filebar">
   <div class="wrap in">
@@ -3381,6 +3389,11 @@ function renderProdutos(){
   });
   el.innerHTML=`
     <h1 class="page-title">Produtos</h1>
+    ${STORES.some(l=>mlUltimoErroAuto[l])?`<div class="card">
+      <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:#e66">⚠ Sincronização automática com o Mercado Livre falhou</b>
+      <p class="hint" style="margin:4px 0 0">Produto novo cadastrado no Mercado Livre pode não estar aparecendo aqui ainda. Clique em "🔄 Atualizar (Mercado Livre)" abaixo pra tentar de novo.</p>
+      ${STORES.filter(l=>mlUltimoErroAuto[l]).map(l=>`<p class="hint" style="color:#e66;margin:6px 0 0">⚠ ${esc(l)}: ${esc(mlUltimoErroAuto[l])}</p>`).join('')}
+    </div>`:''}
     <div class="toolbar-produtos">
       <select id="filtroLoja"><option value="todas" ${filtro.loja==='todas'?'selected':''}>Todas as lojas</option>${optsLojas(filtro.loja==='todas'?null:filtro.loja)}</select>
       <input id="filtroBusca" class="grow" type="text" placeholder="Buscar por SKU, código ou fornecedor..." value="${esc(filtro.busca)}">
@@ -4597,7 +4610,6 @@ function renderAds(){
       `:''}
       <div class="acoes-linha" style="margin-top:14px;flex-wrap:wrap">
         ${personalizado?'':`<button class="btn gold" id="adAtualizar" ${adsSincronizando?'disabled':''}>${adsSincronizando?'Sincronizando...':'🔄 Atualizar (puxa da API)'}</button>`}
-        <button class="btn sm" id="adColapsarTodos">${adsDetalheAberto.size?'▲ Colapsar todos':'▼ Expandir todos'}</button>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Filtro
           <select id="adFiltro" style="width:auto;font-size:12.5px;padding:6px 8px" ${adsLucroCarregando?'disabled':''}>
             <option value="tacos_desc" ${adsFiltro==='tacos_desc'?'selected':''}>Maior TACOS</option>
@@ -4765,12 +4777,6 @@ function renderAds(){
     calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
     iniciarSugestaoRoasLoja(c.loja);
   };
-  const btnColapsarTodos=document.getElementById('adColapsarTodos');
-  if(btnColapsarTodos) btnColapsarTodos.onclick=()=>{
-    if(adsDetalheAberto.size) adsDetalheAberto.clear();
-    else linhas.forEach(({camp})=>adsDetalheAberto.add(String(camp.id)));
-    renderAds();
-  };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
@@ -4874,6 +4880,7 @@ function marcarDespesaPaga(id,pago){
    Mercado Pago) e cadastra/atualiza como despesa recorrente automaticamente, evitando duplicar
    pelo par loja+faturaKey (a "key" que o próprio ML usa pra identificar o período de cobrança) */
 let financasUltimoErroAuto={}; // loja -> mensagem do último erro da tentativa AUTOMÁTICA de puxar a fatura (não persistido — só pra visibilidade nesta sessão, sem precisar abrir o console do navegador)
+let mlUltimoErroAuto={}; // loja -> mensagem do último erro da sincronização AUTOMÁTICA de produtos do Mercado Livre ao abrir o Doca (mesma ideia acima) - pedido do Felipe 19/08: produto novo cadastrado no ML não estava aparecendo, e a sincronização automática falhava sem avisar nada na tela (só no console)
 function sleep(ms){ return new Promise(res=>setTimeout(res,ms)); }
 async function puxarFaturaMl(loja){
   const base=backendUrl();
@@ -5180,27 +5187,79 @@ async function calcularFechamentoTodasLojas(){
   }catch(e){ financasFechTodasErro=e.message; }
   finally{ financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); }
 }
+/* relatório de fechamento de todas as lojas - pedido do Felipe 19/08: incluir pedidos/unidades
+   por loja, somatória geral, e lista dos produtos vendidos com quantidade. Vai ser visto no
+   celular, então o layout é mobile-first (cards empilhados em vez de tabela larga fixa; tabela
+   de produtos só tem 3 colunas estreitas, cabe numa tela de celular sem rolar pro lado). */
 function imprimirRelatorioFechamentoTodasLojas(resultados){
   const win=window.open('','_blank');
   if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
-  const totalFat=resultados.reduce((s,r)=>s+r.resumo.faturamento,0);
-  const totalMargem=resultados.reduce((s,r)=>s+r.m.margem,0);
-  const totalMargemLiquida=resultados.reduce((s,r)=>s+r.m.margemLiquida,0);
+  const porLoja=resultados.map(r=>{
+    const unidades=(r.resumo.itensVendidos||[]).reduce((s,it)=>s+(it.qtd||0),0);
+    const produtos=(r.resumo.itensVendidos||[]).slice().sort((a,b)=>b.qtd-a.qtd).map(it=>{
+      const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0};
+    });
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemLiquida:r.m.margemLiquida,produtos};
+  });
+  const totalPedidos=porLoja.reduce((s,r)=>s+r.pedidos,0);
+  const totalUnidades=porLoja.reduce((s,r)=>s+r.unidades,0);
+  const totalFat=porLoja.reduce((s,r)=>s+r.faturamento,0);
+  const totalMargem=porLoja.reduce((s,r)=>s+r.margem,0);
+  const totalMargemLiquida=porLoja.reduce((s,r)=>s+r.margemLiquida,0);
   const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
   const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Fechamento — Todas as Lojas</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif;padding:28px;color:#111}h1{font-size:19px;margin:0 0 4px}
-    .sub{color:#555;font-size:12px;margin-bottom:22px}table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px}
-    th,td{border:1px solid #ccc;padding:8px 10px;text-align:left}th{background:#f2f2f2}td.n{text-align:right}
-    .tot{margin-top:10px;font-size:15px;font-weight:bold;border-top:2px solid #333;padding-top:10px;text-align:right}
-    @media print{.no-print{display:none}}</style></head><body>
+  const metrica=(lbl,val)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val">${val}</div></div>`;
+  const cardLoja=r=>`<div class="loja-card">
+      <h2>${esc(r.loja)}</h2>
+      <div class="metrics">
+        ${metrica('Pedidos',fmtInt(r.pedidos))}
+        ${metrica('Unidades vendidas',fmtInt(r.unidades))}
+        ${metrica('Faturamento',fmtMoney(r.faturamento))}
+        ${metrica('Margem Contribuição',fmtMoney(r.margem))}
+        ${metrica('Margem Líquida',fmtMoney(r.margemLiquida))}
+      </div>
+      ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th></tr></thead><tbody>
+        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td></tr>`).join('')}
+      </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
+    </div>`;
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fechamento — Todas as Lojas</title>
+    <style>
+      *{box-sizing:border-box}
+      body{font-family:-apple-system,BlinkMacSystemFont,Arial,Helvetica,sans-serif;padding:16px;color:#111;font-size:15px;max-width:720px;margin:0 auto;background:#fff}
+      h1{font-size:19px;margin:0 0 4px}
+      h2{font-size:15px;margin:0 0 10px;padding-bottom:8px;border-bottom:2px solid #333}
+      .sub{color:#555;font-size:12.5px;margin-bottom:18px}
+      .loja-card{border:1px solid #ddd;border-radius:12px;padding:14px;margin-bottom:14px}
+      .metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;margin-bottom:12px}
+      .metric .lbl{font-size:10.5px;color:#666;text-transform:uppercase;letter-spacing:.03em}
+      .metric .val{font-size:16px;font-weight:bold;margin-top:2px}
+      .vazio{color:#888;font-size:12.5px;margin:4px 0 0}
+      table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:4px}
+      th,td{border-bottom:1px solid #eee;padding:7px 4px;text-align:left;word-break:break-word}
+      th{background:#f6f6f6;font-size:10.5px;text-transform:uppercase;color:#555}
+      td.n,th.n{text-align:right;white-space:nowrap}
+      .tot-card{border:2px solid #333;border-radius:12px;padding:14px;margin-top:8px;background:#fafafa}
+      .tot-card h2{border:none;margin-bottom:10px;padding:0}
+      @media (min-width:560px){ .metrics{grid-template-columns:repeat(3,1fr)} }
+      @media print{.no-print{display:none} body{max-width:none;padding:0} .loja-card{break-inside:avoid}}
+    </style></head><body>
     <h1>Fechamento Financeiro — Todas as Lojas</h1>
     <div class="sub">Período: ${esc(rotuloPeriodo)} · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
-    <table><thead><tr><th>Loja</th><th class="n">Faturamento</th><th class="n">Margem de Contribuição</th><th class="n">Margem Líquida</th></tr></thead><tbody>
-    ${resultados.map(r=>`<tr><td>${esc(r.loja)}</td><td class="n">${fmtMoney(r.resumo.faturamento)}</td><td class="n">${fmtMoney(r.m.margem)}</td><td class="n">${fmtMoney(r.m.margemLiquida)}</td></tr>`).join('')}
-    </tbody></table>
-    <div class="tot">Total: Faturamento ${fmtMoney(totalFat)} · Margem de Contribuição ${fmtMoney(totalMargem)} · Margem Líquida ${fmtMoney(totalMargemLiquida)}</div>
-    <button class="no-print" onclick="window.print()" style="margin-top:14px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
+    ${porLoja.map(cardLoja).join('')}
+    <div class="tot-card">
+      <h2>Total — Todas as Lojas</h2>
+      <div class="metrics">
+        ${metrica('Pedidos',fmtInt(totalPedidos))}
+        ${metrica('Unidades vendidas',fmtInt(totalUnidades))}
+        ${metrica('Faturamento',fmtMoney(totalFat))}
+        ${metrica('Margem Contribuição',fmtMoney(totalMargem))}
+        ${metrica('Margem Líquida',fmtMoney(totalMargemLiquida))}
+      </div>
+    </div>
+    <button class="no-print" onclick="window.print()" style="margin-top:16px;padding:13px 20px;font-size:15px;cursor:pointer;width:100%;border-radius:10px;border:1px solid #333;background:#fff">Imprimir / Salvar PDF</button>
     </body></html>`);
   win.document.close();
 }
@@ -7162,7 +7221,7 @@ function renderPrevisao(){
   <div class="card">
     <div class="form-grid">
       <label>Loja<select id="fLoja">${optsLojas(c.loja)}</select></label>
-      <label>Hoje <small>(real)</small><input type="text" value="${fmtData(hoje())}" disabled></label>
+      <label>Hoje<input type="text" value="${fmtData(hoje())}" disabled></label>
       <label>Previsão do envio ao FULL${botaoData('fEnvio',c.envio,{style:''})}</label>
       <label>Dias até o envio<input type="text" value="${D} dia(s)" disabled></label>
     </div>
@@ -7494,7 +7553,11 @@ document.querySelectorAll('#mainNav button').forEach(b=>{ b.onclick=()=>irParaAb
 document.querySelectorAll('#subFull button').forEach(b=>{ b.onclick=()=>irParaSub(b.dataset.sub); });
 document.getElementById('btnArquivo').onclick=menuArquivo;
 document.getElementById('btnBackup').onclick=baixarBackup;
-document.getElementById('btnDesfazer').onclick=desfazer;
+document.getElementById('btnDesfazer').onclick=()=>{
+  if(!undoStack.length) return;
+  const desc=undoStack[undoStack.length-1].desc;
+  confirmAction(`Desfazer: ${desc}?`,desfazer);
+};
 document.getElementById('confirmYes').onclick=()=>{
   document.getElementById('confirmOverlay').classList.add('hidden');
   if(pendingConfirm) pendingConfirm();
@@ -7567,8 +7630,11 @@ tentarReconectar();
     try{
       const resultado=await mlSincronizarLoja(loja);
       aplicarSincronizacaoAutomatica(resultado);
+      delete mlUltimoErroAuto[loja];
     }catch(e){
       console.error(`Sincronização automática com o Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
+      mlUltimoErroAuto[loja]=e.message;
+      renderProdutos();
     }
     try{
       aplicarSincronizacaoFinanceira(loja,await mpSincronizarFinanceiro(loja));
@@ -7588,6 +7654,34 @@ tentarReconectar();
     }
   }
 })();
+
+/* alerta na tela quando uma tarefa chega na data (e hora, se houver) programada - pedido do
+   Felipe 19/08. Roda a cada 60s enquanto a aba fica aberta; cada tarefa só dispara o alerta uma
+   vez por sessão (tarefasAlertadas), pra não ficar repetindo o aviso a cada checagem. Como o
+   Doca não tem notificação fora da aba (é só front-end), isso avisa só enquanto o app tá aberto
+   no navegador - por isso funciona bem junto do celular ligado no Doca. */
+let tarefasAlertadas=new Set();
+function mostrarAlertaTarefas(lista){
+  const el=document.getElementById('tarefaAlerta'); if(!el) return;
+  el.innerHTML=`⏰ <b>${lista.length} tarefa${lista.length>1?'s':''} no prazo:</b> ${lista.slice(0,4).map(t=>esc(t.titulo)).join(' · ')}${lista.length>4?' ...':''} <button class="tarefa-alerta-x" id="tarefaAlertaX">Ok, fechar</button>`;
+  el.classList.add('show');
+  document.getElementById('tarefaAlertaX').onclick=()=>el.classList.remove('show');
+}
+function checarTarefasVencendo(){
+  const h=hoje();
+  const hhmm=new Date().toTimeString().slice(0,5);
+  const devidas=(state.tarefas||[]).filter(t=>{
+    if(!t.data||t.data>h) return false;
+    if(t.data===h&&t.hora&&t.hora>hhmm) return false;
+    return true;
+  });
+  const novas=devidas.filter(t=>!tarefasAlertadas.has(t.id));
+  if(!novas.length) return;
+  novas.forEach(t=>tarefasAlertadas.add(t.id));
+  mostrarAlertaTarefas(devidas);
+}
+setInterval(checarTarefasVencendo,60*1000);
+checarTarefasVencendo();
 
 /* re-sync periódico só do financeiro (Mercado Pago), enquanto a aba do Doca fica aberta.
    Motivo (descoberto com dado real em 13/08): o relatório do Mercado Pago fica pronto rápido,
