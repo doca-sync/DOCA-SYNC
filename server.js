@@ -51,6 +51,15 @@ if (!ML_CLIENT_ID || !ML_CLIENT_SECRET || !ML_REDIRECT_URI) {
   process.exit(1);
 }
 const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+/* tabela pra relatorios compartilhaveis (fechamento de todas as lojas etc) - pedido do Felipe
+   19/08: gerar um link que a pessoa que ele mandar por WhatsApp consiga abrir sem precisar de
+   login do Doca (ver rotas /relatorio no fim do arquivo). Criada sozinha se ainda nao existir -
+   nao precisa rodar migracao manual no Supabase pra essa. */
+pool.query(`create table if not exists relatorios (
+  id text primary key,
+  html text not null,
+  criado_em timestamptz not null default now()
+)`).catch(e => console.error('Falha ao garantir tabela "relatorios":', e.message));
 const app = express();
 app.use(express.json({ limit: '10mb' })); // o estado inteiro do Doca (produtos, envios, historico) pode passar de 100kb (limite padrao)
 const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
@@ -3244,6 +3253,41 @@ app.get('/data', async (req, res) => {
   } catch (e) {
     console.error('Erro no /data:', e);
     res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* relatorio compartilhavel (link publico, sem login) - pedido do Felipe 19/08: depois de gerar
+   o fechamento de todas as lojas, poder mandar um link por WhatsApp pra alguem abrir os dados
+   sem precisar entrar no Doca. O front-end (doca_kitNN.html) posta o HTML pronto (ja calculado
+   no navegador) aqui, guarda no banco com um id curto, e usa /relatorio/:id como o link em si -
+   essa rota devolve o HTML puro, direto, pra abrir em qualquer navegador. Sem dado sensivel de
+   login/token aqui, so o relatorio (faturamento/margem/produtos) que ele decidiu compartilhar. */
+app.post('/relatorio', async (req, res) => {
+  try {
+    const html = req.body && req.body.html;
+    if (!html || typeof html !== 'string' || html.length < 20) {
+      return res.status(400).json({ ok: false, erro: 'Corpo "html" obrigatorio.' });
+    }
+    if (html.length > 2000000) {
+      return res.status(400).json({ ok: false, erro: 'Relatorio grande demais pra compartilhar.' });
+    }
+    const id = base64url(crypto.randomBytes(9));
+    await pool.query('insert into relatorios (id, html, criado_em) values ($1, $2, now())', [id, html]);
+    // limpeza simples dos relatorios com mais de 30 dias, aproveitando essa insercao
+    pool.query("delete from relatorios where criado_em < now() - interval '30 days'").catch(() => {});
+    res.json({ ok: true, id });
+  } catch (e) {
+    console.error('Erro no /relatorio (post):', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.get('/relatorio/:id', async (req, res) => {
+  try {
+    const r = await pool.query('select html from relatorios where id = $1', [req.params.id]);
+    if (!r.rows.length) return res.status(404).type('text/html').send('<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px;text-align:center;color:#333"><h2>Relatório não encontrado</h2><p>O link pode ter expirado (relatórios ficam disponíveis por 30 dias).</p></body>');
+    res.type('text/html').send(r.rows[0].html);
+  } catch (e) {
+    console.error('Erro no /relatorio/:id (get):', e);
+    res.status(500).type('text/html').send('<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px;text-align:center;color:#333"><h2>Erro ao carregar o relatório</h2></body>');
   }
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
