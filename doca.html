@@ -2578,9 +2578,6 @@ function renderAvisos(){
   let h='';
   if(!fileHandle&&!handlePendente&&!verificandoArquivo&&!nuvemAuth&&state.produtos.length>0)
     h+=`<div class="aviso risco"><span>⚠</span><span><b>Seus dados estão só no cache deste navegador.</b> Se limpar o cache ou trocar de computador, você perde tudo. Conecte um arquivo (de preferência numa pasta do Dropbox) ou baixe um backup.</span><button class="btn sm" id="avisoConectar">Conectar arquivo</button></div>`;
-  const sc=state.produtos.filter(p=>!p.custo||p.custo<=0);
-  if(sc.length)
-    h+=`<div class="aviso atencao"><span>⚠</span><span><b>${sc.length} SKU(s) sem custo cadastrado.</b> O valor em estoque e o capital de giro estão subestimados até você preencher o custo deles em Produtos. Ex: ${sc.slice(0,4).map(p=>esc(p.sku)).join(', ')}${sc.length>4?'…':''}</span></div>`;
   el.innerHTML=h;
   const b=document.getElementById('avisoConectar'); if(b) b.onclick=menuArquivo;
   const r=document.getElementById('avisoReconectar'); if(r) r.onclick=reconectarComPermissao;
@@ -3067,7 +3064,6 @@ function renderDashboard(){
     </div>
     <div class="card" style="margin:20px 0">
       <h3 style="margin-top:0">❓ Perguntas sem resposta no Mercado Livre</h3>
-      <p class="hint" style="margin:0 0 10px">A contagem já vem do "Atualizar" normal da aba Produtos. Clique numa loja com pendência pra ler e responder direto aqui.</p>
       <div class="acoes-linha" style="flex-wrap:wrap">
         ${perguntasPorLoja.map(g=>g.total>0
           ?`<button class="btn sm" data-verperguntas="${esc(g.loja)}">${esc(g.loja)}: <span class="pend">${g.total} sem resposta</span>${perguntasCarregando===g.loja?' (carregando...)':''}</button>`
@@ -5239,7 +5235,7 @@ function mostrarOverlayVideoCarregando(){
       }
     </style>
     <div class="video-fechamento-frame">
-      <video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover;display:block" src="${backendUrl()}/loading-video.mp4?v=2"></video>
+      <video id="videoCarregandoFechamento" playsinline loop style="width:100%;height:100%;object-fit:cover;display:block" src="${backendUrl()}/loading-video.mp4?v=2"></video>
       <div style="position:absolute;left:0;right:0;top:0;padding:calc(18px + env(safe-area-inset-top)) 22px 18px;background:linear-gradient(180deg,rgba(0,0,0,.65),transparent)">
         <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden">
           <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .35s linear"></div>
