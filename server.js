@@ -3292,8 +3292,8 @@ app.get('/relatorio/:id', async (req, res) => {
 });
 app.get('/loading-video.mp4', (req, res) => {
   res.sendFile(path.join(__dirname, 'loading-video.mp4'), {
-    maxAge: '30d',
-    headers: { 'Content-Type': 'video/mp4' }
+    maxAge: 0,
+    headers: { 'Content-Type': 'video/mp4', 'Cache-Control': 'no-cache' }
   }, (err) => {
     if (err) { console.error('Erro ao servir loading-video.mp4:', err.message); if (!res.headersSent) res.status(404).send('Video nao encontrado no servidor.'); }
   });
