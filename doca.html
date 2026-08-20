@@ -5271,15 +5271,19 @@ async function calcularFechamentoTodasLojas(){
         html,body{margin:0;height:100%;background:#0A0418}
         body{display:flex;align-items:center;justify-content:center;flex-direction:column;min-height:100vh;
           font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;color:#EFEBF9;padding:20px}
-        video{width:100%;max-width:360px;border-radius:16px;box-shadow:0 0 70px rgba(139,92,246,.4)}
         p{margin-top:18px;color:#9A90BC;font-size:14px;text-align:center}
       </style></head>
       <body>
-        <video autoplay playsinline loop src="${backendUrl()}/loading-video.mp4"></video>
-        <p>Calculando o fechamento de todas as lojas… isso pode levar um tempo.</p>
+        <p>Calculando o fechamento de todas as lojas… acompanhe o vídeo na aba do Doca. Isso pode levar um tempo.</p>
       </body></html>`);
     win.document.close();
   }
+  /* v: autoplay COM SOM só é liberado pelo navegador na aba que recebeu o clique de verdade -
+     a aba nova (win, acima) nunca é clicada nela mesma, então o navegador bloqueia o som (ficava
+     com o quadro congelado e mudo). Por isso o vídeo toca como uma camada por cima do PRÓPRIO
+     Doca (essa aba, que acabou de ser clicada) - chamado logo no clique, antes de qualquer await,
+     pra aproveitar a permissão do gesto do usuário. Some sozinho quando o cálculo termina. */
+  mostrarOverlayVideoCarregando();
   financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
   try{
     if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
@@ -5300,7 +5304,24 @@ async function calcularFechamentoTodasLojas(){
     financasFechTodasErro=e.message;
     if(win&&!win.closed) win.document.body.innerHTML='<p style="font-family:sans-serif;padding:24px;color:#900">Erro ao calcular o fechamento: '+esc(e.message)+'</p>';
   }
-  finally{ financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); }
+  finally{ financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); esconderOverlayVideoCarregando(); }
+}
+/* overlay do vídeo de loading, sobre a própria tela do Doca (ver comentário acima em
+   calcularFechamentoTodasLojas sobre por que não pode ser numa aba nova) */
+function mostrarOverlayVideoCarregando(){
+  esconderOverlayVideoCarregando();
+  const div=document.createElement('div');
+  div.id='overlayVideoCarregando';
+  div.style.cssText='position:fixed;inset:0;z-index:99999;background:#0A0418;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px';
+  div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;max-width:360px;border-radius:16px;box-shadow:0 0 70px rgba(139,92,246,.4)" src="${backendUrl()}/loading-video.mp4"></video>
+    <p style="margin-top:18px;color:#9A90BC;font-size:14px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif">Calculando o fechamento de todas as lojas… isso pode levar um tempo.</p>`;
+  document.body.appendChild(div);
+  const v=document.getElementById('videoCarregandoFechamento');
+  if(v){ v.play().catch(()=>{}); }
+}
+function esconderOverlayVideoCarregando(){
+  const el=document.getElementById('overlayVideoCarregando');
+  if(el){ const v=el.querySelector('video'); if(v){ try{v.pause();}catch(e){} } el.remove(); }
 }
 /* relatório de fechamento de todas as lojas - pedido do Felipe 19/08: incluir pedidos/unidades
    por loja, somatória geral, e lista dos produtos vendidos com quantidade. Vai ser visto no
