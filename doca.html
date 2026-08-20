@@ -7907,12 +7907,14 @@ function tarefasDeHojePendentes(){
     if(tarefaConcluidaNoPeriodo(t)) return false;  // Gestão Ativa já concluída este período - não incomoda de novo
     return true;
   });
-  /* tarefa de Gestão Ativa (mensal/semanal) é um lembrete recorrente - entra no aviso todo dia
-     enquanto não for concluída no período, independente da data marcada nela (que é opcional e
-     nem sempre é "hoje") - pedido do Felipe 19/08 */
+  /* tarefa de Gestão Ativa (mensal/semanal) sem data marcada é um lembrete recorrente - entra no
+     aviso todo dia enquanto não for concluída no período. Mas se tiver data marcada, só deve
+     avisar no dia certo (mesma regra das tarefas normais) - pedido do Felipe 20/08 (antes
+     avisava todo dia, ignorando a data) */
   const vistos=new Set(porData.map(t=>t.id));
   (state.tarefas||[]).forEach(t=>{
     if(!t.resetaTipo||vistos.has(t.id)||tarefaConcluidaNoPeriodo(t)) return;
+    if(t.data && String(t.data).slice(0,10)!==h) return;
     vistos.add(t.id); porData.push(t);
   });
   return porData;
