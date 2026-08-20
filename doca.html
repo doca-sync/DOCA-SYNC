@@ -43,7 +43,6 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
    horizontal continua normal lá. */
 .wrap{max-width:1680px;margin:0 auto;padding:0 var(--pad)}
 .hidden{display:none !important}
-
 header{background:var(--night);position:sticky;top:0;z-index:60;border-bottom:1px solid rgba(190,190,193,.2)}
 .bar{display:flex;align-items:center;gap:20px;height:60px}
 .mark{display:flex;align-items:center;gap:10px;flex:none;color:#fff}
@@ -57,7 +56,6 @@ nav button{font-size:13px;font-weight:700;padding:8px 14px;border-radius:99px;
   color:rgba(255,255,255,.6);white-space:nowrap;transition:.15s;flex:none;letter-spacing:.03em}
 nav button:hover{color:#fff;background:rgba(190,190,193,.18)}
 nav button[aria-selected=true]{color:var(--night);background:var(--gold)}
-
 .filebar{background:var(--night2);border-bottom:1px solid rgba(190,190,193,.2);padding:9px 0}
 .filebar .in{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .filebar .btn{font-size:12px;padding:6px 11px;border-radius:8px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(190,190,193,.35)}
@@ -66,7 +64,6 @@ nav button[aria-selected=true]{color:var(--night);background:var(--gold)}
 .filebar .btn:disabled:hover{background:rgba(255,255,255,.08)}
 .undo-label{font-size:11.5px;color:var(--violet-l);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-status{margin-left:auto;font-size:11.5px;color:rgba(255,255,255,.55)}
-
 .btn{font-size:12.5px;font-weight:700;letter-spacing:.03em;padding:8px 14px;border-radius:9px;
   border:1px solid var(--line);background:var(--bg2);color:var(--text);display:inline-flex;align-items:center;gap:7px;transition:.15s}
 .btn:hover{border-color:var(--violet);color:var(--violet-l);background:rgba(163,163,163,.14)}
@@ -81,7 +78,6 @@ nav button[aria-selected=true]{color:var(--night);background:var(--gold)}
 .btn.danger-outline:hover{background:#9F1239;border-color:#BE123C;color:#fff}
 .btn:disabled{opacity:.35;cursor:not-allowed}
 .btn:disabled:hover{border-color:var(--line);color:var(--text);background:var(--bg2)}
-
 main{padding:26px 0 70px}
 h1.page-title{font-family:Sora;font-weight:800;font-size:22px;letter-spacing:-.01em;margin:0 0 18px}
 h3{font-family:Sora;font-weight:700;font-size:14.5px;margin:22px 0 10px;letter-spacing:.02em}
@@ -90,7 +86,6 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .muted{color:var(--muted)}
 .hint{font-size:12.5px;color:var(--muted);margin:10px 0 0}
 .empty, .empty-inline{color:var(--muted);font-size:13.5px;padding:14px 4px}
-
 .onboard{background:var(--paper);border:1px dashed var(--violet-l);border-radius:var(--r);padding:20px;margin-bottom:20px;font-size:14px}
 .onboard b{color:var(--violet-l)}
 .aviso{border-radius:var(--r);padding:13px 16px;margin-bottom:14px;font-size:13.5px;display:flex;gap:10px;align-items:flex-start}
@@ -98,7 +93,6 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .aviso.atencao{background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.38);color:#FFE08A}
 .aviso b{font-weight:700}
 .aviso .btn{margin-left:auto;flex:none}
-
 .cards-lojas{display:grid;grid-template-columns:repeat(auto-fit,minmax(268px,1fr));gap:14px}
 .card-loja{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:16px;
   box-shadow:0 10px 26px -18px rgba(0,0,0,.8);transition:.18s}
@@ -140,11 +134,9 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .acao-ok{color:var(--ok);font-weight:600}
 .acao-aten{color:var(--warn);font-weight:600}
 .acao-risco{color:var(--danger);font-weight:600}
-
 .toolbar-produtos{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
 .toolbar-produtos select, .toolbar-produtos input[type=text], .toolbar-produtos input[type=date]{font:inherit;font-size:13.5px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--text);color-scheme:dark}
 .toolbar-produtos input[type=text].grow{flex:1;min-width:180px}
-
 /* rolagem só horizontal contida dentro do card, em vez de rolar a página inteira. Isso corta o
    popup do ícone "i" quando ele estoura o card (CSS não permite ter as duas coisas: rolagem
    horizontal + popup sem corte no mesmo elemento) — mas pra isso já existe o clique no "i" que
@@ -168,13 +160,11 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .okv{color:var(--ok);font-weight:700}
 .cam{color:var(--info);font-weight:700}
 .tag-zero{font-size:10px;font-weight:700;background:rgba(251,113,133,.15);color:var(--danger);padding:2px 6px;border-radius:5px;white-space:nowrap;border:1px solid rgba(251,113,133,.3);text-transform:uppercase}
-
 .envio-card{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px;box-shadow:0 10px 26px -20px rgba(0,0,0,.8)}
 .envio-head{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
 .envio-tit{font-family:Sora;font-weight:700;font-size:15.5px;text-transform:uppercase}
 .envio-meta{font-size:12.5px;color:var(--muted);margin-top:3px}
 .envio-acts{display:flex;gap:8px;flex-wrap:wrap}
-
 .modal-overlay{position:fixed;inset:0;background:rgba(5,2,14,.78);backdrop-filter:blur(3px);display:flex;align-items:flex-start;justify-content:center;
   padding:40px 16px;z-index:100;overflow-y:auto}
 .modal{background:var(--paper);border:1px solid rgba(163,163,163,.28);border-radius:16px;max-width:600px;width:100%;padding:24px 26px 26px;box-shadow:0 26px 70px -18px rgba(0,0,0,.9)}
@@ -188,29 +178,23 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .form-grid label small{font-weight:500;color:var(--muted);font-size:11px;text-transform:none}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
 .modal-sep{border:0;border-top:1px solid var(--line2);margin:20px 0}
-
 .calc-row{display:flex;justify-content:space-between;margin-top:12px;font-size:13.5px;background:var(--bg2);border:1px solid rgba(163,163,163,.16);padding:10px 12px;border-radius:9px;flex-wrap:wrap;gap:8px}
 .envio-full-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .envio-full-row input{width:140px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--text)}
-
 #confirmOverlay .modal{max-width:460px}
-
 #toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);
   background:linear-gradient(135deg,#1B0F3D,#2A1160);border:1px solid rgba(190,190,193,.4);color:#fff;
   padding:13px 22px;border-radius:14px;font-size:13.5px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:200;
   box-shadow:0 16px 44px -12px rgba(0,0,0,.9);max-width:92vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
-
 .drop{border:2px dashed rgba(190,190,193,.45);border-radius:var(--r);padding:22px;text-align:center;background:var(--paper);margin-bottom:18px;transition:.18s}
 .drop.dragover{background:rgba(163,163,163,.16);border-color:var(--gold)}
 .drop b{display:block;font-family:Sora;font-size:14.5px;margin-bottom:4px;text-transform:uppercase}
-
 @media(max-width:720px){
   .form-grid{grid-template-columns:1fr}
   .card-loja-grid{grid-template-columns:repeat(2,1fr)}
   .file-status{margin-left:0;width:100%}
 }
-
 /* ---- tela de atualizacao (trava o sistema) ---- */
 #lockOverlay{position:fixed;inset:0;z-index:500;background:rgba(6,2,16,.93);backdrop-filter:blur(6px);
   display:flex;align-items:center;justify-content:center;padding:24px}
@@ -231,7 +215,6 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
   text-transform:none;background:none;border:0;cursor:pointer}
 .lock-alt:hover{color:var(--danger)}
 .lock-sub{font-size:12.5px;opacity:.75}
-
 /* ---------- tarefas ---------- */
 .listas-bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .lista-chip{font-size:12px;font-weight:700;letter-spacing:.03em;padding:7px 14px;border-radius:99px;
@@ -243,7 +226,6 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .chip-n.atras{background:#9F1239;color:#fff}
 .lista-acoes{display:inline-flex;gap:5px;margin-left:auto}
 .lista-acoes .btn{padding:6px 10px}
-
 .tarefa-nova{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px;
   background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:12px}
 .tarefa-nova input[type=text]{flex:1;min-width:200px;font:inherit;font-size:15px;padding:11px 12px;
@@ -251,7 +233,6 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .tarefa-nova input[type=date]{font:inherit;font-size:14px;padding:11px 12px;border:1px solid var(--line);
   border-radius:9px;background:var(--bg2);color:var(--text);color-scheme:dark}
 .tarefa-nova input:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(163,163,163,.2)}
-
 .tarefa-lista{display:flex;flex-direction:column;gap:8px}
 .tarefa{display:flex;flex-direction:column;gap:6px;background:var(--paper);border:1px solid var(--line);
   border-radius:var(--r);padding:11px 13px;transition:.15s}
@@ -305,7 +286,6 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .nav-badge{font-family:'IBM Plex Mono';font-size:10px;background:rgba(0,0,0,.3);padding:1px 6px;border-radius:99px;margin-left:2px}
 .nav-badge.atras{background:#BE123C;color:#fff}
 nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
-
 /* ---------- celular ---------- */
 @media(hover:none){
   .tarefa-grip{display:none}
@@ -354,7 +334,6 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
   input,select,textarea{font-size:16px !important}
   .tarefa-obs,.obs-input{font-size:14px !important}
 }
-
 /* ---------- subtarefas ---------- */
 .sub-cont{font-family:'IBM Plex Mono';font-size:10.5px;font-weight:600;color:var(--muted);
   background:var(--bg2);border:1px solid var(--line);padding:2px 8px;border-radius:99px;flex:none}
@@ -413,7 +392,6 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
   .tarefa.aberta .tarefa-obs{display:block}
   .tarefa-data,.tarefa-hora{padding:8px 9px;flex:none;width:auto}
 }
-
 /* ---- sub-abas da aba FULL ---- */
 .subnav{display:flex;gap:7px;margin:0 0 16px;flex-wrap:wrap}
 .subnav button{background:transparent;border:1px solid var(--line);color:var(--muted);
@@ -422,7 +400,6 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
 .subnav button:hover{border-color:var(--violet-d);color:var(--text)}
 .subnav button[aria-selected=true]{background:var(--violet-d);border-color:var(--violet);color:#fff}
 @media(max-width:520px){.subnav button{flex:1;padding:8px 10px;font-size:11px}}
-
 /* ---- Previsão FULL ---- */
 .filtros-full{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:14px}
 .filtros-full .chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--muted);
@@ -472,7 +449,6 @@ tr.l-env{background:rgba(163,163,163,.07)}
 </style>
 </head>
 <body>
-
 <header>
   <div class="wrap bar">
     <div class="mark">
@@ -493,7 +469,6 @@ tr.l-env{background:rgba(163,163,163,.07)}
     </nav>
   </div>
 </header>
-
 <div class="filebar">
   <div class="wrap in">
     <button class="btn" id="btnArquivo">📂 Conectar arquivo</button>
@@ -503,7 +478,6 @@ tr.l-env{background:rgba(163,163,163,.07)}
     <span class="file-status" id="fileStatus"></span>
   </div>
 </div>
-
 <main class="wrap">
   <div id="avisosBox"></div>
   <div id="onboardBox"></div>
@@ -527,7 +501,6 @@ tr.l-env{background:rgba(163,163,163,.07)}
   </section>
   <section id="tab-amauri" class="tabpanel hidden"></section>
 </main>
-
 <div class="modal-overlay hidden" id="modalOverlay"><div class="modal" id="modalBody"></div></div>
 <div class="modal-overlay hidden" id="confirmOverlay">
   <div class="modal">
@@ -539,16 +512,13 @@ tr.l-env{background:rgba(163,163,163,.07)}
     </div>
   </div>
 </div>
-
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
 const STORES=["TorvStore","Dor Block","Orbix Brasil","TorvShop"];
 const LOCAIS_COLETA=["Felipe","Thiago"];
 const STATUS_LABEL={comprar:"Comprar",coletar:"Coletar",local:"Local"};
-
 let state={produtos:[],envios:[],tarefas:[],listas:[],full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:[],financeiro:{},ads:{cfg:{},campanhas:[],hist:[]},mlSync:{cfg:{}},avisosFornecedor:[],despesas:[]};
 /* produtoId -> timestamp: usado só pra piscar a linha na Previsão quando um envio é
    confirmado como FULL (o total normalmente não muda, então sem isso pode parecer que a
@@ -582,7 +552,6 @@ let ultimaVerificacao=null;
 let nuvemAuth=localStorage.getItem('estoque_nuvem_auth')||null;  /* "usuario:senha" em base64 - presença = nuvem ligada */
 let nuvemAtualizadoEm=0;      /* "atualizado_em" (epoch ms) da última leitura/gravação conhecida na nuvem */
 let nuvemGravando=false, nuvemGravarDeNovo=false;
-
 /* ---------- helpers ---------- */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtMoney(v){ return 'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
@@ -811,7 +780,6 @@ function proximoEnvioLoja(loja){
   const h=hoje();
   return enviosOrdenados().find(e=>e.loja===loja&&e.data&&e.data>=h)||null;
 }
-
 /* reservado no galpão (etiquetado) */
 function reservadoLocalDe(p){ let t=0; state.envios.forEach(e=>e.itens.forEach(i=>{ if(i.produtoId===p.id) t+=(i.alocado||0); })); return t; }
 /* reservado mas ainda a coletar (já comprado, no fornecedor) */
@@ -866,7 +834,6 @@ function ajustarComprarPorPedidos(p,novo){
   }
   sincronizarPedidos(p);
 }
-
 /* ---- lotes de compra a coletar (cada compra é um lote separado) ---- */
 function novoLote(qtd,pedido){ return {id:gerarId('l'),qtd,data:hoje(),pedido:pedido||''}; }
 function somaLotes(p){ return (p.lotes||[]).reduce((a,l)=>a+(l.qtd||0),0); }
@@ -992,7 +959,6 @@ function classificarCurvaLoja(loja){
   });
   return mapa;
 }
-
 /* ---------- migração ---------- */
 /* Dados criados antes deste vínculo: descobre de qual envio veio cada pedido,
    comparando o que cada envio ainda precisa comprar. */
@@ -1165,7 +1131,6 @@ function migrar(){
     e.itens.forEach(i=>{ if(!i.id) i.id=gerarId('it'); if(i.geradoCompra===undefined) i.geradoCompra=0; if(i.reservadoColeta===undefined) i.reservadoColeta=0; });
   });
 }
-
 /* ---------- undo ---------- */
 function snapshot(desc){ if(batchDepth>0) return; undoStack.push({desc,data:JSON.stringify(state)}); if(undoStack.length>25) undoStack.shift(); }
 function batch(desc,fn){ snapshot(desc); batchDepth++; try{ fn(); } finally{ batchDepth--; } persist(); }
@@ -1175,7 +1140,6 @@ function desfazer(){
   saveToLocalStorage(); if(fileHandle) saveToFile(); renderAll();
   toast('↩ Desfeito: '+s.desc+(undoStack.length?` · restam ${undoStack.length} ação(ões) para desfazer`:' · nada mais para desfazer'));
 }
-
 /* ---------- persistência ---------- */
 function loadFromLocalStorage(){
   const raw=localStorage.getItem('estoque_full_data');
@@ -1183,14 +1147,12 @@ function loadFromLocalStorage(){
   migrar();
 }
 function saveToLocalStorage(){ localStorage.setItem('estoque_full_data',JSON.stringify(state)); }
-
 /* ---- memória do arquivo entre sessões (IndexedDB) ---- */
 function idbOpen(){ return new Promise((res,rej)=>{ const r=indexedDB.open('estoque_fs',1);
   r.onupgradeneeded=()=>r.result.createObjectStore('h'); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
 async function idbSet(k,v){ try{ const d=await idbOpen(); return new Promise(res=>{ const t=d.transaction('h','readwrite'); t.objectStore('h').put(v,k); t.oncomplete=()=>res(); t.onerror=()=>res(); }); }catch(e){} }
 async function idbGet(k){ try{ const d=await idbOpen(); return new Promise(res=>{ const t=d.transaction('h','readonly'); const q=t.objectStore('h').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>res(null); }); }catch(e){ return null; } }
 async function idbDel(k){ try{ const d=await idbOpen(); return new Promise(res=>{ const t=d.transaction('h','readwrite'); t.objectStore('h').delete(k); t.oncomplete=()=>res(); t.onerror=()=>res(); }); }catch(e){} }
-
 async function escrever(handle,texto){
   const w=await handle.createWritable(); await w.write(texto); await w.close();
 }
@@ -1301,7 +1263,6 @@ function limparMarcasFull(){
   state.full.itens.forEach(i=>{ if(i.enviado&&!state.envios.some(e=>e.id===i.enviado.envioId)) i.enviado=null; });
 }
 function persist(){ ultimaAtividadeLocal=Date.now(); state.produtos.forEach(p=>{sincronizarLotes(p);sincronizarPedidos(p);}); reconciliarTudo(); limparMarcasFull(); saveToLocalStorage(); alteracaoLocal=true; if(fileHandle) saveToFile(); if(nuvemAuth) salvarNaNuvem(); renderAll(); }
-
 /* ---- carrega o conteúdo do arquivo para a tela ---- */
 async function carregarDoArquivo(silencioso){
   if(!fileHandle) return false;
@@ -1317,7 +1278,6 @@ async function carregarDoArquivo(silencioso){
     return true;
   }catch(e){ toast('⚠ Não consegui ler o arquivo: '+e.message); return false; }
 }
-
 /* evita perder o que o usuário está digitando: se ele tiver um campo de texto em foco,
    não aplica atualização remota agora - tenta de novo no próximo ciclo (pedido do Felipe 19/08,
    texto sumindo em Tarefas enquanto digitava) */
@@ -1363,7 +1323,6 @@ function definirIntervaloSync(seg){
   intervaloSync=seg; localStorage.setItem('estoque_sync_seg',String(seg));
   iniciarSync(); updateFileStatus();
 }
-
 /* ---- conectar uma PASTA: o sistema cria e mantém principal + backups ---- */
 async function conectarPasta(){
   if(!window.showDirectoryPicker){ alert('Seu navegador não suporta conectar pasta. Use Chrome ou Edge.'); return; }
@@ -1390,7 +1349,6 @@ async function conectarPasta(){
     iniciarSync(); saveToLocalStorage(); renderAll();
   }catch(e){ if(e.name!=='AbortError') alert('Não foi possível conectar a pasta: '+e.message); }
 }
-
 /* ---- reconecta sozinho ao que foi usado da última vez ---- */
 async function tentarReconectar(){
   if(nuvemAuth){
@@ -1438,7 +1396,6 @@ async function reconectarComPermissao(){
     toast('Sistema atualizado com os dados mais recentes.');
   }catch(e){ toast('Não foi possível reconectar: '+e.message); }
 }
-
 function menuArquivo(){
   if(nuvemAuth&&!fileHandle){
     const body=openModal(false);
@@ -1583,7 +1540,6 @@ async function desconectarArquivo(){
   await idbDel('handle'); await idbDel('dir'); localStorage.removeItem('estoque_arquivo_nome'); verificandoArquivo=false; renderAll();
   toast('Desconectado. Os dados continuam neste navegador.');
 }
-
 /* ---- sincronizar com a nuvem: alternativa a "conectar pasta" que funciona em QUALQUER
    navegador, celular incluso (o "conectar pasta" usa uma API que só existe no Chrome/Edge de
    computador). Guarda o estado inteiro do Doca no mesmo backend/banco já usado pro Mercado
@@ -1795,7 +1751,6 @@ function updateFileStatus(){
   l.textContent = undoStack.length ? '← desfaz: '+undoStack[undoStack.length-1].desc : '';
   b.title = undoStack.length ? 'Desfazer: '+undoStack[undoStack.length-1].desc : 'Nada para desfazer';
 }
-
 /* ---------- CRUD ---------- */
 function addProduto(d){ const p={id:gerarId('p'),...d,criadoEm:Date.now(),atualizadoEm:Date.now()}; garantirLotes(p); garantirPedidos(p); state.produtos.push(p); return p; }
 function updateProduto(id,patch){ snapshot('edição do SKU '+(prodById(id)||{}).sku); const p=prodById(id); if(!p) return; Object.assign(p,patch); p.atualizadoEm=Date.now(); persist(); }
@@ -1937,7 +1892,6 @@ function montarKit(kitId,qtdMontar){
   });
   return {ok:true,detalhes};
 }
-
 /* compra que chegou vira "reservado a coletar" nos envios que a geraram */
 function converterCompraParaColeta(p,qtd){
   let rest=qtd;
@@ -2203,7 +2157,6 @@ function ajustarEstoque(id,novos){
   persist();
   return {ok:true,reconciliado:rec};
 }
-
 /* ---------- listas de tarefas (auxiliares únicos — o resto de listas/tarefas/subtarefas
    está definido junto com a tela, mais abaixo, num só lugar) ---------- */
 function tarefaById(id){ return state.tarefas.find(t=>t.id===id); }
@@ -2233,7 +2186,6 @@ function reordenarListas(id,paraId){
   persist();
   return true;
 }
-
 /* ---------- envios FULL ---------- */
 function criarEnvio(nome,data,loja,arquivo,localColeta){
   const e={id:gerarId('e'),nome,data,loja,arquivo:arquivo||'',localColeta:localColeta||LOCAIS_COLETA[0],itens:[],criadoEm:Date.now()};
@@ -2567,7 +2519,6 @@ function confirmarEnvioFull(envioId,manterCompra){
   /* tira o realce depois de alguns segundos e re-renderiza só pra limpar a classe */
   setTimeout(()=>{ flashFull={}; renderPrevisao(); },2600);
 }
-
 /* ---------- UI base ---------- */
 function confirmAction(msg,cb){ pendingConfirm=cb; document.getElementById('confirmMsg').textContent=msg; document.getElementById('confirmOverlay').classList.remove('hidden'); }
 function toast(msg){
@@ -2579,7 +2530,6 @@ function toast(msg){
 }
 function closeModal(){ document.getElementById('modalOverlay').classList.add('hidden'); const b=document.getElementById('modalBody'); b.className='modal'; b.innerHTML=''; }
 function openModal(wide){ document.getElementById('modalOverlay').classList.remove('hidden'); const b=document.getElementById('modalBody'); b.className='modal'+(wide?' wide':''); return b; }
-
 /* ---- tela que trava o sistema ate carregar os dados mais recentes ---- */
 function renderBloqueio(){
   const existente=document.getElementById('lockOverlay');
@@ -2622,12 +2572,10 @@ function renderBloqueio(){
     });
   };
 }
-
 /* ---------- avisos ---------- */
 function renderAvisos(){
   const el=document.getElementById('avisosBox');
   let h='';
-
   if(!fileHandle&&!handlePendente&&!verificandoArquivo&&!nuvemAuth&&state.produtos.length>0)
     h+=`<div class="aviso risco"><span>⚠</span><span><b>Seus dados estão só no cache deste navegador.</b> Se limpar o cache ou trocar de computador, você perde tudo. Conecte um arquivo (de preferência numa pasta do Dropbox) ou baixe um backup.</span><button class="btn sm" id="avisoConectar">Conectar arquivo</button></div>`;
   const sc=state.produtos.filter(p=>!p.custo||p.custo<=0);
@@ -2638,10 +2586,8 @@ function renderAvisos(){
   const r=document.getElementById('avisoReconectar'); if(r) r.onclick=reconectarComPermissao;
 }
 function renderOnboard(){
-  document.getElementById('onboardBox').innerHTML = state.produtos.length===0
-    ? `<div class="onboard">👋 Comece cadastrando seus SKUs na aba <b>Produtos</b>, ou vá direto em <b>Envios FULL</b> e suba o PDF de inbound do Mercado Livre — o sistema cria os produtos que faltarem e já monta a reserva.</div>` : '';
+  document.getElementById('onboardBox').innerHTML = '';
 }
-
 /* ---------- tarefas (tela) ---------- */
 let arrastando=null,arrastandoLista=null,arrastandoSub=null;
 let novoRepetirMensal=false;
@@ -2744,7 +2690,6 @@ function renderTarefas(){
         </div>`;
       }).join('')}
     </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}`;
-
   const btnTfData=document.getElementById('tfData');
   if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
   const add=()=>{
@@ -2804,7 +2749,6 @@ function renderTarefas(){
   document.getElementById('btnAddTarefa').onclick=add;
   document.getElementById('tfTitulo').onkeydown=e=>{ if(e.key==='Enter') add(); };
   document.getElementById('tfHora').onkeydown=e=>{ if(e.key==='Enter') add(); };
-
   el.querySelectorAll('[data-concluir]').forEach(b=>b.onclick=()=>{
     const t=state.tarefas.find(x=>x.id===b.dataset.concluir);
     if(t&&t.resetaTipo){
@@ -2905,7 +2849,6 @@ function renderTarefas(){
     const obs=card.querySelector('.tarefa-obs');
     if(obs&&card.classList.contains('aberta')){ obs.style.height='auto'; obs.style.height=(obs.scrollHeight+2)+'px'; }
   });
-
   el.querySelectorAll('[data-movelista]').forEach(s=>s.onchange=()=>{
     if(!s.value) return;
     const r=moverTarefaParaLista(s.dataset.movelista,s.value);
@@ -2919,7 +2862,6 @@ function renderTarefas(){
     c.ondragleave=()=>c.classList.remove('alvo');
     c.ondrop=ev=>{ ev.preventDefault(); c.classList.remove('alvo'); if(arrastando) moverTarefa(arrastando,c.dataset.tid); };
   });
-
   /* chips das listas: recebem tarefas e podem ser reordenados entre si */
   el.querySelectorAll('.lista-chip[data-lista]').forEach(ch=>{
     ch.ondragstart=ev=>{ arrastandoLista=ch.dataset.lista; arrastando=null; ch.classList.add('arrastando');
@@ -2946,7 +2888,6 @@ function renderTarefas(){
   });
   renderizandoTarefas=false;
 }
-
 /* ---------- visão geral ---------- */
 function finLoja(loja){
   if(!state.financeiro) state.financeiro={};
@@ -3216,7 +3157,6 @@ function renderDashboard(){
     renderDashboard();
   });
 }
-
 /* ---------- produtos ---------- */
 function mlSyncCfg(){ return state.mlSync.cfg; }
 /* URL do backend: se não foi digitada em Produtos → Atualizar, e o próprio Doca está sendo
@@ -3228,7 +3168,6 @@ function backendUrl(){
   if(location.protocol==='http:'||location.protocol==='https:') return location.origin;
   return '';
 }
-
 function statusMlLabel(s){
   const mapa={active:'Ativo',paused:'Pausado',closed:'Encerrado',under_review:'Em revisão',inactive:'Inativo',payment_required:'Aguardando pagamento'};
   return mapa[s]||(s||'—');
@@ -3240,7 +3179,6 @@ function concorrenciaLabel(s){
   if(s==='sharing_first') return 'Empatando no catálogo';
   return null;
 }
-
 /* alimenta automaticamente a mesma lista usada pelo card "No FULL" da Visão Geral (state.full.itens)
    com o que vem da API do Mercado Livre: quantidade "aptas", vendas 7/15/30d (a Previsão de
    reposição e a média ponderada passam a usar isso, igual usariam uma leitura manual do
@@ -3273,7 +3211,6 @@ function mlAtualizarFullDoSinc(p,item,loja){
   fi.movido=null;
   state.full.lidoEm[loja]=Date.now();
 }
-
 /* chama o backend hospedado: primeiro manda sincronizar (POST /sync), depois busca o resultado (GET /data) */
 async function mlSincronizarLoja(loja){
   const base=backendUrl();
@@ -3316,7 +3253,6 @@ function aplicarSincronizacaoFinanceira(loja,j){
   if(j.aReceber!=null){ f.aReceber=Number(j.aReceber)||0; f.aReceberAtualizadoEm=j.aReceberAtualizadoEm||null; }
   persist();
 }
-
 /* aplica os dados de 1 anúncio sincronizado no SKU do Doca que já está vinculado a ele —
    usado tanto no vínculo automático (por mlItemId/SKU) quanto no manual e na importação,
    pra não ter a mesma lista de campos copiada em 3 lugares */
@@ -3348,7 +3284,6 @@ function marcarAusentesNoML(loja,itensDoResultado){
   });
   return mudou;
 }
-
 /* cadastra no Doca, sozinho, um anúncio do ML que ainda não tem SKU correspondente — usa o
    SKU do próprio anúncio (ou o ID do anúncio, se não tiver SKU) como SKU do Doca e o título
    do anúncio como Código, com custo/fornecedor em branco pra completar depois. Se por acaso já
@@ -3364,7 +3299,6 @@ function importarProdutoAutomatico(item,loja){
   aplicarItemSincronizado(p,item,loja);
   return p;
 }
-
 /* casa cada anúncio do resultado com o SKU certo (por mlItemId salvo, ou por SKU quando bate);
    o que não bater com nada é cadastrado sozinho no Doca (ver importarProdutoAutomatico) — não
    precisa importar manualmente cada anúncio novo. Usado tanto pelo modal quanto pela
@@ -3382,7 +3316,6 @@ function aplicarSincronizacaoAutomatica(resultado){
   if(vinculados>0||importados>0||mudouAusentes) persist();
   return {vinculados,importados};
 }
-
 /* modal com o botão Atualizar: sincroniza com o backend e mostra os anúncios do Mercado Livre
    comparados com o cadastro do Doca (vínculo por mlItemId salvo, ou por SKU quando bate) */
 function abrirSincronizacaoML(){
@@ -3471,7 +3404,6 @@ function abrirSincronizacaoML(){
      não precisa clicar duas vezes (uma pra abrir, outra pra atualizar) */
   if(backendUrl()) document.getElementById('btnMlAtualizar').onclick();
 }
-
 function renderProdutos(){
   const el=document.getElementById('tab-produtos');
   const totalAusentes=state.produtos.filter(p=>(filtro.loja==='todas'||p.loja===filtro.loja)&&p.mlAusente).length;
@@ -3556,7 +3488,6 @@ function renderProdutos(){
   el.querySelectorAll('[data-manage]').forEach(b=>b.onclick=()=>openProdutoModal(b.dataset.manage));
   el.querySelectorAll('[data-verres]').forEach(b=>b.onclick=()=>openOndeReservadoModal(b.dataset.verres));
 }
-
 /* mostra em quais envios o SKU está reservado */
 function openOndeReservadoModal(id){
   const p=prodById(id);
@@ -3580,7 +3511,6 @@ function openOndeReservadoModal(id){
     <div class="modal-actions"><button class="btn" id="btnFechar">Fechar</button></div>`;
   document.getElementById('btnFechar').onclick=closeModal;
 }
-
 /* ---------- conferência mensal de estoque ---------- */
 function imprimirConferenciaEstoque(){
   const lojas = filtro.loja==='todas' ? STORES : [filtro.loja];
@@ -3642,7 +3572,6 @@ function imprimirConferenciaEstoque(){
     </body></html>`);
   win.document.close();
 }
-
 /* ---------- modal produto ---------- */
 function openProdutoModal(id,lojaPadrao){
   const editing=!!id, p=editing?prodById(id):null;
@@ -3693,7 +3622,6 @@ function openProdutoModal(id,lojaPadrao){
         `}
         </div>
       </details>
-
       ${mestreVinc?'':`
       <hr class="modal-sep">
       <details${ehKit?' open':''}>
@@ -3723,7 +3651,6 @@ function openProdutoModal(id,lojaPadrao){
         <p class="hint">Use "Criar SKU e adicionar" pra um componente que não tem anúncio próprio no Mercado Livre — existe só de controle interno (ex: a luva do Kit Pet).</p>
         </div>
       </details>`}
-
       <hr class="modal-sep">
       ${(mestreVinc||ehKit)?`
       <div class="aviso"><span>ℹ</span><span>${ehKit?'Este SKU é um kit — o estoque dele é sempre calculado a partir dos componentes (seção Kit acima), então não há compra/coleta/ajuste próprios aqui.':'Este SKU está vinculado — compra, coleta e ajuste de estoque são feitos no SKU mestre (seção acima).'}</span></div>
@@ -3732,7 +3659,6 @@ function openProdutoModal(id,lojaPadrao){
       <div class="envio-full-row"><input id="fQtdAdicionar" type="number" min="1" placeholder="Quantidade">
         <button class="btn acc" id="btnAdicionarComprar">+ Adicionar ao Comprar</button></div>
       <p class="hint">Use pra repor esse SKU. Soma em Comprar sem tirar de nenhum outro status.</p>
-
       <hr class="modal-sep">
       <h4>Ajuste manual de estoque (contagem física)</h4>
       ${rl?`<div class="aviso atencao" style="margin-bottom:12px"><span>⚠</span><span>Deste total, <b>${fmtInt(rl)} un.</b> já estão etiquetadas para envios FULL. <b>Não conte essas</b> — informe só o que está solto/livre no galpão, o etiquetado continua do jeito que está.</span></div>`:''}
@@ -3741,7 +3667,6 @@ function openProdutoModal(id,lojaPadrao){
       </div>
       <button class="btn acc" id="btnAjustar">Salvar contagem</button>
       <p class="hint">O valor informado <b>substitui</b> só a parte livre (não soma, e não mexe no etiquetado). Hoje o sistema tem <b>${fmtInt(p.qtd.local)} un. livres</b>${rl?` + ${fmtInt(rl)} etiquetadas para FULL (total no galpão: ${fmtInt(totalNoGalpao(p))} un.)`:''}. Para corrigir compras e coletas, use a quantidade do pedido na aba <b>Comprar</b> ou receba o lote na aba <b>Coletar</b>.</p>
-
       <hr class="modal-sep">
       <div class="calc-row">
         <span>A comprar: <b>${fmtInt(p.qtd.comprar)}</b></span>
@@ -3751,10 +3676,8 @@ function openProdutoModal(id,lojaPadrao){
         <span>Disponível: <b>${fmtInt(disponivel(p))}</b></span>
         <span>Valor: <b>${fmtMoney(valorEstoque(p))}</b></span>
       </div>`}
-
       <hr class="modal-sep">
       <button class="btn danger-outline" id="btnExcluirProduto">Excluir este SKU do sistema</button>`:''}`;
-
   document.getElementById('btnCancelar').onclick=closeModal;
   document.getElementById('btnSalvarProduto').onclick=()=>{
     const loja=document.getElementById('fpLoja').value;
@@ -3855,7 +3778,6 @@ function openProdutoModal(id,lojaPadrao){
     };
   }
 }
-
 /* ---------- comprar ---------- */
 function wireAcaoButtons(scope){
   scope.querySelectorAll('[data-comprei]').forEach(b=>{
@@ -3965,7 +3887,6 @@ function imprimirRelatorioCompraFornecedor(){
     </body></html>`);
   win.document.close();
 }
-
 /* ---------- coletar ---------- */
 /* cada compra é uma linha própria — lotes do mesmo SKU não se somam.
    agrupado por fornecedor (mesmo padrão do relatório impresso), e ordenado dentro do grupo
@@ -4043,7 +3964,6 @@ function imprimirRelatorioColeta(){
     </body></html>`);
   win.document.close();
 }
-
 /* ---------- notas fiscais ---------- */
 let filtroNF={loja:'todas',so:'pendentes'};
 /* acha o "Nº do pedido" (informado lá em Coletar) do lote que deu origem a esta nota fiscal —
@@ -4100,7 +4020,6 @@ function renderNotasFiscais(){
     toast(c.checked?'Nota fiscal marcada como recebida.':'Nota fiscal marcada como pendente.');
   });
 }
-
 /* ================= ADS (Product Ads · Mercado Livre) ================= */
 function adsCfg(){ return state.ads.cfg; }
 /* (removido: sistema antigo de "colagem" manual — copiar prompt, rodar num agente à parte
@@ -4648,7 +4567,6 @@ function renderAds(){
   /* sugestão "subir ROAS" - sempre calculada em cima dos últimos 7 dias, independente do
      período escolhido pra ver o resto da tabela (ver avaliarSugestoesRoas7d) */
   const avalAtual=avaliarSugestoesRoas7d(c.loja,dados);
-
   let linhas=campanhas.map(camp=>{
     const m=camp.metrics||{};
     const tacos=calcTacos(m);
@@ -4682,7 +4600,6 @@ function renderAds(){
     const vendasDia=m=>((m.units_quantity||0)+(m.organic_units_quantity||0))/diasPeriodo;
     linhas=linhas.slice().sort((a,b)=>vendasDia(b.m)-vendasDia(a.m));
   }
-
   el.innerHTML=`
     <h1 class="page-title">Ads · Product Ads (Mercado Livre)</h1>
     <div class="card">
@@ -4889,8 +4806,6 @@ function renderAds(){
     renderAds();
   });
 }
-
-
 /* ================= Finanças (despesas + histórico mensal, base pra DRE) =================
    Guarda as despesas do negócio (manuais ou puxadas automaticamente do Mercado Livre) com data de
    pagamento, se já foi pago, e se é recorrente (repete todo mês). Despesa recorrente marcada como
@@ -5058,7 +4973,6 @@ function despesaBateFiltroLoja(d){
   if(financasFiltroLoja==='__geral__') return !d.loja;
   return d.loja===financasFiltroLoja;
 }
-
 /* ================= Retiradas e Reembolsos (TorvStore): fechamento equilibrado entre sócios =====
    RETIRADA = dinheiro que o sócio já tirou da empresa pra ele (reduz o que falta receber da cota).
    REEMBOLSO = o inverso: dinheiro que o sócio pagou do próprio bolso pela empresa e que a empresa
@@ -5138,7 +5052,6 @@ function movimentosSocioMes(loja,socio,mes){
 function totalPorTipo(lista,tipo){
   return lista.filter(x=>x.tipo===tipo).reduce((s,x)=>s+(Number(x.valor)||0),0);
 }
-
 /* ================= Resumo Financeiro (faturamento, margem de contribuição, deduções) =================
    Puxa direto da API de pedidos/ads/frete do Mercado Livre (não usa as despesas cadastradas à mão
    acima) - período flexível igual ferramenta tipo Metrify: 7/15/30 dias, mês fechado ou intervalo
@@ -5326,7 +5239,7 @@ function mostrarOverlayVideoCarregando(){
       }
     </style>
     <div class="video-fechamento-frame">
-      <video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover;display:block" src="${backendUrl()}/loading-video.mp4"></video>
+      <video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover;display:block" src="${backendUrl()}/loading-video.mp4?v=2"></video>
       <div style="position:absolute;left:0;right:0;top:0;padding:calc(18px + env(safe-area-inset-top)) 22px 18px;background:linear-gradient(180deg,rgba(0,0,0,.65),transparent)">
         <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden">
           <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .35s linear"></div>
@@ -6019,7 +5932,6 @@ function renderFinancas(){
     renderFinancas();
   });
 }
-
 /* ================= Amauri: fechamento dos produtos em parceria (TorvStore) =================
    3 produtos da TorvStore têm sociedade com o Amauri. Cada produto tem seus próprios custos
    (frete, embalagem, etiqueta e ads — editáveis, guardados por produto) e um percentual de
@@ -6459,7 +6371,6 @@ function renderAmauri(){
     renderAmauri();
   });
 }
-
 /* ---------- listas de tarefas ---------- */
 function addLista(nome){
   snapshot('nova lista de tarefas');
@@ -6480,7 +6391,6 @@ function excluirLista(id){
   persist();
 }
 function tarefasDaLista(id){ return state.tarefas.filter(t=>t.listaId===id); }
-
 /* ---------- tarefas ---------- */
 function addTarefa(titulo,data,hora,repetirMensal,obs,resetaTipo){
   snapshot('nova tarefa');
@@ -6602,7 +6512,6 @@ function moverSubPara(tid,sid,paraSid){
   persist();
 }
 function tarefasAtrasadas(lid){ const h=hoje(); return state.tarefas.filter(t=>(!lid||t.listaId===lid)&&t.data&&t.data<h).length; }
-
 /* ---------- envios FULL ---------- */
 function renderEnvio(){
   const el=document.getElementById('tab-envio');
@@ -6686,7 +6595,6 @@ function renderEnvio(){
         ${(c||g)?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span><b>Ainda não pode ser finalizado.</b> Faltam ${fmtInt(c+g)} un. das ${fmtInt(a+c+g)} un. do envio: ${c?`<b>${fmtInt(c)}</b> por coletar`:''}${c&&g?' e ':''}${g?`<b>${fmtInt(g)}</b> por comprar`:''}.${a>0?' Receba tudo no galpão, ou use Editar para reduzir a quantidade do SKU.':' Compre e receba a mercadoria no galpão.'}</span></div>`:''}
       </div>`;
     }).join(''):`<p class="empty-inline">Nenhum envio FULL ${confirmarLojaAtual==='todas'?'criado ainda':'para '+esc(confirmarLojaAtual)}.</p>`}`;
-
   document.getElementById('btnNovoEnvio').onclick=()=>openEnvioModal(null,confirmarLojaAtual!=='todas'?confirmarLojaAtual:null);
   document.getElementById('btnEscolherPdf').onclick=()=>document.getElementById('inputPdf').click();
   document.getElementById('inputPdf').onchange=e=>{ if(e.target.files[0]) processarPdf(e.target.files[0]); e.target.value=''; };
@@ -6694,7 +6602,6 @@ function renderEnvio(){
   d.ondragover=e=>{ e.preventDefault(); d.classList.add('dragover'); };
   d.ondragleave=()=>d.classList.remove('dragover');
   d.ondrop=e=>{ e.preventDefault(); d.classList.remove('dragover'); if(e.dataTransfer.files[0]) processarPdf(e.dataTransfer.files[0]); };
-
   el.querySelectorAll('[data-alocar]').forEach(b=>b.onclick=()=>{
     const n=alocarPendentes(b.dataset.alocar);
     toast(n>0?`${fmtInt(n)} unidade(s) reservadas do estoque local.`:'Não há estoque livre no Local para reservar.');
@@ -6955,7 +6862,6 @@ function openAddSkuEnvioModal(envioId){
     toast(`SKUs adicionados.${cam?` ${fmtInt(cam)} un. reservadas do Coletar.`:''}${ger?` ${fmtInt(ger)} un. foram pra Comprar.`:''}`);
   };
 }
-
 /* ---------- PDF ---------- */
 function parseNomeArquivo(nome){
   const base=nome.replace(/\.pdf$/i,'').trim();
@@ -7116,7 +7022,6 @@ function openPdfPreviewModal(){
     toast(m);
   };
 }
-
 /* ================= PREVISÃO FULL ================= */
 function fullCfg(){ return state.full.cfg; }
 function fullItensLoja(loja){ return state.full.itens.filter(i=>i.loja===(loja||fullCfg().loja)); }
@@ -7340,7 +7245,6 @@ function aplicarRecalculo(envioId,novaData){
   });
   return {ok:true,soma,sub};
 }
-
 /* ---------- Previsão FULL: prompt, importação, inbound, criar envio ---------- */
 function copiarTexto(t,msg){
   if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(()=>toast(msg||'Copiado.'),()=>fallbackCopia(t,msg));
@@ -7493,7 +7397,6 @@ function gerarInboundPrevisao(){
   setTimeout(()=>URL.revokeObjectURL(link.href),4000);
   toast('Inbound gerado: '+nome);
 }
-
 /* ---------- Previsão FULL: tela ---------- */
 function fLidoTxt(t){
   if(!t) return 'nunca';
@@ -7571,7 +7474,6 @@ function renderPrevisao(){
       <button class="btn gold" id="fCriar">➕ Criar FULL no Doca</button>
     </div>
   </div>
-
   <div class="cards-linha">
     <div class="card mini"><span class="rot">Estoque no FULL</span>
       <b>${fmtInt(R.unid)}</b><small>${R.itens} SKU(s) · lido ${esc(fLidoTxt(R.lidoEm))}</small></div>
@@ -7581,7 +7483,6 @@ function renderPrevisao(){
     <div class="card mini ${R.rupturas?'alerta':''}"><span class="rot">Rupturas antes do envio</span><b>${fmtInt(R.rupturas)}</b>
       <small>${R.rupturas?'o estoque zera antes de ' + fmtData(c.envio):'nenhum produto zera antes'}</small></div>
   </div>
-
   ${R.rupturas?`<div class="aviso risco"><span>🚨</span><span><b>${R.rupturas} produto(s) vão zerar no FULL antes de ${fmtData(c.envio)}.</b> Para esses, mandar só na data prevista não evita a parada de venda — antecipe o envio já programado se der. Se não der, crie um envio separado só com eles.</span><button class="btn sm danger" id="fEmergencia">🚨 FULL de emergência</button></div>`:''}
   ${(()=>{ const cri=l.filter(({i})=>i.enviado&&envioById(i.enviado.envioId));
     if(!cri.length) return '';
@@ -7590,7 +7491,6 @@ function renderPrevisao(){
       return `<div class="aviso ok criado"><span>✓</span><span><b>FULL de ${esc(g.nome)} já criado</b> com ${g.itens} produto(s) e ${fmtInt(g.un)} unidades. As reservas e as ordens de compra já foram lançadas.
         <button class="btn sm" data-verenvio="${id}">Ver em Envios programados</button></span></div>`;}).join('');})()}
   ${semVinculo?`<div class="aviso atencao"><span>⚠</span><span><b>${semVinculo} produto(s) do painel não estão ligados a nenhum SKU cadastrado</b> — por isso aparecem com o código do Full. Clique em <b>🔗 vincular</b> na linha para ligar ao SKU certo; da próxima leitura em diante ele casa sozinho.</span></div>`:''}
-
   <div class="card">
     <div class="filtros-full">
       <label class="chk"><input type="checkbox" id="fSo" ${fFiltro.so?'checked':''}> Só quem precisa enviar</label>
@@ -7648,7 +7548,6 @@ function renderPrevisao(){
      :(l.length?`<p class="empty-inline">Nenhum produto precisa de envio nesta data.</p>`
       :`<p class="empty-inline">Nenhum dado desta loja ainda. Use "🤖 Copiar prompt", rode no Cowork e cole o resultado aqui.</p>`)}
   </div>`;
-
   document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; persist(); };
   document.getElementById('fEnvio').onclick=()=>abrirSeletorData(c.envio,(iso)=>{
     snapshot('mudança da data da previsão');
@@ -7687,7 +7586,6 @@ function renderPrevisao(){
   document.getElementById('fCriar').onclick=abrirCriarFull;
   const be=document.getElementById('fEmergencia'); if(be) be.onclick=abrirCriarFullEmergencia;
 }
-
 /* ---------- Ruptura de estoque: todas as lojas de uma vez, comparando com o envio FULL
    já programado de verdade (Envios programados), não com a data manual da Previsão ---------- */
 /* envios programados (ainda não confirmados como FULL) deste produto, abertos por data - mesmo
@@ -7850,7 +7748,6 @@ function renderRuptura(){
   const btnVerPausados2=document.getElementById('btnVerPausados2');
   if(btnVerPausados2) btnVerPausados2.onclick=abrirPausadosModal;
 }
-
 /* ---------- render ---------- */
 function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
@@ -7861,7 +7758,6 @@ function renderAll(){
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
 }
-
 /* ---------- init ---------- */
 function irParaSub(nome){
   document.querySelectorAll('#subFull button').forEach(x=>x.setAttribute('aria-selected',x.dataset.sub===nome?'true':'false'));
@@ -7908,7 +7804,6 @@ document.addEventListener('click',e=>{
   document.getElementById('btnFecharDet').onclick=closeModal;
 });
 document.getElementById('confirmOverlay').addEventListener('click',e=>{ if(e.target.id==='confirmOverlay'){ document.getElementById('confirmOverlay').classList.add('hidden'); pendingConfirm=null; } });
-
 /* grava pendências ao sair ou trocar de aba.
    Só avisa/força gravação se houver arquivo/pasta conectado — sem isso os dados já
    estão salvos no cache deste navegador (localStorage) e não há nada "pendente" de verdade. */
@@ -7924,7 +7819,6 @@ window.addEventListener('beforeunload',e=>{
   flushEdicaoAtual();
   if(alteracaoLocal&&fileHandle){ saveToFile(); e.preventDefault(); e.returnValue=''; }
 });
-
 loadFromLocalStorage();
 renderBloqueio();   /* trava a tela imediatamente, antes de tudo */
 renderAll();
@@ -7933,7 +7827,6 @@ renderAll();
    alerta nunca aparecia sozinho ao abrir o programa - pedido do Felipe 19/08, 4ª rodada). */
 mostrarAlertaTarefasDoDia();
 tentarReconectar();
-
 /* sincroniza com o Mercado Livre sozinho assim que o Doca abre, se o backend já estiver
    configurado — não precisa clicar em nada nem dar F5. Passa por TODAS as lojas (STORES),
    uma de cada vez (não em paralelo, pra não sobrecarregar o backend/servidor gratuito),
@@ -7989,7 +7882,6 @@ tentarReconectar();
     }
   }
 })();
-
 /* alerta de tarefas do dia - pedido do Felipe 19/08 (3ª rodada, versão final):
    - só tarefas com data de HOJE (nem atrasada, nem futura)
    - aparece TODA VEZ que abre o programa ou entra na aba Tarefas (não guarda "já vi" em lugar
@@ -8043,7 +7935,6 @@ function mostrarAlertaTarefasDoDia(){
    registrado. Troca pela função que já existe e faz o mesmo (avisar de tarefa pendente pra
    hoje), rodando 1x já na abertura do app. */
 mostrarAlertaTarefasDoDia();
-
 /* re-sync periódico só do financeiro (Mercado Pago), enquanto a aba do Doca fica aberta.
    Motivo (descoberto com dado real em 13/08): o relatório do Mercado Pago fica pronto rápido,
    mas o Doca só ia buscar ele quando a aba era aberta/recarregada - sem isso, um relatório que
