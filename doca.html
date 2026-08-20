@@ -2758,6 +2758,12 @@ function renderTarefas(){
     novaTarefaTitulo='';
     addTarefa(tit,dataEscolhida,horaEscolhida,false,'',gestaoEscolhido);
     const c=document.getElementById('tfTitulo'); if(c) c.focus();
+    /* pedido do Felipe 20/08: o alerta de "tarefas pra hoje" só disparava ao abrir o app ou
+       trocar de aba - se a tarefa for criada já com data de hoje enquanto a pessoa já está na
+       aba Tarefas, o alerta nunca aparecia (só apareceria só se saísse e voltasse pra aba, ou
+       recarregasse a página). Chama de novo aqui, logo após criar - não faz nada se não tiver
+       nenhuma tarefa pendente pra hoje. */
+    mostrarAlertaTarefasDoDia();
   };
   const tfTituloEl=document.getElementById('tfTitulo');
   tfTituloEl.oninput=()=>{ novaTarefaTitulo=tfTituloEl.value; };
@@ -2771,7 +2777,7 @@ function renderTarefas(){
       <div class="modal-actions"><button class="btn" id="btnCancelar">Cancelar</button><button class="btn acc" id="btnCriarLista">Criar lista</button></div>`;
     document.getElementById('btnCancelar').onclick=closeModal;
     document.getElementById('lstNome').focus();
-    const criar=()=>{ const n=document.getElementById('lstNome').value.trim(); if(!n){ alert('Dê um nome à lista.'); return; } addLista(n); closeModal(); toast('Lista criada.'); };
+    const criar=()=>{ const n=document.getElementById('lstNome').value.trim(); if(!n){ alert('Dê um nome à lista.'); return; } addLista(n); closeModal(); toast('Lista criada.'); mostrarAlertaTarefasDoDia(); };
     document.getElementById('btnCriarLista').onclick=criar;
     document.getElementById('lstNome').onkeydown=e=>{ if(e.key==='Enter') criar(); };
   };
@@ -5299,35 +5305,52 @@ async function calcularFechamentoTodasLojas(){
   }
   financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); esconderOverlayVideoCarregando();
 }
-/* overlay do vídeo de loading, sobre a própria tela do Doca - tela cheia, sem nenhuma mensagem
-   por cima (pedido do Felipe 19/08) */
+/* overlay do vídeo de loading, sobre a própria tela do Doca - tela cheia, barra de progresso
+   em cima (pedido do Felipe 20/08 - antes estava embaixo) */
+let overlayProgressoReal=0, overlayProgressoExibido=0, overlayProgressoTrickleTimer=null;
 function mostrarOverlayVideoCarregando(){
   esconderOverlayVideoCarregando();
+  overlayProgressoReal=0; overlayProgressoExibido=0;
   const div=document.createElement('div');
   div.id='overlayVideoCarregando';
   div.style.cssText='position:fixed;inset:0;z-index:99999;background:#0A0418;display:flex;align-items:center;justify-content:center';
   div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover" src="${backendUrl()}/loading-video.mp4"></video>
-    <div style="position:absolute;left:0;right:0;bottom:0;padding:18px 22px calc(18px + env(safe-area-inset-bottom));background:linear-gradient(0deg,rgba(0,0,0,.65),transparent)">
+    <div style="position:absolute;left:0;right:0;top:0;padding:calc(18px + env(safe-area-inset-top)) 22px 18px;background:linear-gradient(180deg,rgba(0,0,0,.65),transparent)">
       <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden">
-        <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .25s ease"></div>
+        <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .35s linear"></div>
       </div>
       <div id="pctProgressoFechamento" style="margin-top:8px;color:#fff;font-size:13px;font-weight:600;text-align:center">0%</div>
     </div>`;
   document.body.appendChild(div);
   const v=document.getElementById('videoCarregandoFechamento');
   if(v){ v.play().catch(()=>{}); }
+  /* "trickle": pedido do Felipe 20/08 (ficava muito tempo parado no mesmo número entre uma
+     atualização real e outra, ex. durante o cálculo de frete de uma loja com muitos envios) -
+     a cada 400ms avança um pouquinho sozinha, sem nunca ultrapassar 4 pontos à frente do último
+     progresso REAL recebido nem passar de 97% (os últimos % só aparecem quando a loja realmente
+     terminar) - dá sensação de continuidade sem inventar progresso que não existe. */
+  overlayProgressoTrickleTimer=setInterval(()=>{
+    const teto=Math.min(97,overlayProgressoReal+4);
+    if(overlayProgressoExibido<teto){ overlayProgressoExibido=Math.min(teto,overlayProgressoExibido+0.6); pintarOverlayProgresso(); }
+  },400);
 }
-/* atualiza a barra/percentual em tempo real por cima do vídeo (ver chamadas em
-   calcularFechamentoTodasLojas) - não faz nada se o overlay já não estiver mais na tela */
-function atualizarOverlayProgresso(pct){
+function pintarOverlayProgresso(){
   const barra=document.getElementById('barraProgressoFechamento');
   const texto=document.getElementById('pctProgressoFechamento');
   if(!barra||!texto) return;
-  const p=Math.max(0,Math.min(100,Math.round(pct||0)));
+  const p=Math.round(overlayProgressoExibido);
   barra.style.width=p+'%';
   texto.textContent=p+'%';
 }
+/* recebe o progresso REAL (ver chamadas em calcularFechamentoTodasLojas) - o trickle acima só
+   preenche o tempo ATÉ aqui, nunca ultrapassa o que já foi confirmado de verdade */
+function atualizarOverlayProgresso(pct){
+  const p=Math.max(0,Math.min(100,pct||0));
+  if(p>overlayProgressoReal) overlayProgressoReal=p;
+  if(p>overlayProgressoExibido){ overlayProgressoExibido=p; pintarOverlayProgresso(); }
+}
 function esconderOverlayVideoCarregando(){
+  if(overlayProgressoTrickleTimer){ clearInterval(overlayProgressoTrickleTimer); overlayProgressoTrickleTimer=null; }
   const el=document.getElementById('overlayVideoCarregando');
   if(el){ const v=el.querySelector('video'); if(v){ try{v.pause();}catch(e){} } el.remove(); }
 }
