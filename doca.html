@@ -5314,12 +5314,25 @@ function mostrarOverlayVideoCarregando(){
   const div=document.createElement('div');
   div.id='overlayVideoCarregando';
   div.style.cssText='position:fixed;inset:0;z-index:99999;background:#0A0418;display:flex;align-items:center;justify-content:center';
-  div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover" src="${backendUrl()}/loading-video.mp4"></video>
-    <div style="position:absolute;left:0;right:0;top:0;padding:calc(18px + env(safe-area-inset-top)) 22px 18px;background:linear-gradient(180deg,rgba(0,0,0,.65),transparent)">
-      <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden">
-        <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .35s linear"></div>
+  /* pedido do Felipe 20/08: no celular o vídeo continua ocupando a tela inteira (comportamento
+     original), mas no computador (telas largas) ele ficava esticado/cortado de forma estranha
+     porque o vídeo é vertical (formato de celular, 478x850). A partir de 700px de largura, o
+     vídeo passa a ficar num quadro no formato de celular, centralizado, em vez de esticar pra
+     tela toda. */
+  div.innerHTML=`<style>
+      #overlayVideoCarregando .video-fechamento-frame{position:relative;width:100%;height:100%}
+      @media (min-width:700px){
+        #overlayVideoCarregando .video-fechamento-frame{width:auto;height:min(88vh,850px);aspect-ratio:478/850;border-radius:18px;overflow:hidden;box-shadow:0 24px 70px -20px rgba(0,0,0,.85)}
+      }
+    </style>
+    <div class="video-fechamento-frame">
+      <video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover;display:block" src="${backendUrl()}/loading-video.mp4"></video>
+      <div style="position:absolute;left:0;right:0;top:0;padding:calc(18px + env(safe-area-inset-top)) 22px 18px;background:linear-gradient(180deg,rgba(0,0,0,.65),transparent)">
+        <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden">
+          <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .35s linear"></div>
+        </div>
+        <div id="pctProgressoFechamento" style="margin-top:8px;color:#fff;font-size:13px;font-weight:600;text-align:center">0%</div>
       </div>
-      <div id="pctProgressoFechamento" style="margin-top:8px;color:#fff;font-size:13px;font-weight:600;text-align:center">0%</div>
     </div>`;
   document.body.appendChild(div);
   const v=document.getElementById('videoCarregandoFechamento');
