@@ -5263,7 +5263,21 @@ async function calcularFechamentoTodasLojas(){
      evita o aviso de "bloqueador de pop-up" - pedido do Felipe 19/08. */
   const win=window.open('','_blank');
   if(win){
-    win.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Fechamento — Todas as Lojas</title></head><body style="font-family:-apple-system,Arial,Helvetica,sans-serif;padding:24px;color:#111"><p>Calculando o fechamento de todas as lojas… isso pode levar um tempo.</p></body></html>');
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Fechamento — Todas as Lojas</title>
+      <style>
+        *{box-sizing:border-box}
+        html,body{margin:0;height:100%;background:#0A0418}
+        body{display:flex;align-items:center;justify-content:center;flex-direction:column;min-height:100vh;
+          font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;color:#EFEBF9;padding:20px}
+        video{width:100%;max-width:360px;border-radius:16px;box-shadow:0 0 70px rgba(139,92,246,.4)}
+        p{margin-top:18px;color:#9A90BC;font-size:14px;text-align:center}
+      </style></head>
+      <body>
+        <video autoplay playsinline loop src="${backendUrl()}/loading-video.mp4"></video>
+        <p>Calculando o fechamento de todas as lojas… isso pode levar um tempo.</p>
+      </body></html>`);
     win.document.close();
   }
   financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
