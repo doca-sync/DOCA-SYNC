@@ -5256,33 +5256,12 @@ function renderAuditoriaMes(){
    contribuicao, lucro bruto e margem liquida entre as lojas. */
 async function calcularFechamentoTodasLojas(){
   if(financasFechTodasCarregando) return;
-  /* abre a aba de impressão JÁ NA HORA DO CLIQUE (síncrono) - o resultado só fica pronto depois de
-     vários awaits (chamadas ao backend, loja por loja), e a maioria dos navegadores bloqueia
-     window.open() quando ele não é uma resposta direta e imediata do clique. Abrindo em branco
-     agora e escrevendo o conteúdo real nela depois (ver imprimirRelatorioFechamentoTodasLojas)
-     evita o aviso de "bloqueador de pop-up" - pedido do Felipe 19/08. */
-  const win=window.open('','_blank');
-  if(win){
-    win.document.write(`<!doctype html><html><head><meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Fechamento — Todas as Lojas</title>
-      <style>
-        *{box-sizing:border-box}
-        html,body{margin:0;height:100%;background:#0A0418}
-        body{display:flex;align-items:center;justify-content:center;flex-direction:column;min-height:100vh;
-          font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;color:#EFEBF9;padding:20px}
-        p{margin-top:18px;color:#9A90BC;font-size:14px;text-align:center}
-      </style></head>
-      <body>
-        <p>Calculando o fechamento de todas as lojas… acompanhe o vídeo na aba do Doca. Isso pode levar um tempo.</p>
-      </body></html>`);
-    win.document.close();
-  }
-  /* v: autoplay COM SOM só é liberado pelo navegador na aba que recebeu o clique de verdade -
-     a aba nova (win, acima) nunca é clicada nela mesma, então o navegador bloqueia o som (ficava
-     com o quadro congelado e mudo). Por isso o vídeo toca como uma camada por cima do PRÓPRIO
-     Doca (essa aba, que acabou de ser clicada) - chamado logo no clique, antes de qualquer await,
-     pra aproveitar a permissão do gesto do usuário. Some sozinho quando o cálculo termina. */
+  /* v (19/08, 2a revisão a pedido do Felipe): sem aba nova nenhuma - o vídeo toca em tela cheia
+     na PRÓPRIA aba do Doca (só assim o navegador libera autoplay com som - uma aba nova aberta
+     via window.open nunca recebe o clique nela mesma, então fica mudo/congelado) e, quando o
+     relatório fica pronto, ele substitui a página inteira NESSA MESMA aba (ver
+     imprimirRelatorioFechamentoTodasLojas) - pra voltar pro Doca depois, é só usar o botão
+     "voltar" do navegador. */
   mostrarOverlayVideoCarregando();
   financasFechTodasCarregando=true; financasFechTodasErro=null; financasFechTodasProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
   try{
@@ -5299,22 +5278,25 @@ async function calcularFechamentoTodasLojas(){
       renderFinancas();
       await sleep(150);
     }
-    imprimirRelatorioFechamentoTodasLojas(resultados,win);
+    // relatório pronto - substitui a página inteira NESSA aba (document.write dentro da função
+    // abaixo derruba o app do Doca dessa aba, então nada depois disso precisa (nem consegue)
+    // rodar de forma visível - por garantia zera os estados antes de sair)
+    financasFechTodasCarregando=false; financasFechTodasProgresso=null;
+    imprimirRelatorioFechamentoTodasLojas(resultados);
+    return;
   }catch(e){
     financasFechTodasErro=e.message;
-    if(win&&!win.closed) win.document.body.innerHTML='<p style="font-family:sans-serif;padding:24px;color:#900">Erro ao calcular o fechamento: '+esc(e.message)+'</p>';
   }
-  finally{ financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); esconderOverlayVideoCarregando(); }
+  financasFechTodasCarregando=false; financasFechTodasProgresso=null; renderFinancas(); esconderOverlayVideoCarregando();
 }
-/* overlay do vídeo de loading, sobre a própria tela do Doca (ver comentário acima em
-   calcularFechamentoTodasLojas sobre por que não pode ser numa aba nova) */
+/* overlay do vídeo de loading, sobre a própria tela do Doca - tela cheia, sem nenhuma mensagem
+   por cima (pedido do Felipe 19/08) */
 function mostrarOverlayVideoCarregando(){
   esconderOverlayVideoCarregando();
   const div=document.createElement('div');
   div.id='overlayVideoCarregando';
-  div.style.cssText='position:fixed;inset:0;z-index:99999;background:#0A0418;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:20px';
-  div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;max-width:360px;border-radius:16px;box-shadow:0 0 70px rgba(139,92,246,.4)" src="${backendUrl()}/loading-video.mp4"></video>
-    <p style="margin-top:18px;color:#9A90BC;font-size:14px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif">Calculando o fechamento de todas as lojas… isso pode levar um tempo.</p>`;
+  div.style.cssText='position:fixed;inset:0;z-index:99999;background:#0A0418;display:flex;align-items:center;justify-content:center';
+  div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover" src="${backendUrl()}/loading-video.mp4"></video>`;
   document.body.appendChild(div);
   const v=document.getElementById('videoCarregandoFechamento');
   if(v){ v.play().catch(()=>{}); }
@@ -5327,11 +5309,10 @@ function esconderOverlayVideoCarregando(){
    por loja, somatória geral, e lista dos produtos vendidos com quantidade. Vai ser visto no
    celular, então o layout é mobile-first (cards empilhados em vez de tabela larga fixa; tabela
    de produtos só tem 3 colunas estreitas, cabe numa tela de celular sem rolar pro lado).
-   winExistente: a aba já aberta no clique (ver calcularFechamentoTodasLojas) - evita o bloqueio
-   de pop-up dos navegadores, que só permite abrir janela como resposta DIRETA ao clique. */
-function imprimirRelatorioFechamentoTodasLojas(resultados,winExistente){
-  const win=(winExistente&&!winExistente.closed)?winExistente:window.open('','_blank');
-  if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
+   v (19/08, 2a revisão): não abre mais aba nova - escreve DIRETO na aba atual (win=window),
+   substituindo o Doca pelo relatório nessa mesma aba (pedido do Felipe). */
+function imprimirRelatorioFechamentoTodasLojas(resultados){
+  const win=window;
   const porLoja=resultados.map(r=>{
     const unidades=(r.resumo.itensVendidos||[]).reduce((s,it)=>s+(it.qtd||0),0);
     const produtos=(r.resumo.itensVendidos||[]).slice().sort((a,b)=>b.qtd-a.qtd).map(it=>{
