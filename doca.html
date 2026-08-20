@@ -5418,7 +5418,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       </div>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
-        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td></tr>`).join('')}
+        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
       </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
     </div>`;
   win.document.open();
@@ -7996,7 +7996,9 @@ function tarefasDeHojePendentes(){
   const porData=(state.tarefas||[]).filter(t=>{
     const d=String(t.data||'').slice(0,10);
     if(d!==h) return false;                       // só hoje - passado e futuro não mostram
-    if(t.hora&&t.hora>hhmm) return false;          // é hoje mas a hora ainda não chegou
+    // pedido do Felipe 20/08: mostra o aviso o dia inteiro, mesmo se a hora marcada já passou -
+    // só não mostra quando a tarefa já foi concluída (removido o filtro que escondia até a hora
+    // marcada chegar).
     if(tarefaConcluidaNoPeriodo(t)) return false;  // Gestão Ativa já concluída este período - não incomoda de novo
     return true;
   });
