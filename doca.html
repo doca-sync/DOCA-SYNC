@@ -6,14 +6,14 @@
 <title>Doca · Abastecimento Full · Mercado Livre</title>
 <meta name="theme-color" content="#0C0620">
 <meta name="description" content="Doca — controle de compra, coleta e envios Full do Mercado Livre por loja.">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230C0620'/%3E%3Crect x='6' y='19' width='20' height='2.4' rx='1.2' fill='%23B794FF'/%3E%3Crect x='7.5' y='12' width='7' height='6' rx='1' fill='%23FFC53D'/%3E%3Crect x='16' y='9' width='7' height='9' rx='1' fill='%238B5CF6'/%3E%3Cpath d='M13 25.5h6l-3 3z' fill='%23FFC53D'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230C0620'/%3E%3Crect x='6' y='19' width='20' height='2.4' rx='1.2' fill='%23D4D4D4'/%3E%3Crect x='7.5' y='12' width='7' height='6' rx='1' fill='%23FFC53D'/%3E%3Crect x='16' y='9' width='7' height='9' rx='1' fill='%23A3A3A3'/%3E%3Cpath d='M13 25.5h6l-3 3z' fill='%23FFC53D'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
 :root{
   --night:#0A0418; --night2:#150A2E;
-  --violet:#8B5CF6; --violet-l:#B794FF; --violet-d:#6D28D9;
+  --violet:#A3A3A3; --violet-l:#D4D4D4; --violet-d:#4A4A4D;
   --gold:#FFC53D;
   --paper:#170D31; --bg:#0C0620; --bg2:#241547;
   --text:#EFEBF9; --muted:#9A90BC; --line:#2E1F55; --line2:#231646;
@@ -22,7 +22,7 @@
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:
-   radial-gradient(1100px 520px at 12% -8%,rgba(124,58,237,.20),transparent 62%),
+   radial-gradient(1100px 520px at 12% -8%,rgba(150,150,153,.20),transparent 62%),
    radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%),
    var(--bg);
   background-attachment:fixed;color:var(--text);
@@ -44,7 +44,7 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 .wrap{max-width:1680px;margin:0 auto;padding:0 var(--pad)}
 .hidden{display:none !important}
 
-header{background:var(--night);position:sticky;top:0;z-index:60;border-bottom:1px solid rgba(162,119,255,.2)}
+header{background:var(--night);position:sticky;top:0;z-index:60;border-bottom:1px solid rgba(190,190,193,.2)}
 .bar{display:flex;align-items:center;gap:20px;height:60px}
 .mark{display:flex;align-items:center;gap:10px;flex:none;color:#fff}
 .logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(140deg,var(--violet),var(--violet-d));
@@ -55,13 +55,13 @@ nav{display:flex;gap:3px;margin-left:auto;overflow-x:auto;scrollbar-width:none;-
 nav::-webkit-scrollbar{display:none}
 nav button{font-size:13px;font-weight:700;padding:8px 14px;border-radius:99px;
   color:rgba(255,255,255,.6);white-space:nowrap;transition:.15s;flex:none;letter-spacing:.03em}
-nav button:hover{color:#fff;background:rgba(162,119,255,.18)}
+nav button:hover{color:#fff;background:rgba(190,190,193,.18)}
 nav button[aria-selected=true]{color:var(--night);background:var(--gold)}
 
-.filebar{background:var(--night2);border-bottom:1px solid rgba(162,119,255,.2);padding:9px 0}
+.filebar{background:var(--night2);border-bottom:1px solid rgba(190,190,193,.2);padding:9px 0}
 .filebar .in{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.filebar .btn{font-size:12px;padding:6px 11px;border-radius:8px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(162,119,255,.35)}
-.filebar .btn:hover{background:rgba(162,119,255,.28);color:#fff}
+.filebar .btn{font-size:12px;padding:6px 11px;border-radius:8px;background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(190,190,193,.35)}
+.filebar .btn:hover{background:rgba(190,190,193,.28);color:#fff}
 .filebar .btn:disabled{opacity:.3}
 .filebar .btn:disabled:hover{background:rgba(255,255,255,.08)}
 .undo-label{font-size:11.5px;color:var(--violet-l);max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -69,7 +69,7 @@ nav button[aria-selected=true]{color:var(--night);background:var(--gold)}
 
 .btn{font-size:12.5px;font-weight:700;letter-spacing:.03em;padding:8px 14px;border-radius:9px;
   border:1px solid var(--line);background:var(--bg2);color:var(--text);display:inline-flex;align-items:center;gap:7px;transition:.15s}
-.btn:hover{border-color:var(--violet);color:var(--violet-l);background:rgba(139,92,246,.14)}
+.btn:hover{border-color:var(--violet);color:var(--violet-l);background:rgba(163,163,163,.14)}
 .btn.sm{padding:6px 11px;font-size:11.5px}
 .btn.acc{background:var(--violet-d);border-color:var(--violet);color:#fff}
 .btn.acc:hover{background:var(--violet);border-color:var(--violet-l);color:#fff}
@@ -102,27 +102,27 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .cards-lojas{display:grid;grid-template-columns:repeat(auto-fit,minmax(268px,1fr));gap:14px}
 .card-loja{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:16px;
   box-shadow:0 10px 26px -18px rgba(0,0,0,.8);transition:.18s}
-.card-loja:hover{border-color:rgba(139,92,246,.45);transform:translateY(-2px)}
+.card-loja:hover{border-color:rgba(163,163,163,.45);transform:translateY(-2px)}
 .card-loja-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-family:Sora;font-size:15px}
 .badge{font-family:'IBM Plex Mono';font-size:10.5px;font-weight:600;background:var(--bg2);color:var(--muted);padding:2px 8px;border-radius:99px}
 .card-loja-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px}
-.stat{background:var(--bg2);border:1px solid rgba(139,92,246,.14);border-radius:9px;padding:9px 4px;text-align:center}
+.stat{background:var(--bg2);border:1px solid rgba(163,163,163,.14);border-radius:9px;padding:9px 4px;text-align:center}
 .stat-n{display:block;font-family:Sora;font-weight:700;font-size:17px}
 .stat-l{display:block;font-size:10px;color:var(--muted);letter-spacing:.05em;margin-top:2px;text-transform:uppercase}
 .card-loja-foot{display:flex;flex-direction:column;gap:5px;font-size:13px;border-top:1px solid var(--line2);padding-top:10px}
 .total-geral{margin-top:16px;font-family:Sora;
-  background:linear-gradient(135deg,#1B0F3D,#2A1160);border:1px solid rgba(162,119,255,.3);
+  background:linear-gradient(135deg,#1B0F3D,#2A1160);border:1px solid rgba(190,190,193,.3);
   color:#fff;padding:16px 20px;border-radius:var(--r);display:grid;gap:8px}
 .total-geral > div{display:flex;justify-content:space-between;align-items:baseline;gap:14px;flex-wrap:wrap;font-size:16px}
 .total-geral b{color:var(--gold);font-size:19px}
-.total-geral .linha2{border-top:1px solid rgba(162,119,255,.22);padding-top:8px}
+.total-geral .linha2{border-top:1px solid rgba(190,190,193,.22);padding-top:8px}
 .total-geral .linha2 b{color:var(--violet-l)}
 .total-geral small{font-size:11.5px;font-weight:500;color:var(--muted);letter-spacing:.02em;font-family:'Plus Jakarta Sans',sans-serif}
 .card-loja-foot .valor-info{display:inline-flex;align-items:center;gap:6px}
 .valor-manual-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .valor-manual{font:inherit;font-size:12.5px;font-weight:700;color:var(--gold);background:var(--bg2);
   border:1px solid var(--line);border-radius:6px;padding:3px 8px;width:110px;text-align:right;color-scheme:dark}
-.valor-manual:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 2px rgba(139,92,246,.25)}
+.valor-manual:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 2px rgba(163,163,163,.25)}
 .alert-baixo{margin-top:16px;background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.38);border-radius:var(--r);padding:14px 16px}
 .alert-head{font-weight:700;color:var(--warn);margin-bottom:8px;font-size:13px;text-transform:uppercase}
 .alert-baixo.risco{background:rgba(251,113,133,.10);border-color:rgba(251,113,133,.4)}
@@ -158,9 +158,9 @@ table.tbl-produtos td{padding:10px 12px;border-bottom:1px solid var(--line2);ver
 table.tbl-produtos tr:last-child td{border-bottom:0}
 table.tbl-produtos td.num{text-align:right;font-family:'IBM Plex Mono';font-weight:600}
 table.tbl-produtos th.num{text-align:right}
-table.tbl-produtos tbody tr:hover{background:rgba(139,92,246,.07)}
+table.tbl-produtos tbody tr:hover{background:rgba(163,163,163,.07)}
 table.tbl-produtos tr.row-baixo{background:rgba(251,191,36,.07)}
-.loja-tag{font-size:10.5px;font-weight:700;background:rgba(139,92,246,.18);color:var(--violet-l);padding:3px 8px;border-radius:99px;white-space:nowrap;border:1px solid rgba(139,92,246,.3)}
+.loja-tag{font-size:10.5px;font-weight:700;background:rgba(163,163,163,.18);color:var(--violet-l);padding:3px 8px;border-radius:99px;white-space:nowrap;border:1px solid rgba(163,163,163,.3)}
 .qty-acao{font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:88px;background:var(--bg2);color:var(--text)}
 .obs-input{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:100%;min-width:240px;background:var(--bg2);color:var(--text)}
 input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
@@ -177,32 +177,32 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 
 .modal-overlay{position:fixed;inset:0;background:rgba(5,2,14,.78);backdrop-filter:blur(3px);display:flex;align-items:flex-start;justify-content:center;
   padding:40px 16px;z-index:100;overflow-y:auto}
-.modal{background:var(--paper);border:1px solid rgba(139,92,246,.28);border-radius:16px;max-width:600px;width:100%;padding:24px 26px 26px;box-shadow:0 26px 70px -18px rgba(0,0,0,.9)}
+.modal{background:var(--paper);border:1px solid rgba(163,163,163,.28);border-radius:16px;max-width:600px;width:100%;padding:24px 26px 26px;box-shadow:0 26px 70px -18px rgba(0,0,0,.9)}
 .modal.wide{max-width:900px}
 .modal h3{margin-top:0;text-transform:uppercase}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px}
 .form-grid label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;font-weight:700;color:var(--muted);letter-spacing:.03em;text-transform:uppercase}
 .form-grid label.span2{grid-column:1/-1}
 .form-grid input, .form-grid select{font:inherit;font-size:14px;font-weight:500;color:var(--text);padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color-scheme:dark}
-.form-grid input:focus,.form-grid select:focus,.qty-acao:focus,.obs-input:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(139,92,246,.2)}
+.form-grid input:focus,.form-grid select:focus,.qty-acao:focus,.obs-input:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(163,163,163,.2)}
 .form-grid label small{font-weight:500;color:var(--muted);font-size:11px;text-transform:none}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:14px}
 .modal-sep{border:0;border-top:1px solid var(--line2);margin:20px 0}
 
-.calc-row{display:flex;justify-content:space-between;margin-top:12px;font-size:13.5px;background:var(--bg2);border:1px solid rgba(139,92,246,.16);padding:10px 12px;border-radius:9px;flex-wrap:wrap;gap:8px}
+.calc-row{display:flex;justify-content:space-between;margin-top:12px;font-size:13.5px;background:var(--bg2);border:1px solid rgba(163,163,163,.16);padding:10px 12px;border-radius:9px;flex-wrap:wrap;gap:8px}
 .envio-full-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .envio-full-row input{width:140px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg2);color:var(--text)}
 
 #confirmOverlay .modal{max-width:460px}
 
 #toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);
-  background:linear-gradient(135deg,#1B0F3D,#2A1160);border:1px solid rgba(162,119,255,.4);color:#fff;
+  background:linear-gradient(135deg,#1B0F3D,#2A1160);border:1px solid rgba(190,190,193,.4);color:#fff;
   padding:13px 22px;border-radius:14px;font-size:13.5px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:200;
   box-shadow:0 16px 44px -12px rgba(0,0,0,.9);max-width:92vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 
-.drop{border:2px dashed rgba(162,119,255,.45);border-radius:var(--r);padding:22px;text-align:center;background:var(--paper);margin-bottom:18px;transition:.18s}
-.drop.dragover{background:rgba(139,92,246,.16);border-color:var(--gold)}
+.drop{border:2px dashed rgba(190,190,193,.45);border-radius:var(--r);padding:22px;text-align:center;background:var(--paper);margin-bottom:18px;transition:.18s}
+.drop.dragover{background:rgba(163,163,163,.16);border-color:var(--gold)}
 .drop b{display:block;font-family:Sora;font-size:14.5px;margin-bottom:4px;text-transform:uppercase}
 
 @media(max-width:720px){
@@ -214,7 +214,7 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 /* ---- tela de atualizacao (trava o sistema) ---- */
 #lockOverlay{position:fixed;inset:0;z-index:500;background:rgba(6,2,16,.93);backdrop-filter:blur(6px);
   display:flex;align-items:center;justify-content:center;padding:24px}
-.lock-box{background:var(--paper);border:1px solid rgba(139,92,246,.45);border-radius:18px;
+.lock-box{background:var(--paper);border:1px solid rgba(163,163,163,.45);border-radius:18px;
   max-width:520px;width:100%;padding:34px 32px;text-align:center;box-shadow:0 30px 80px -20px rgba(0,0,0,.95)}
 .lock-ico{font-size:40px;color:var(--gold);line-height:1;margin-bottom:10px;animation:girar 2.4s linear infinite;display:inline-block}
 @keyframes girar{to{transform:rotate(360deg)}}
@@ -250,13 +250,13 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
   border:1px solid var(--line);border-radius:9px;background:var(--bg2);color:var(--text)}
 .tarefa-nova input[type=date]{font:inherit;font-size:14px;padding:11px 12px;border:1px solid var(--line);
   border-radius:9px;background:var(--bg2);color:var(--text);color-scheme:dark}
-.tarefa-nova input:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(139,92,246,.2)}
+.tarefa-nova input:focus{outline:none;border-color:var(--violet);box-shadow:0 0 0 3px rgba(163,163,163,.2)}
 
 .tarefa-lista{display:flex;flex-direction:column;gap:8px}
 .tarefa{display:flex;flex-direction:column;gap:6px;background:var(--paper);border:1px solid var(--line);
   border-radius:var(--r);padding:11px 13px;transition:.15s}
 .tarefa-topo{display:flex;align-items:center;gap:10px}
-.tarefa:hover{border-color:rgba(139,92,246,.45)}
+.tarefa:hover{border-color:rgba(163,163,163,.45)}
 .tarefa.arrastando{opacity:.4}
 .lista-chip[draggable=true]{cursor:grab}
 .lista-chip.arrastando{opacity:.45;cursor:grabbing}
@@ -289,7 +289,7 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
   line-height:1.5;min-height:26px;margin-left:32px;width:calc(100% - 32px)}
 .tarefa-obs:hover{border-color:var(--line)}
 .tarefa-tit:hover,.tarefa-obs:hover{background:var(--bg2)}
-.tarefa-tit:focus,.tarefa-obs:focus{outline:none;background:var(--bg2);box-shadow:0 0 0 2px rgba(139,92,246,.35)}
+.tarefa-tit:focus,.tarefa-obs:focus{outline:none;background:var(--bg2);box-shadow:0 0 0 2px rgba(163,163,163,.35)}
 .tarefa-data{font:inherit;font-size:12.5px;padding:7px 9px;border:1px solid var(--line);border-radius:8px;
   background:var(--bg2);color:var(--muted);color-scheme:dark;flex:none}
 .tarefa-data.venc{border-color:rgba(251,113,133,.6);color:var(--danger);background:rgba(251,113,133,.1)}
@@ -300,7 +300,7 @@ input[type=checkbox]{accent-color:var(--violet);width:17px;height:17px}
 .tarefa:hover .tarefa-x{opacity:1}
 .tarefa-x:hover{color:var(--danger);background:rgba(251,113,133,.12)}
 .tarefa-repetir{color:var(--muted);font-size:14px;padding:5px 8px;border-radius:7px;flex:none;opacity:.55;transition:.15s}
-.tarefa-repetir:hover{opacity:1;color:var(--violet-l);background:rgba(139,92,246,.14)}
+.tarefa-repetir:hover{opacity:1;color:var(--violet-l);background:rgba(163,163,163,.14)}
 .tarefa-repetir.ativo{opacity:1;color:var(--ok);background:rgba(52,211,153,.12)}
 .nav-badge{font-family:'IBM Plex Mono';font-size:10px;background:rgba(0,0,0,.3);padding:1px 6px;border-radius:99px;margin-left:2px}
 .nav-badge.atras{background:#BE123C;color:#fff}
@@ -374,7 +374,7 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
 .sub-tit{flex:1;min-width:0;font:inherit;font-size:13px;color:var(--text);background:none;border:0;
   padding:3px 5px;border-radius:6px}
 .sub-tit:hover{background:var(--bg2)}
-.sub-tit:focus{outline:none;background:var(--bg2);box-shadow:0 0 0 2px rgba(139,92,246,.3)}
+.sub-tit:focus{outline:none;background:var(--bg2);box-shadow:0 0 0 2px rgba(163,163,163,.3)}
 .sub.feita .sub-tit{text-decoration:line-through;color:var(--muted)}
 .sub-x{color:var(--muted);font-size:11px;padding:3px 6px;border-radius:5px;flex:none;opacity:0;transition:.15s}
 .sub:hover .sub-x{opacity:1}
@@ -467,7 +467,7 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
 .mapa-cols small{display:block;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--violet-l);font-weight:700;margin-bottom:5px}
 .mapa-cols div{display:flex;justify-content:space-between;gap:14px;font-size:11.5px;padding:2px 0;color:var(--muted)}
 .mapa-cols div b{font-weight:600;text-transform:none}
-tr.l-env{background:rgba(139,92,246,.07)}
+tr.l-env{background:rgba(163,163,163,.07)}
 @media(max-width:760px){.cards-linha{grid-template-columns:repeat(2,1fr)}.det .pop{right:auto;left:0;min-width:180px}}
 </style>
 </head>
@@ -790,7 +790,15 @@ function optsLojas(sel){ return STORES.map(l=>`<option value="${esc(l)}" ${l===s
 function optsColeta(sel){ return LOCAIS_COLETA.map(l=>`<option value="${esc(l)}" ${l===sel?'selected':''}>${esc(l)}</option>`).join(''); }
 function fmtData(iso){ if(!iso) return 'sem data'; const [a,m,d]=iso.split('-'); return `${d}/${m}/${a}`; }
 function nomeEnvio(e){ return `${e.nome} · ${e.loja}`; }
-function hoje(){ return new Date().toISOString().slice(0,10); }
+/* bug corrigido 20/08: usava .toISOString() (sempre em UTC), então perto da meia-noite em
+   Brasília (a partir das ~21h, já que BRT = UTC-3) o "hoje" da tela já virava o dia SEGUINTE em
+   UTC - explicando o alerta de "tarefas pra hoje" aparecer de noite mostrando uma tarefa
+   programada pra "hoje" que, no relógio de Brasília, ainda era o dia de amanhã. Trocado pra
+   pegar ano/mês/dia do horário LOCAL do navegador (que já é o de Brasília, sem forçar UTC). */
+function hoje(){
+  const d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
 function prodById(id){ return state.produtos.find(p=>p.id===id); }
 function envioById(id){ return state.envios.find(e=>e.id===id); }
 function normLoja(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,''); }
@@ -2735,8 +2743,7 @@ function renderTarefas(){
           </div>
         </div>`;
       }).join('')}
-    </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}
-    <p class="hint">A ordem da lista é a sua prioridade: arraste pelo <b>⠿</b> para subir ou descer. Para <b>mudar de lista</b>, arraste a tarefa até o nome da lista lá em cima. Os próprios nomes das listas também podem ser arrastados para mudar a ordem deles. Toque em <b>🔁M</b> ou <b>🔁S</b> numa tarefa pra ativar Gestão Ativa (mensal ou semanal): ela não some ao concluir, fica com ✓ e volta a pedir conclusão sozinha no período seguinte (tarefas com subtarefas finalizam sozinhas quando todas as subtarefas forem concluídas). Tarefas sem Gestão Ativa somem ao concluir (dá pra recuperar no <b>Desfazer</b>).</p>`;
+    </div>`:`<p class="empty-inline">Nenhuma tarefa nesta lista. Adicione a primeira acima — ou arraste uma tarefa de outra lista para o nome desta aqui em cima.</p>`}`;
 
   const btnTfData=document.getElementById('tfData');
   if(btnTfData) btnTfData.onclick=()=>abrirSeletorData(novaTarefaData,(iso)=>{ novaTarefaData=iso; renderTarefas(); });
@@ -4820,8 +4827,7 @@ function renderAds(){
           </label>
         </td></tr>`:''}`;
       }).join('')}
-    </tbody></table></div>
-    <p class="hint">TACOS = custo ÷ (vendas do anúncio + vendas orgânicas do mesmo produto). "Aporte Ads" = % das vendas totais do produto geradas pelo anúncio patrocinado (mesmo cálculo do card "Aporte para publicidade" do painel oficial). "Ganho Leilões" = share of voice (sov). "Pronta p/ ROAS" é sempre calculada em cima dos últimos 7 dias, independente do período escolhido acima — passe o mouse pra ver quais dos 6 critérios bateram. Regras completas em regras_sugestao_roas_ads.md.</p>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
+    </tbody></table></div>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
@@ -5272,10 +5278,14 @@ async function calcularFechamentoTodasLojas(){
       const resumo=await fetchResumoJob(loja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{
         financasFechTodasProgresso={feito:i,total:STORES.length,etapa:`${loja}: ${p&&p.etapa?p.etapa:''} (${p?p.feito:0}%)`};
         renderFinancas();
+        // progresso geral = lojas já concluídas + fração da loja atual (0-100% dela), pedido do
+        // Felipe 20/08: barra de progresso em tempo real por cima do vídeo de loading
+        atualizarOverlayProgresso(((i+(p&&p.feito?p.feito/100:0))/STORES.length)*100);
       });
       resultados.push({loja,resumo,m:calcularMargensResumo(resumo,loja)});
       financasFechTodasProgresso={feito:i+1,total:STORES.length,etapa:`${loja} concluída`};
       renderFinancas();
+      atualizarOverlayProgresso(((i+1)/STORES.length)*100);
       await sleep(150);
     }
     // relatório pronto - substitui a página inteira NESSA aba (document.write dentro da função
@@ -5296,10 +5306,26 @@ function mostrarOverlayVideoCarregando(){
   const div=document.createElement('div');
   div.id='overlayVideoCarregando';
   div.style.cssText='position:fixed;inset:0;z-index:99999;background:#0A0418;display:flex;align-items:center;justify-content:center';
-  div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover" src="${backendUrl()}/loading-video.mp4"></video>`;
+  div.innerHTML=`<video id="videoCarregandoFechamento" playsinline style="width:100%;height:100%;object-fit:cover" src="${backendUrl()}/loading-video.mp4"></video>
+    <div style="position:absolute;left:0;right:0;bottom:0;padding:18px 22px calc(18px + env(safe-area-inset-bottom));background:linear-gradient(0deg,rgba(0,0,0,.65),transparent)">
+      <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden">
+        <div id="barraProgressoFechamento" style="height:100%;width:0%;background:#fff;border-radius:99px;transition:width .25s ease"></div>
+      </div>
+      <div id="pctProgressoFechamento" style="margin-top:8px;color:#fff;font-size:13px;font-weight:600;text-align:center">0%</div>
+    </div>`;
   document.body.appendChild(div);
   const v=document.getElementById('videoCarregandoFechamento');
   if(v){ v.play().catch(()=>{}); }
+}
+/* atualiza a barra/percentual em tempo real por cima do vídeo (ver chamadas em
+   calcularFechamentoTodasLojas) - não faz nada se o overlay já não estiver mais na tela */
+function atualizarOverlayProgresso(pct){
+  const barra=document.getElementById('barraProgressoFechamento');
+  const texto=document.getElementById('pctProgressoFechamento');
+  if(!barra||!texto) return;
+  const p=Math.max(0,Math.min(100,Math.round(pct||0)));
+  barra.style.width=p+'%';
+  texto.textContent=p+'%';
 }
 function esconderOverlayVideoCarregando(){
   const el=document.getElementById('overlayVideoCarregando');
@@ -5315,9 +5341,20 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
   const win=window;
   const porLoja=resultados.map(r=>{
     const unidades=(r.resumo.itensVendidos||[]).reduce((s,it)=>s+(it.qtd||0),0);
+    const aliquotaLoja=finLoja(r.loja).aliquotaImposto||0;
     const produtos=(r.resumo.itensVendidos||[]).slice().sort((a,b)=>b.qtd-a.qtd).map(it=>{
       const p=state.produtos.find(x=>x.mlItemId===it.itemId);
-      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0};
+      /* sinal verde de "dentro da meta de Ads" por produto - pedido do Felipe 20/08: mesma regra
+         já usada no Resumo Financeiro (ver renderResumoFinanceiroResultado) - meta = 1/3 da
+         Margem de Contribuição do produto no período. Só marca quando o produto teve Ads gasto
+         de fato E a Margem de Contribuição é positiva. */
+      const custoUnit=p&&p.custo?p.custo:0;
+      const custoProdutoItem=custoUnit*(it.qtd||0);
+      const impostoItem=(it.valor||0)*((aliquotaLoja||0)/100);
+      const margemContribItem=(it.valor||0)-custoProdutoItem-(it.tarifa||0)-(it.freteMl||0)-impostoItem;
+      const adsAchado=p?adsGastoAutoProduto(p,r.resumo):null;
+      const dentroMetaAds=adsAchado!=null&&margemContribItem>0&&adsAchado<=margemContribItem/3;
+      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds};
     });
     const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
     const margemPosAds=r.m.margem-gastoAds;
@@ -5357,8 +5394,8 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Líquida (custo total)',fmtMoney(r.margemLiquidaTotal),r.margemLiquidaTotal<0,pctDe(r.margemLiquidaTotal,r.faturamento))}
       </div>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
-      ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th></tr></thead><tbody>
-        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td></tr>`).join('')}
+      ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
+        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td></tr>`).join('')}
       </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
     </div>`;
   win.document.open();
@@ -5367,10 +5404,10 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     <title>Fechamento — Todas as Lojas</title>
     <style>
       *{box-sizing:border-box}
-      :root{--night:#0A0418;--violet:#8B5CF6;--violet-l:#B794FF;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
+      :root{--night:#0A0418;--violet:#A3A3A3;--violet-l:#D4D4D4;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
       html,body{margin:0}
       body{
-        background:radial-gradient(1100px 520px at 12% -8%,rgba(124,58,237,.20),transparent 62%),
+        background:radial-gradient(1100px 520px at 12% -8%,rgba(150,150,153,.20),transparent 62%),
           radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%), var(--bg);
         font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;
         padding:18px;color:var(--text);font-size:15px;max-width:720px;margin:0 auto;line-height:1.5}
@@ -5539,9 +5576,9 @@ function renderResumoFinanceiroResultado(resumo,loja){
     <div class="form-grid" style="grid-template-columns:repeat(3,1fr);gap:10px">
       ${cartao('FATURAMENTO',resumo.faturamento,(resumo.cancelamentosValor?'bruto (com cancelados): '+fmtMoney(resumo.faturamento+resumo.cancelamentosValor):'')+badge(resumo.faturamento,comparAnt?comparAnt.faturamento:null,false))}
       ${cartao('CUSTOS (CMV)',cmv,unidSemCusto?fmtInt(unidSemCusto)+' unid. sem custo cadastrado — CMV subestimado':pct(cmv))}
-      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,(pct(resumo.tarifas)?pct(resumo.tarifas)+' · ':'')+'comissão real declarada em cada pedido — cai pra % da categoria só quando não tem declarada')}
+      ${cartao('TARIFAS (COMISSÃO)',resumo.tarifas,pct(resumo.tarifas))}
       ${cartao('IMPOSTOS ('+(aliquota||0)+'%)',impostoCalc,aliquota?pct(impostoCalc):'alíquota não configurada')}
-      ${cartao('ADS',resumo.ads.custo,(pct(resumo.ads.custo)?pct(resumo.ads.custo)+' · ':'')+'informativo — já vem embutido na fatura ML pendente, não é descontado de novo na Margem Líquida')}
+      ${cartao('ADS',resumo.ads.custo,pct(resumo.ads.custo))}
       ${cartao('FRETE (VENDEDOR)',resumo.frete.vendedor,pct(resumo.frete.vendedor))}
       ${cartao('FRETE (COMPRADOR)',resumo.frete.comprador,'pago pelo cliente, não entra na margem')}
       ${cartao('CANCELAMENTOS',resumo.cancelamentosValor,pct(resumo.cancelamentosValor))}
@@ -5562,7 +5599,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento · Margem de Contribuição − ${fmtMoney(custosPeriodo)}${pct(custosPeriodo)?' ('+pct(custosPeriodo)+')':''} de despesas do período − ${fmtMoney(faturaMlAtual)}${pct(faturaMlAtual)?' ('+pct(faturaMlAtual)+')':''} de fatura ML pendente <span title="A fatura ML pendente já inclui o Ads cobrado pelo Mercado Livre, por isso o Ads não é descontado de novo aqui (o card ADS acima é só informativo)">(inclui Ads)</span>${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
@@ -5612,7 +5649,6 @@ function renderResumoFinanceiroResultado(resumo,loja){
         }).join('')}
       </tbody></table></div>`:'<p class="empty-inline">Nenhuma venda com item identificado nesse período.</p>'}
     </div>
-    ${resumo.avisos&&resumo.avisos.length?`<p class="hint" style="margin-top:8px">⚠ ${resumo.avisos.map(a=>esc(a)).join(' · ')}</p>`:''}
   `;
 }
 /* ---- Retiradas e Reembolsos (TorvStore): cartão independente, sempre visível (não depende de
@@ -6232,7 +6268,6 @@ function renderAmauri(){
     </tr>`;
   el.innerHTML=`
     <h1 class="page-title">Amauri</h1>
-    <p class="hint" style="margin:0 0 16px">Fechamento dos produtos da TorvStore em sociedade com o Amauri: marque os produtos, ajuste os custos de cada um (e quem pagou cada um) e puxe o período pra calcular a margem líquida e o repasse devido a ele.</p>
     <div class="subnav">
       <button data-amsub="periodo" aria-selected="${amauriSubAba==='periodo'?'true':'false'}">📊 Período do fechamento</button>
       <button data-amsub="produtos" aria-selected="${amauriSubAba==='produtos'?'true':'false'}">📦 Produtos</button>
@@ -7733,7 +7768,6 @@ function renderRuptura(){
     <div class="form-grid">
       <label>Avisar ruptura com <small>(dias de antecedência)</small><input id="rDiasAlerta" type="number" min="1" value="${diasLimite}"></label>
     </div>
-    <p class="hint">Mostra, por loja, todo SKU que — no ritmo de venda atual — vai zerar no FULL dentro desse prazo, e destaca em vermelho quem vai zerar <b>antes do próximo envio já programado</b> em Envios programados (não a data manual da Previsão). O cálculo conta aptas + em transferência sempre, e dos envios programados só entra quem tem data <b>igual ou antes</b> da projeção de zerar — envio programado pra depois que já zerou não evita a ruptura, então não entra na conta. Esse mesmo campo de dias também controla o alerta da Visão Geral.</p>
   </div>
   <div class="cards-linha">
     <div class="card mini ${totalRisco?'alerta':''}"><span class="rot">SKU(s) em risco (todas as lojas)</span><b>${fmtInt(totalRisco)}</b>
@@ -7965,7 +7999,12 @@ function mostrarAlertaTarefasDoDia(){
     <div class="modal-actions"><button class="btn gold" id="btnFecharAlertaTarefasDoDia">Ok, entendi</button></div>`;
   document.getElementById('btnFecharAlertaTarefasDoDia').onclick=closeModal;
 }
-checarTarefasVencendo();
+/* bug corrigido 19/08: essa linha chamava checarTarefasVencendo(), uma função que nunca chegou
+   a ser criada - o erro (ReferenceError não capturado) parava a execução do script bem aqui,
+   impedindo o setInterval do re-sync financeiro periódico (linha abaixo) de sequer ser
+   registrado. Troca pela função que já existe e faz o mesmo (avisar de tarefa pendente pra
+   hoje), rodando 1x já na abertura do app. */
+mostrarAlertaTarefasDoDia();
 
 /* re-sync periódico só do financeiro (Mercado Pago), enquanto a aba do Doca fica aberta.
    Motivo (descoberto com dado real em 13/08): o relatório do Mercado Pago fica pronto rápido,
