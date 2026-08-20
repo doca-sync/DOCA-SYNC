@@ -7882,8 +7882,9 @@ tentarReconectar();
     }
   }
 })();
-/* alerta de tarefas do dia - pedido do Felipe 19/08 (3ª rodada, versão final):
-   - só tarefas com data de HOJE (nem atrasada, nem futura)
+/* alerta de tarefas do dia - pedido do Felipe 19/08, ajustado 20/08:
+   - tarefas com data de HOJE ou já ATRASADA aparecem (futura ainda não aparece) - se passou a
+     data e não foi concluída, continua avisando todo dia até concluir
    - aparece TODA VEZ que abre o programa ou entra na aba Tarefas (não guarda "já vi" em lugar
      nenhum) - enquanto a tarefa não for concluída, o aviso volta a aparecer
    - modal no meio da tela (reaproveita openModal/closeModal), não banner no topo */
@@ -7900,21 +7901,19 @@ function tarefasDeHojePendentes(){
   const hhmm=new Date().toTimeString().slice(0,5);
   const porData=(state.tarefas||[]).filter(t=>{
     const d=String(t.data||'').slice(0,10);
-    if(d!==h) return false;                       // só hoje - passado e futuro não mostram
-    // pedido do Felipe 20/08: mostra o aviso o dia inteiro, mesmo se a hora marcada já passou -
-    // só não mostra quando a tarefa já foi concluída (removido o filtro que escondia até a hora
-    // marcada chegar).
+    if(!d||d>h) return false;                      // sem data, ou data futura - ainda não mostra
+    // pedido do Felipe 20/08: hoje OU atrasada (d<=h) continua avisando todo dia até concluir -
+    // só não mostra quando a tarefa já foi concluída.
     if(tarefaConcluidaNoPeriodo(t)) return false;  // Gestão Ativa já concluída este período - não incomoda de novo
     return true;
   });
-  /* tarefa de Gestão Ativa (mensal/semanal) sem data marcada é um lembrete recorrente - entra no
-     aviso todo dia enquanto não for concluída no período. Mas se tiver data marcada, só deve
-     avisar no dia certo (mesma regra das tarefas normais) - pedido do Felipe 20/08 (antes
-     avisava todo dia, ignorando a data) */
+  /* tarefa de Gestão Ativa (mensal/semanal) SEM data marcada é um lembrete recorrente - entra no
+     aviso todo dia enquanto não for concluída no período. A que TEM data já foi tratada no filtro
+     acima (mesma regra das tarefas normais: hoje ou atrasada, some quando concluir) - pedido do
+     Felipe 20/08 */
   const vistos=new Set(porData.map(t=>t.id));
   (state.tarefas||[]).forEach(t=>{
-    if(!t.resetaTipo||vistos.has(t.id)||tarefaConcluidaNoPeriodo(t)) return;
-    if(t.data && String(t.data).slice(0,10)!==h) return;
+    if(!t.resetaTipo||t.data||vistos.has(t.id)||tarefaConcluidaNoPeriodo(t)) return;
     vistos.add(t.id); porData.push(t);
   });
   return porData;
