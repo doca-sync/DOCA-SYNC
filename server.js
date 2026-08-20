@@ -51,15 +51,6 @@ if (!ML_CLIENT_ID || !ML_CLIENT_SECRET || !ML_REDIRECT_URI) {
   process.exit(1);
 }
 const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
-/* tabela pra relatorios compartilhaveis (fechamento de todas as lojas etc) - pedido do Felipe
-   19/08: gerar um link que a pessoa que ele mandar por WhatsApp consiga abrir sem precisar de
-   login do Doca (ver rotas /relatorio no fim do arquivo). Criada sozinha se ainda nao existir -
-   nao precisa rodar migracao manual no Supabase pra essa. */
-pool.query(`create table if not exists relatorios (
-  id text primary key,
-  html text not null,
-  criado_em timestamptz not null default now()
-)`).catch(e => console.error('Falha ao garantir tabela "relatorios":', e.message));
 const app = express();
 app.use(express.json({ limit: '10mb' })); // o estado inteiro do Doca (produtos, envios, historico) pode passar de 100kb (limite padrao)
 const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
@@ -622,6 +613,122 @@ app.post('/auditoria/mes/iniciar', async (req, res) => {
 app.get('/auditoria/mes/status', (req, res) => {
   const jobId = req.query.id;
   const job = auditoriaJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Auditoria nao encontrada - pode ter expirado (o servidor guarda so a ultima leva de jobs em memoria, some se reiniciar).' });
+  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
+});
+
+/* ================= Auditoria de UM PRODUTO (real, confirmado) =================
+   Mesma logica da auditoria do mes, mas filtrando so os pedidos que tem esse item_id, pra
+   estudar um produto especifico (ex: "isso aqui bate?"). Pedido MISTO (carrinho com outros
+   produtos junto) nao da pra saber a fatia exata da comissao/frete SO' desse item direto na
+   cobranca real do Mercado Pago (ela vem por PAGAMENTO inteiro, nao por item) - pedido puro
+   (so' esse produto) conta 100% direto; pedido misto e' rateado proporcional ao valor do item
+   dentro do pedido (aproximado, marcado separado no resultado pra nao confundir com o exato). */
+const auditoriaProdutoJobs = new Map();
+async function rodarAuditoriaProduto(jobId, loja, itemId, de, ate) {
+  const job = auditoriaProdutoJobs.get(jobId);
+  try {
+    if (!tokenMpDaLoja(loja)) { job.status = 'erro'; job.erro = 'Essa loja nao tem Mercado Pago configurado - a auditoria precisa dele pra confirmar as cobrancas reais.'; return; }
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const log = { avisos: [] };
+    const deIso = `${de}T00:00:00-03:00`, ateIso = `${ate}T23:59:59-03:00`;
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
+    const comItem = pedidos.filter(p => p.status !== 'invalid' && (p.order_items || []).some(oi => oi.item && oi.item.id === itemId));
+    job.progresso = { feito: 0, total: comItem.length };
+
+    let qtdVendida = 0, qtdCancelada = 0;
+    let faturamentoItem = 0, cancelamentoItem = 0;
+    let tarifaAssumida = 0;
+    let tarifaRealPura = 0, tarifaRealMistaEstimada = 0;
+    let pedidosPuros = 0, pedidosMistos = 0;
+    let freteRealPuros = 0, freteFalhas = 0;
+    const pagamentosContados = new Set();
+    const shipmentsContados = new Set();
+    const anomalias = [];
+
+    for (const p of comItem) {
+      const cancelado = p.status === 'cancelled';
+      const itensDoPedido = p.order_items || [];
+      const puro = itensDoPedido.length === 1;
+      const oiAlvo = itensDoPedido.find(oi => oi.item && oi.item.id === itemId);
+      const qtd = oiAlvo.quantity || 0;
+      const valorItem = (Number(oiAlvo.unit_price) || 0) * qtd;
+      const saleFee = (Number(oiAlvo.sale_fee) || 0) * qtd;
+      tarifaAssumida += saleFee;
+      if (cancelado) { qtdCancelada += qtd; cancelamentoItem += valorItem; } else { qtdVendida += qtd; faturamentoItem += valorItem; }
+      if (puro) pedidosPuros++; else pedidosMistos++;
+
+      if (puro && p.shipping && p.shipping.id && !shipmentsContados.has(p.shipping.id)) {
+        shipmentsContados.add(p.shipping.id);
+        try {
+          const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${p.shipping.id}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          freteRealPuros += (j.senders || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
+        } catch (e) { freteFalhas++; }
+      }
+
+      const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved' || pg.status === 'refunded' || pg.status === 'partially_refunded') || (p.payments || [])[0];
+      if (pgAprovado && pgAprovado.id && !pagamentosContados.has(pgAprovado.id)) {
+        pagamentosContados.add(pgAprovado.id);
+        try {
+          const r = await mpFetch(loja, `/v1/payments/${pgAprovado.id}`, { method: 'GET' });
+          const jp = await r.json();
+          const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
+          const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
+          if (puro) {
+            tarifaRealPura += valorComissaoReal;
+          } else {
+            const totalPedido = itensDoPedido.reduce((s, oi) => s + ((Number(oi.unit_price) || 0) * (oi.quantity || 0)), 0);
+            const fracao = totalPedido > 0 ? valorItem / totalPedido : 0;
+            tarifaRealMistaEstimada += valorComissaoReal * fracao;
+          }
+        } catch (e) {
+          anomalias.push({ pedido_id: p.id, motivo: 'Erro ao consultar o pagamento: ' + e.message });
+        }
+      }
+      job.progresso.feito++;
+      await sleep(180);
+    }
+
+    job.resultado = {
+      loja, itemId, periodo: { de, ate },
+      pedidos_com_produto: comItem.length,
+      pedidos_puros: pedidosPuros, pedidos_mistos: pedidosMistos,
+      qtd_vendida: qtdVendida, qtd_cancelada: qtdCancelada,
+      faturamento_item: round2(faturamentoItem), cancelamento_item: round2(cancelamentoItem),
+      tarifa_assumida: round2(tarifaAssumida),
+      tarifa_real_pedidos_puros: round2(tarifaRealPura),
+      tarifa_real_estimada_pedidos_mistos: round2(tarifaRealMistaEstimada),
+      tarifa_real_total: round2(tarifaRealPura + tarifaRealMistaEstimada),
+      diferenca_tarifa: round2(tarifaAssumida - (tarifaRealPura + tarifaRealMistaEstimada)),
+      frete_real_pedidos_puros: round2(freteRealPuros),
+      frete_falhas: freteFalhas,
+      aviso_frete: pedidosMistos > 0 ? `${pedidosMistos} pedido(s) misto(s) (com outros produtos no mesmo carrinho) - frete real desses NAO entrou no total (precisaria ratear por peso, igual o Resumo Financeiro faz - compare com o campo freteMl dele pra esses).` : null,
+      anomalias, avisos: log.avisos
+    };
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro';
+    job.erro = e.message;
+  }
+}
+app.post('/auditoria/produto/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const itemId = req.query.itemId;
+    const de = req.query.de, ate = req.query.ate;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Parametro "itemId" obrigatorio (ex: MLB1234567890).' });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const jobId = gerarJobId();
+    auditoriaProdutoJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: 0 }, resultado: null, erro: null, criadoEm: Date.now() });
+    rodarAuditoriaProduto(jobId, loja, itemId, de, ate);
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/auditoria/produto/status', (req, res) => {
+  const jobId = req.query.id;
+  const job = auditoriaProdutoJobs.get(jobId);
   if (!job) return res.status(404).json({ ok: false, erro: 'Auditoria nao encontrada - pode ter expirado (o servidor guarda so a ultima leva de jobs em memoria, some se reiniciar).' });
   res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
@@ -2280,14 +2387,9 @@ app.get('/debug/ads/diario', async (req, res) => {
     const advertiserId = primeiro && primeiro.advertiser_id;
     const de = dataYMD(Date.now() - (dias - 1) * 864e5);
     const ate = dataYMD(Date.now());
-    // v: aceita "metricas" na URL pra pedir campos extras (receita/roas/vendas) - se nao vier,
-    // usa um default JA' AMPLIADO (nao so' cost/clicks/prints/sov de antes) pro estudo de
-    // TACOS x ROAS dia a dia (ponto de inflexao) - precisa de total_amount+organic_units_amount
-    // (pra bater TACOS igual calcTacos do front) e de units_quantity+organic_units_quantity
-    // (pra vendas/dia), alem de roas/acos que a API ja calcula pronto.
-    let metricas = (req.query.metricas || 'cost,clicks,prints,sov,direct_amount,indirect_amount,total_amount,organic_units_amount,organic_units_quantity,units_quantity,roas,acos').split(',').map(s => s.trim()).filter(Boolean);
+    let metricas = ['cost', 'clicks', 'prints', 'sov'];
     const removidas = [];
-    for (let tentativa = 0; tentativa < 20; tentativa++) {
+    for (let tentativa = 0; tentativa < 6; tentativa++) {
       const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?campaign_ids=${campanhaId}&date_from=${de}&date_to=${ate}&metrics=${metricas.join(',')}&aggregation_type=DAILY`;
       try {
         const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
@@ -2305,145 +2407,6 @@ app.get('/debug/ads/diario', async (req, res) => {
     }
     res.json({ ok: false, erro: 'Muitas metricas invalidas seguidas.', metricas_removidas: removidas });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo, corpo_bruto: e.corpo_bruto }); }
-});
-/* rota de teste v2 - o /debug/ads/diario acima (aggregation_type=DAILY) tem um bug confirmado:
-   ele IGNORA o filtro de campanha e devolve a LOJA INTEIRA (todas as campanhas somadas) em cada
-   "dia", mesmo passando campaign_ids - confirmado comparando a soma dos "dias" devolvidos (bateu
-   quase exato com o custo de TODAS as campanhas da loja no periodo) contra o agregado real de 90
-   dias so' da campanha pedida (bem menor). Aqui em vez disso repete, um dia de cada vez, a MESMA
-   chamada que o /debug/ads/campanhas ja usa sem aggregation_type (essa sim confirmadamente
-   respeita o filtro por campanha, devolve um array com o "id" certo de cada uma) - mais lento
-   (1 chamada de API por dia, com pausa entre elas pra nao estourar rate limit) mas confiavel.
-   v2 (assincrono): puxar dia a dia demora mais que os ~30s que uma chamada HTTP normal aguenta
-   (principalmente com o backoff de rate limit entrando depois de varios dias seguidos), entao
-   agora roda como job em BACKGROUND, igual a Auditoria mensal:
-   1) POST /debug/ads/estudo-diario/iniciar?loja=X&campanhaId=Y&dias=30 -> devolve {jobId} na hora
-   2) GET  /debug/ads/estudo-diario/status?id=JOBID -> {status,progresso,resultado} */
-const estudoAdsJobs = new Map();
-function gerarJobIdAds() { return 'ads_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
-async function rodarEstudoDiarioAds(jobId, loja, campanhaId, dias) {
-  const job = estudoAdsJobs.get(jobId);
-  try {
-    const { primeiro } = await buscarAdvertiserId(loja);
-    const siteId = primeiro && primeiro.site_id;
-    const advertiserId = primeiro && primeiro.advertiser_id;
-    const resultado = [];
-    const avisos = [];
-    job.progresso = { feito: 0, total: dias };
-    for (let i = dias - 1; i >= 0; i--) {
-      const dia = dataYMD(Date.now() - i * 864e5);
-      try {
-        const resp = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de: dia, ate: dia });
-        const camp = (resp.results || []).find(c => String(c.id) === campanhaId);
-        const m = (camp && camp.metrics) || {};
-        resultado.push({
-          date: dia,
-          cost: m.cost || 0,
-          direct_amount: m.direct_amount || 0,
-          indirect_amount: m.indirect_amount || 0,
-          total_amount: m.total_amount || 0,
-          organic_units_amount: m.organic_units_amount || 0,
-          organic_units_quantity: m.organic_units_quantity || 0,
-          units_quantity: m.units_quantity || 0,
-          roas: m.roas || 0,
-          acos: m.acos || 0,
-          sov: m.sov || 0,
-          semDados: !camp
-        });
-      } catch (e) {
-        avisos.push(`Falha no dia ${dia}: ${e.message}`);
-        resultado.push({ date: dia, cost: 0, direct_amount: 0, indirect_amount: 0, total_amount: 0, organic_units_amount: 0, organic_units_quantity: 0, units_quantity: 0, roas: 0, acos: 0, sov: 0, erro: e.message });
-      }
-      job.progresso.feito++;
-      await sleep(300);
-    }
-    job.resultado = { loja, campanhaId, dias, resultado, avisos };
-    job.status = 'concluido';
-  } catch (e) {
-    job.status = 'erro'; job.erro = e.message;
-  }
-}
-app.get('/debug/ads/estudo-diario/iniciar', async (req, res) => {
-  try {
-    const loja = req.query.loja;
-    const campanhaId = String(req.query.campanhaId || '');
-    const dias = Math.min(90, Math.max(1, parseInt(req.query.dias || '30', 10)));
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    if (!campanhaId) return res.status(400).json({ ok: false, erro: 'Parametro "campanhaId" obrigatorio (pegue um "id" de campanha no /debug/ads/campanhas).' });
-    const jobId = gerarJobIdAds();
-    estudoAdsJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: dias }, resultado: null, erro: null, criadoEm: Date.now() });
-    rodarEstudoDiarioAds(jobId, loja, campanhaId, dias); // fire-and-forget
-    res.json({ ok: true, jobId });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
-});
-app.get('/debug/ads/estudo-diario/status', (req, res) => {
-  const jobId = req.query.id;
-  const job = estudoAdsJobs.get(jobId);
-  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
-  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
-});
-/* v3 - mesma ideia do /estudo-diario, mas pra TODAS as campanhas da loja de uma vez so' - custa
-   EXATAMENTE a mesma quantidade de chamadas na API do ML (1 por dia, nao 1 por dia por campanha),
-   porque cada chamada do dia ja' devolve TODAS as campanhas do advertiser naquele dia - so' que
-   agora guardamos o resultado inteiro (todas as campanhas), nao filtramos so' 1 antes de salvar.
-   Ex.: /debug/ads/estudo-diario-loja/iniciar?loja=TorvStore&dias=90 */
-const estudoAdsLojaJobs = new Map();
-async function rodarEstudoDiarioLoja(jobId, loja, dias) {
-  const job = estudoAdsLojaJobs.get(jobId);
-  try {
-    const { primeiro } = await buscarAdvertiserId(loja);
-    const siteId = primeiro && primeiro.site_id;
-    const advertiserId = primeiro && primeiro.advertiser_id;
-    const porDia = [];
-    const avisos = [];
-    job.progresso = { feito: 0, total: dias };
-    for (let i = dias - 1; i >= 0; i--) {
-      const dia = dataYMD(Date.now() - i * 864e5);
-      try {
-        const resp = await buscarCampanhasAds(loja, siteId, advertiserId, null, { de: dia, ate: dia });
-        const campanhas = {};
-        (resp.results || []).forEach(c => {
-          const m = c.metrics || {};
-          campanhas[c.id] = {
-            nome: c.name || '',
-            cost: m.cost || 0,
-            total_amount: m.total_amount || 0,
-            organic_units_amount: m.organic_units_amount || 0,
-            organic_units_quantity: m.organic_units_quantity || 0,
-            units_quantity: m.units_quantity || 0,
-            roas: m.roas || 0
-          };
-        });
-        porDia.push({ date: dia, campanhas });
-      } catch (e) {
-        avisos.push(`Falha no dia ${dia}: ${e.message}`);
-        porDia.push({ date: dia, campanhas: {}, erro: e.message });
-      }
-      job.progresso.feito++;
-      await sleep(300);
-    }
-    job.resultado = { loja, dias, porDia, avisos };
-    job.status = 'concluido';
-  } catch (e) {
-    job.status = 'erro'; job.erro = e.message;
-  }
-}
-app.get('/debug/ads/estudo-diario-loja/iniciar', async (req, res) => {
-  try {
-    const loja = req.query.loja;
-    const dias = Math.min(90, Math.max(1, parseInt(req.query.dias || '90', 10)));
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    const jobId = gerarJobIdAds();
-    estudoAdsLojaJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: dias }, resultado: null, erro: null, criadoEm: Date.now() });
-    rodarEstudoDiarioLoja(jobId, loja, dias); // fire-and-forget
-    res.json({ ok: true, jobId });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
-});
-app.get('/debug/ads/estudo-diario-loja/status', (req, res) => {
-  const jobId = req.query.id;
-  const job = estudoAdsLojaJobs.get(jobId);
-  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
-  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ----------
    Guarda o retorno CRU de cada periodo (7/15/30 dias) por loja, sem normalizar ou calcular nada
@@ -2664,20 +2627,13 @@ async function buscarFaturamentoRapido(loja, de, ate) {
   }
   return faturamento;
 }
-async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
-  // onProgress(pct, etapa) e' OPCIONAL - so' usado pela versao "job" (/financas/resumo-job) pra
-  // dar status de verdade na tela (igual o Ads ja faz). A rota sincrona antiga (/financas/resumo)
-  // continua chamando essa mesma funcao sem passar onProgress - nao muda nenhum calculo, so'
-  // avisa o quanto ja andou nos pontos que já existiam no fluxo.
-  if (typeof onProgress !== 'function') onProgress = () => {};
+async function buscarResumoFinanceiro(loja, de, ate) {
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const log = { avisos: [] };
   const deIso = `${de}T00:00:00-03:00`;
   const ateIso = `${ate}T23:59:59-03:00`;
-  onProgress(5, 'Buscando pedidos do período...');
   const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, deIso, ateIso, log, 'order.date_closed');
-  onProgress(20, `${pedidos.length} pedido(s) encontrado(s) - calculando itens vendidos...`);
 
   let faturamento = 0, tarifas = 0, cancelamentosValor = 0, reembolsosValor = 0;
   let pedidosValidos = 0, pedidosCancelados = 0;
@@ -2790,7 +2746,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
   // pro PACKAGE_WEIGHT (peso "de fabrica" cadastrado no catalogo). Item sem nenhum peso cadastrado
   // fica de fora do mapa - o rateio usa 1g como peso minimo pra ele (evita dividir por zero e nao
   // deixa ele ficar de fora do rateio, so' com peso desprezível).
-  onProgress(30, 'Calculando peso dos itens...');
   const pesosPorItem = new Map(); // itemId -> gramas
   try {
     const idsParaPeso = [...itensVendidos.keys()];
@@ -2826,7 +2781,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
   // PRINCIPAL - e tambem fica bem mais leve (nao precisa mais de 1 chamada extra por produto pra
   // achar a % de comissao). A % de categoria vira fallback, so' usada quando um produto nao tem
   // NENHUM sale_fee declarado no periodo (ex.: campo ausente em pedido muito antigo).
-  onProgress(45, 'Calculando comissão (tarifa) por produto...');
   itensVendidos.forEach(atual => { atual.tarifa = atual.tarifaDeclarada; });
   let itensSemComissao = 0;
   try {
@@ -2899,10 +2853,8 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
       throw e;
     }
   }
-  onProgress(50, `Calculando frete de ${idsParaBuscar.length} envio(s)...`);
   const CONCORRENCIA_FRETE = 10;
   let cursorFrete = 0;
-  let concluidosFrete = 0;
   async function workerFrete() {
     while (cursorFrete < idsParaBuscar.length) {
       const shippingId = idsParaBuscar[cursorFrete++];
@@ -2929,13 +2881,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
       } catch (e) {
         freteFalhas++;
       }
-      concluidosFrete++;
-      // atualiza a cada 15 envios (ou no ultimo) pra nao floodar o job com atualizacao demais -
-      // faixa de 50% a 88% do progresso total reservada pra essa etapa (a mais lenta de todas)
-      if (concluidosFrete % 15 === 0 || concluidosFrete === idsParaBuscar.length) {
-        const pct = 50 + Math.round((concluidosFrete / idsParaBuscar.length) * 38);
-        onProgress(pct, `Calculando frete: ${concluidosFrete}/${idsParaBuscar.length} envio(s)...`);
-      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCORRENCIA_FRETE, idsParaBuscar.length) }, workerFrete));
@@ -2957,7 +2902,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
   // o total da loja) - usado pelo fechamento do Amauri pra achar o gasto exato de cada produto
   // nesse MESMO periodo personalizado (antes so' tinha as janelas fixas de 7/15/30 dias, que nao
   // batiam com um periodo escolhido a dedo como "1 a 31 de julho").
-  onProgress(90, 'Buscando gasto de Ads do período...');
   let adsCusto = 0;
   let adsCampanhas = [];
   let adsItens = [];
@@ -2977,7 +2921,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
     }
   } catch (e) { log.avisos.push('Nao foi possivel buscar o custo de Ads do periodo: ' + e.message); }
 
-  onProgress(96, 'Calculando vendas de hoje e títulos dos produtos...');
   // vendas de hoje - sempre calculado, independente do periodo escolhido acima
   const vendasHoje = { pedidos: 0, faturamento: 0, unidades: 0 };
   try {
@@ -3010,7 +2953,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
     itensVendidosArr.forEach(x => { x.titulo = titulos[x.itemId] || null; });
   } catch (e) { log.avisos.push('Nao foi possivel buscar o titulo dos itens vendidos (ranking vai mostrar so o item_id): ' + e.message); }
 
-  onProgress(100, 'Concluído.');
   return {
     periodo: { de, ate },
     faturamento, tarifas, cancelamentosValor, reembolsosValor,
@@ -3022,42 +2964,6 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
     avisos: log.avisos
   };
 }
-/* versao "job" do /financas/resumo (igual o padrao do Ads/Auditoria) - devolve jobId na hora e
-   roda em background, reportando progresso de verdade (0-100%) igual o onProgress acima ja
-   preenche - assim a tela pode mostrar uma barra de status real em vez de só "carregando...".
-   A rota antiga /financas/resumo continua existindo do jeito que estava (sincrona, sem
-   progresso) - nenhum outro caller precisa mudar. */
-const resumoJobs = new Map();
-function gerarJobIdResumo() { return 'res_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
-async function rodarResumoJob(jobId, loja, periodo, deQuery, ateQuery) {
-  const job = resumoJobs.get(jobId);
-  try {
-    const { de, ate } = calcularPeriodoResumo(periodo, deQuery, ateQuery);
-    const resumo = await buscarResumoFinanceiro(loja, de, ate, (pct, etapa) => {
-      job.progresso = { feito: pct, total: 100, etapa };
-    });
-    job.resultado = { loja, periodo, resumo };
-    job.status = 'concluido';
-  } catch (e) {
-    job.status = 'erro'; job.erro = e.message;
-  }
-}
-app.get('/financas/resumo-job/iniciar', async (req, res) => {
-  try {
-    const loja = req.query.loja;
-    const periodo = req.query.periodo || '30d';
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    const jobId = gerarJobIdResumo();
-    resumoJobs.set(jobId, { status: 'rodando', progresso: { feito: 0, total: 100, etapa: 'Iniciando...' }, resultado: null, erro: null, criadoEm: Date.now() });
-    rodarResumoJob(jobId, loja, periodo, req.query.de, req.query.ate); // fire-and-forget
-    res.json({ ok: true, jobId });
-  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
-});
-app.get('/financas/resumo-job/status', (req, res) => {
-  const job = resumoJobs.get(req.query.id);
-  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
-  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
-});
 app.get('/financas/resumo', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -3215,11 +3121,25 @@ const loja = req.query.loja || req.body?.loja;
         ]
       );
     }
+    // limpeza: produto que sumiu de vez do Mercado Livre (excluido, nao so pausado/encerrado -
+    // esses continuam aparecendo na busca normal) nunca era removido daqui, porque o /sync so'
+    // fazia INSERT/UPDATE dos itens que a API retornou, nunca um DELETE dos que pararam de vir.
+    // Resultado: produto excluido la' ficava "fantasma" pra sempre no Doca. So' roda a limpeza se
+    // vieram itens de verdade (evita apagar tudo numa falha silenciosa que retorne lista vazia).
+    let itensRemovidos = 0;
+    if (itens.length > 0) {
+      const idsAtuais = itens.map(it => it.id);
+      const del = await pool.query(
+        'delete from ml_produtos where loja = $1 and not (ml_item_id = any($2::text[]))',
+        [loja, idsAtuais]
+      );
+      itensRemovidos = del.rowCount || 0;
+    }
     await pool.query(
       'update ml_sync_log set concluido_em = now(), itens_sincronizados = $2 where id = $1',
       [logId, itens.length]
     );
-    res.json({ ok: true, loja, itensSincronizados: itens.length, atualizadoEm: new Date().toISOString() });
+    res.json({ ok: true, loja, itensSincronizados: itens.length, itensRemovidos, atualizadoEm: new Date().toISOString() });
   } catch (e) {
     console.error('Erro no /sync:', e);
     if (logId != null) {
@@ -3255,40 +3175,16 @@ app.get('/data', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
-/* relatorio compartilhavel (link publico, sem login) - pedido do Felipe 19/08: depois de gerar
-   o fechamento de todas as lojas, poder mandar um link por WhatsApp pra alguem abrir os dados
-   sem precisar entrar no Doca. O front-end (doca_kitNN.html) posta o HTML pronto (ja calculado
-   no navegador) aqui, guarda no banco com um id curto, e usa /relatorio/:id como o link em si -
-   essa rota devolve o HTML puro, direto, pra abrir em qualquer navegador. Sem dado sensivel de
-   login/token aqui, so o relatorio (faturamento/margem/produtos) que ele decidiu compartilhar. */
-app.post('/relatorio', async (req, res) => {
-  try {
-    const html = req.body && req.body.html;
-    if (!html || typeof html !== 'string' || html.length < 20) {
-      return res.status(400).json({ ok: false, erro: 'Corpo "html" obrigatorio.' });
-    }
-    if (html.length > 2000000) {
-      return res.status(400).json({ ok: false, erro: 'Relatorio grande demais pra compartilhar.' });
-    }
-    const id = base64url(crypto.randomBytes(9));
-    await pool.query('insert into relatorios (id, html, criado_em) values ($1, $2, now())', [id, html]);
-    // limpeza simples dos relatorios com mais de 30 dias, aproveitando essa insercao
-    pool.query("delete from relatorios where criado_em < now() - interval '30 days'").catch(() => {});
-    res.json({ ok: true, id });
-  } catch (e) {
-    console.error('Erro no /relatorio (post):', e);
-    res.status(500).json({ ok: false, erro: e.message });
-  }
-});
-app.get('/relatorio/:id', async (req, res) => {
-  try {
-    const r = await pool.query('select html from relatorios where id = $1', [req.params.id]);
-    if (!r.rows.length) return res.status(404).type('text/html').send('<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px;text-align:center;color:#333"><h2>Relatório não encontrado</h2><p>O link pode ter expirado (relatórios ficam disponíveis por 30 dias).</p></body>');
-    res.type('text/html').send(r.rows[0].html);
-  } catch (e) {
-    console.error('Erro no /relatorio/:id (get):', e);
-    res.status(500).type('text/html').send('<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif;padding:40px;text-align:center;color:#333"><h2>Erro ao carregar o relatório</h2></body>');
-  }
+/* video da tela de "calculando fechamento de todas as lojas" (pedido do Felipe 19/08) - arquivo
+   loading-video.mp4 precisa estar na MESMA pasta deste server.js quando fizer o deploy. Rota
+   publica (sem exigirLogin), so' um GET de video estatico. */
+app.get('/loading-video.mp4', (req, res) => {
+  res.sendFile(path.join(__dirname, 'loading-video.mp4'), {
+    maxAge: '30d',
+    headers: { 'Content-Type': 'video/mp4' }
+  }, (err) => {
+    if (err) { console.error('Erro ao servir loading-video.mp4:', err.message); if (!res.headersSent) res.status(404).send('Video nao encontrado no servidor.'); }
+  });
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
