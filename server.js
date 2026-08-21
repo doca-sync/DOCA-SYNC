@@ -440,6 +440,39 @@ async function processarReclamacoesDaLoja(loja) {
     resultados.push(r);
     await sleep(150);
   }
+  /* limpeza (21/08, dado real do Felipe): uma reclamacao que ficou marcada como "pendente"
+     (sucesso=false) - por exemplo, pelo bug antigo do corpo vazio (201) que fazia o Doca achar que
+     a mensagem de fallback tinha falhado quando na verdade foi enviada com sucesso - mas que JA
+     FECHOU de verdade no Mercado Livre (comprador aceitou, mediacao encerrada etc) nunca mais
+     aparece em buscarClaimsAbertas (so' traz status=opened), entao o loop acima nunca revisita ela
+     pra corrigir o log - fica pendente pra sempre no card, mesmo ja resolvida havia dias.
+     Aqui, pra cada pendente registrada nos ultimos 30 dias que NAO esta mais entre as abertas de
+     agora, confere o status atual dela direto na API - se ja fechou, corrige o log pra "resolvida"
+     (some da lista de pendentes do Doca). */
+  try {
+    const idsAbertas = new Set(claims.map(c => String(c.id)));
+    const rPendentes = await pool.query(
+      `select claim_id, order_id, reason_id, frete_vendedor, valor_frete_vendedor from ml_reclamacoes_log where loja = $1 and sucesso = false and atualizado_em > now() - interval '30 days'`,
+      [loja]
+    );
+    for (const row of rPendentes.rows) {
+      const claimId = row.claim_id;
+      if (idsAbertas.has(String(claimId))) continue; // ainda esta aberta, ja foi tratada no loop acima
+      try {
+        const detalhe = await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        if (detalhe.status !== 'opened') {
+          await salvarLogReclamacao(loja, claimId, {
+            orderId: row.order_id, reasonId: row.reason_id, freteVendedor: row.frete_vendedor, valorFreteVendedor: row.valor_frete_vendedor,
+            sucesso: true, acaoTomada: 'reclamacao encerrada no Mercado Livre (nao esta mais entre as abertas)',
+            motivo: `estava marcada como pendente, mas a reclamacao ja fechou no Mercado Livre (status: ${detalhe.status}) - corrigido automaticamente`
+          });
+        }
+      } catch (e) { /* nao conseguiu confirmar essa agora - tenta de novo no proximo sync, nao bloqueia as outras */ }
+      await sleep(150);
+    }
+  } catch (e) {
+    console.error('Falha na limpeza de reclamacoes ja fechadas (' + loja + '):', e.message);
+  }
   return { totalAbertas: claims.length, resultados };
 }
 
