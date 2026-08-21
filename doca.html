@@ -6477,7 +6477,19 @@ function mercadoFmtDiaMes(iso){ const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(iso||''
 // exato importado do relatório vira "01/08–21/08"
 function mercadoLabelHistorico(h){
   if(/^\d{4}-\d{2}$/.test(h.mes||'')){ const [a,m]=h.mes.split('-'); return `${m}/${a.slice(2)}`; }
-  if(h.periodo_de&&h.periodo_ate) return `${mercadoFmtDiaMes(h.periodo_de)}–${mercadoFmtDiaMes(h.periodo_ate)}`;
+  if(h.periodo_de&&h.periodo_ate){
+    // 21/08 (achado real do Felipe): quando o período esticava além de ~2 meses ou cruzava o ano
+    // (ex: ele testou 2025-08-01 a 2026-08-21), o rótulo "DD/MM–DD/MM" escondia o ano e ficava
+    // parecendo um período curto normal (mostrava só "01/08–21/08"). Agora mostra o ano também
+    // nesses casos, pra não esconder que o período é bem maior do que parece.
+    const anoDiferente=h.periodo_de.slice(0,4)!==h.periodo_ate.slice(0,4);
+    const diasSpan=(new Date(h.periodo_ate)-new Date(h.periodo_de))/864e5;
+    if(anoDiferente||diasSpan>60){
+      const fmtComAno=(iso)=>{ const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(iso||''); return m?`${m[3]}/${m[2]}/${m[1].slice(2)}`:(iso||''); };
+      return `${fmtComAno(h.periodo_de)}–${fmtComAno(h.periodo_ate)}`;
+    }
+    return `${mercadoFmtDiaMes(h.periodo_de)}–${mercadoFmtDiaMes(h.periodo_ate)}`;
+  }
   return h.mes;
 }
 function mercadoLimitesDoMes(mesYYYYMM){
@@ -6711,7 +6723,7 @@ function renderMercadoCorpo(p,key,d){
         return `<tr>
           <td class="mono">${esc(mercadoLabelHistorico(h))}${h.fonte==='xlsx'?' <span class="muted" style="font-size:10px">(relatório)</span>':''}</td>
           <td class="num">${h.vendas_brutas_categoria!=null?fmtMoney(h.vendas_brutas_categoria):'<span class="muted">—</span>'}</td>
-          <td class="num">${aindaCalculando?'<span class="muted">calculando…</span>':(propErro?`<span style="color:#e66;cursor:help" title="${esc(prop.erro)}">⚠ erro</span>`:(prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>'))}</td>
+          <td class="num">${aindaCalculando?'<span class="muted">calculando…</span>':(propErro?`<span style="color:#e66;cursor:pointer;text-decoration:underline dotted" title="${esc(prop.erro)}" onclick="alert(${esc(JSON.stringify(prop.erro))})">⚠ erro (clique p/ ver)</span>`:(prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>'))}</td>
           <td class="num">${aindaCalculando?'<span class="muted">…</span>':(propErro?'<span class="muted">—</span>':(partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>'))}</td>
           <td><button class="btn sm danger" data-mercadoexcluirmes="${esc(p.loja)}|${esc(p.mlItemId)}|${esc(h.mes)}">✕</button></td>
         </tr>`;
@@ -6726,6 +6738,7 @@ function renderMercadoCorpo(p,key,d){
       </tbody></table></div>
     </details>
     `:''}
+    ${renderMercadoSazonalidade(p,key,historico)}
     <details style="margin-top:10px" ${(preview||!historico.length)?'open':''}>
       <summary style="cursor:pointer;font-size:13px">📥 Importar relatório "Mais vendidos nas suas categorias" (.xlsx)</summary>
       <p class="hint" style="margin:8px 0">No Mercado Livre: Métricas → Análise de mercado → Tendências por categoria → escolha a categoria → botão "Baixar relatório". Depois selecione o arquivo baixado aqui.</p>
@@ -6748,6 +6761,65 @@ function renderMercadoCorpo(p,key,d){
     </details>
   `;
 }
+const MERCADO_MESES_ABREV=['jan','fev','mar','abr','maio','jun','jul','ago','set','out','nov','dez'];
+function sazonalidadeValor(historico,mesKey){
+  const h=(historico||[]).find(x=>x.mes===mesKey);
+  return (h&&h.vendas_brutas_categoria!=null)?h.vendas_brutas_categoria:null;
+}
+// 21/08 (pedido real do Felipe): ele quer comparar a sazonalidade da categoria (esse ano x ano
+// passado) igual o gráfico "Sazonalidade anual" que o próprio Mercado Livre mostra na tela de
+// Análise de Mercado. Essa série mês a mês NÃO está no relatório .xlsx (que é só um retrato de um
+// período) nem em nenhuma API pública - só existe visualmente naquele gráfico do ML, mas passando
+// o mouse em cada ponto ele mostra o valor exato (confirmado pelo Felipe). Então aqui é só uma
+// tabela pra colar esses 12+12 valores (uma vez), reaproveitando o mesmo /mercado/categoria com
+// mes em formato "YYYY-MM" que já existia antes (a busca de "suas vendas" mês a mês pra essas
+// linhas já acontece automática, igual qualquer outra linha do histórico).
+function renderMercadoSazonalidade(p,key,historico){
+  const anoAtual=Number(hoje().slice(0,4));
+  const anoAnterior=anoAtual-1;
+  return `
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:13px">📅 Sazonalidade mensal (${anoAtual} x ${anoAnterior}, igual o gráfico do Mercado Livre)</summary>
+      <p class="hint" style="margin:8px 0">Na página de Análise de Mercado desse produto no Mercado Livre, no gráfico "Sazonalidade anual de vendas brutas", passe o mouse em cada mês (das duas linhas, ano atual e ano anterior) e cole os valores aqui. Só funciona pra categorias de produtos que essa loja já vendeu.</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">${anoAtual} (ano atual)</th><th class="num">${anoAnterior} (ano anterior)</th></tr></thead><tbody>
+        ${MERCADO_MESES_ABREV.map((nome,i)=>{
+          const mesNum=String(i+1).padStart(2,'0');
+          const keyAtual=`${anoAtual}-${mesNum}`, keyAnterior=`${anoAnterior}-${mesNum}`;
+          const valAtual=sazonalidadeValor(historico,keyAtual), valAnterior=sazonalidadeValor(historico,keyAnterior);
+          return `<tr>
+            <td class="mono">${nome}</td>
+            <td class="num"><input type="text" inputmode="decimal" placeholder="0,00" style="width:110px" oninput="filtrarValorMoeda(this)" value="${valAtual!=null?String(valAtual).replace('.',','):''}" data-mercadosazon="${esc(keyAtual)}"></td>
+            <td class="num"><input type="text" inputmode="decimal" placeholder="0,00" style="width:110px" oninput="filtrarValorMoeda(this)" value="${valAnterior!=null?String(valAnterior).replace('.',','):''}" data-mercadosazon="${esc(keyAnterior)}"></td>
+          </tr>`;
+        }).join('')}
+      </tbody></table></div>
+      <div class="acoes-linha" style="margin-top:10px">
+        <button class="btn gold sm" data-mercadosalvarsazon="${esc(p.loja)}|${esc(p.mlItemId)}">💾 Salvar sazonalidade</button>
+      </div>
+    </details>
+  `;
+}
+async function salvarMercadoSazonalidade(loja,itemId,corpo){
+  const base=backendUrl();
+  if(!base){ alert('Configure a URL do backend primeiro (em Produtos → Atualizar).'); return; }
+  const inputs=Array.from(corpo.querySelectorAll('[data-mercadosazon]')).filter(inp=>(inp.value||'').trim());
+  if(!inputs.length){ alert('Preencha pelo menos um mês antes de salvar.'); return; }
+  let salvos=0, falhas=[];
+  for(const inp of inputs){
+    const mes=inp.dataset.mercadosazon;
+    try{
+      const r=await fetch(`${base}/mercado/categoria`,{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({loja,itemId,mes,vendasBrutas:parseMoeda(inp.value),fonte:'manual'})
+      });
+      let j; try{ j=await r.json(); }catch(e){ j=null; }
+      if(r.ok&&j&&j.ok) salvos++; else falhas.push(mes);
+    }catch(e){ falhas.push(mes); }
+  }
+  if(falhas.length) alert(`Salvou ${salvos} mês(es). Falhou: ${falhas.join(', ')} — tenta de novo só esses.`);
+  else toast(`✓ ${salvos} mês(es) de sazonalidade salvos.`);
+  await carregarMercadoProduto(loja,itemId);
+}
 // 21/08 (2º achado real do Felipe): expandir um produto travava o app inteiro (não dava pra
 // colapsar nem clicar em mais nada). Causa: o ontoggle do <details> chamava renderMercado()
 // inteiro, que reconstruía TODO o innerHTML da aba - inclusive o próprio <details> que estava no
@@ -6762,6 +6834,9 @@ function bindMercadoCorpo(corpo,p,key){
   });
   corpo.querySelectorAll('[data-mercadoexcluirmes]').forEach(b=>{
     b.onclick=()=>{ const [loja,itemId,mes]=b.dataset.mercadoexcluirmes.split('|'); confirmAction(`Excluir os dados de ${mes} dessa categoria?`,()=>excluirMercadoMes(loja,itemId,mes)); };
+  });
+  corpo.querySelectorAll('[data-mercadosalvarsazon]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadosalvarsazon.split('|'); salvarMercadoSazonalidade(loja,itemId,corpo); };
   });
   corpo.querySelectorAll('[data-mercadoarquivo]').forEach(inp=>{
     inp.onchange=()=>{ const [loja,itemId]=inp.dataset.mercadoarquivo.split('|'); onArquivoMercadoSelecionado(loja,itemId,inp); };

@@ -3541,6 +3541,16 @@ app.get('/mercado/vendas-proprias', async (req, res) => {
     const sellerId = conta.ml_user_id;
     const log = { avisos: [] };
     if (req.query.de && req.query.ate) {
+      // 21/08 (achado real do Felipe): ele esticou o periodo pra 1 ano inteiro (2025-08-01 a
+      // 2026-08-21) na tela de importacao, e isso tentou buscar TODOS os pedidos da loja inteira
+      // num intervalo de 365 dias numa unica chamada - pesado o suficiente pra travar o servidor
+      // por um bom tempo e derrubar outras chamadas em paralelo com 429. Esse endpoint foi feito
+      // pra comparar com um periodo de relatorio (normalmente ~21 dias), entao trava aqui num
+      // maximo generoso (120 dias) em vez de deixar o servidor tentar e sofrer.
+      const diasSpan = (new Date(`${req.query.ate}T00:00:00-03:00`) - new Date(`${req.query.de}T00:00:00-03:00`)) / 86400000;
+      if (diasSpan > 120) {
+        return res.status(400).json({ ok: false, erro: `Periodo de ${Math.round(diasSpan)} dias e' longo demais pra calcular de uma vez (max 120 dias). Pra comparar sazonalidade mes a mes ao longo de mais de um ano, use os campos de "Sazonalidade mensal" (um mes por vez) em vez de esticar esse periodo.` });
+      }
       const de = `${req.query.de}T00:00:00-03:00`;
       const ate = `${req.query.ate}T23:59:59-03:00`;
       const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
