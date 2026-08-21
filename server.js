@@ -204,6 +204,29 @@ app.post('/ml/webhook', async (req, res) => {
    toda vez que o /sync roda (ao abrir o Doca / apertar Atualizar) E via webhook (quase na hora que
    a reclamacao abre, se o Render estiver acordado) - NAO precisa avisar em tempo real, so' fica
    tudo registrado em ml_reclamacoes_log pro Doca mostrar um relatorio do que foi feito. */
+/* Analise de Mercado (21/08, pedido do Felipe): comparar vendas proprias x vendas da categoria
+   inteira no Mercado Livre, mes a mes, pra ter uma base de sazonalidade e planejar estoque.
+   NAO tem API publica pra "Analise de mercado" (tendencias por categoria, concorrencia) - so'
+   existe dentro do painel logado do vendedor (vendedores.mercadolivre.com.br/metricas/...).
+   Por isso os numeros da categoria sao alimentados A MAO (Felipe manda o print, eu registro aqui)
+   - ja o category_id de cada produto e' puxado automaticamente pela API normal (ver campo
+   categoria_id em ml_produtos), e as vendas PROPRIAS de cada mes sao calculadas automaticamente
+   a partir do historico de pedidos que a gente ja busca (ver /mercado/vendas-proprias). */
+pool.query('alter table ml_produtos add column if not exists categoria_id text')
+  .catch(e => console.error('Falha ao adicionar coluna "categoria_id" em ml_produtos:', e.message));
+pool.query(`create table if not exists ml_mercado_categoria (
+  id serial primary key,
+  loja text not null,
+  ml_item_id text not null,
+  mes text not null,
+  vendas_brutas_categoria numeric,
+  unidades_categoria numeric,
+  preco_medio_categoria numeric,
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now(),
+  unique(loja, ml_item_id, mes)
+)`).catch(e => console.error('Falha ao garantir tabela "ml_mercado_categoria":', e.message));
+
 pool.query(`create table if not exists ml_reclamacoes_log (
   id serial primary key,
   loja text not null,
@@ -3270,8 +3293,8 @@ const loja = req.query.loja || req.body?.loja;
       const vendas = mapaVendas.get(it.id) || { v7: 0, v15: 0, v30: 0 };
       console.log(`[sync-item] id=${it.id} sku=${extrairSku(it)} titulo="${(it.title||'').slice(0,30)}" vendas=${JSON.stringify(vendas)}`);
       await pool.query(
-        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, atualizado_em)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
+        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, categoria_id, atualizado_em)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now())
          on conflict (loja, ml_item_id) do update set
            sku = excluded.sku, titulo = excluded.titulo,
            quantidade_disponivel = excluded.quantidade_disponivel,
@@ -3281,7 +3304,7 @@ const loja = req.query.loja || req.body?.loja;
            concorrencia_preco = excluded.concorrencia_preco,
            perguntas_sem_resposta = excluded.perguntas_sem_resposta,
            vendas_7d = excluded.vendas_7d, vendas_15d = excluded.vendas_15d, vendas_30d = excluded.vendas_30d,
-           transferencia_full = excluded.transferencia_full, atualizado_em = now()`,
+           transferencia_full = excluded.transferencia_full, categoria_id = excluded.categoria_id, atualizado_em = now()`,
         [
           loja, it.id,
           extrairSku(it),
@@ -3294,7 +3317,8 @@ const loja = req.query.loja || req.body?.loja;
           concorrencia ? concorrencia.precoConcorrente : null,
           mapaPerguntas.get(it.id) || 0,
           vendas.v7, vendas.v15, vendas.v30,
-          transferenciaFull
+          transferenciaFull,
+          it.category_id || null
         ]
       );
     }
@@ -3335,6 +3359,144 @@ app.get('/data', async (req, res) => {
     });
   } catch (e) {
     console.error('Erro no /data:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* ================= Analise de Mercado (21/08) =================
+   Compara as vendas do PRODUTO com as vendas da CATEGORIA inteira no Mercado Livre, mes a mes.
+   Nao existe API publica pro painel "Analise de mercado" do vendedor (tendencias por categoria,
+   concorrencia) - so' da pra ver logado, direto no navegador. Por isso os numeros da CATEGORIA sao
+   alimentados a mao (Felipe manda o print de vendedores.mercadolivre.com.br/metricas/analise-de-
+   mercado/tendencias-por-categorias/detalhe?category_id=X, eu registro o mes corrente aqui) - mes
+   a mes vai formando um historico proprio, dentro do Doca, pra comparar com a sazonalidade.
+   Ja' as vendas PROPRIAS de cada mes sao 100% automaticas (calculadas a partir do historico real
+   de pedidos, reaproveitando buscarPedidosNoIntervalo). */
+function mesReferencia(anoMes) {
+  // "anoMes" no formato "YYYY-MM" -> limites do mes em ISO com fuso America/Sao_Paulo (-03:00)
+  const [ano, mes] = anoMes.split('-').map(Number);
+  const de = `${ano}-${String(mes).padStart(2, '0')}-01T00:00:00-03:00`;
+  const proxAno = mes === 12 ? ano + 1 : ano;
+  const proxMes = mes === 12 ? 1 : mes + 1;
+  const ate = `${proxAno}-${String(proxMes).padStart(2, '0')}-01T00:00:00-03:00`;
+  return { de, ate };
+}
+function ultimosMeses(qtd) {
+  // lista de "YYYY-MM" dos ultimos "qtd" meses (incluindo o mes corrente), do mais antigo pro mais novo
+  const hojeBR = diaBR(new Date().toISOString()); // "YYYY-MM-DD" em America/Sao_Paulo
+  let [ano, mes] = hojeBR.split('-').slice(0, 2).map(Number);
+  const meses = [];
+  for (let i = qtd - 1; i >= 0; i--) {
+    let a = ano, m = mes - i;
+    while (m <= 0) { m += 12; a -= 1; }
+    meses.push(`${a}-${String(m).padStart(2, '0')}`);
+  }
+  return meses;
+}
+app.get('/mercado/produtos', async (req, res) => {
+  const loja = req.query.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  try {
+    const r = await pool.query('select ml_item_id, sku, titulo, categoria_id from ml_produtos where loja = $1 order by titulo', [loja]);
+    res.json({ ok: true, produtos: r.rows });
+  } catch (e) {
+    console.error('Erro no /mercado/produtos:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.get('/mercado/categoria', async (req, res) => {
+  const loja = req.query.loja;
+  const itemId = req.query.itemId;
+  if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  if (!itemId) return res.status(400).json({ ok: false, erro: 'Informe itemId.' });
+  try {
+    const prod = await pool.query('select categoria_id, titulo, sku from ml_produtos where loja = $1 and ml_item_id = $2', [loja, itemId]);
+    const historico = await pool.query(
+      'select mes, vendas_brutas_categoria, unidades_categoria, preco_medio_categoria from ml_mercado_categoria where loja = $1 and ml_item_id = $2 order by mes',
+      [loja, itemId]
+    );
+    const categoriaId = prod.rows[0] && prod.rows[0].categoria_id;
+    res.json({
+      ok: true,
+      categoriaId: categoriaId || null,
+      urlTendencia: categoriaId ? `https://vendedores.mercadolivre.com.br/metricas/analise-de-mercado/tendencias-por-categorias/detalhe?category_id=${categoriaId}&period=currentMonth` : null,
+      titulo: prod.rows[0] ? prod.rows[0].titulo : null,
+      sku: prod.rows[0] ? prod.rows[0].sku : null,
+      historico: historico.rows
+    });
+  } catch (e) {
+    console.error('Erro no /mercado/categoria (get):', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.post('/mercado/categoria', async (req, res) => {
+  try {
+    const { loja, itemId, mes, vendasBrutas, unidades, precoMedio } = req.body || {};
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Informe itemId.' });
+    if (!/^\d{4}-\d{2}$/.test(mes || '')) return res.status(400).json({ ok: false, erro: 'Informe mes no formato YYYY-MM.' });
+    await pool.query(
+      `insert into ml_mercado_categoria (loja, ml_item_id, mes, vendas_brutas_categoria, unidades_categoria, preco_medio_categoria, atualizado_em)
+       values ($1,$2,$3,$4,$5,$6, now())
+       on conflict (loja, ml_item_id, mes) do update set
+         vendas_brutas_categoria = excluded.vendas_brutas_categoria,
+         unidades_categoria = excluded.unidades_categoria,
+         preco_medio_categoria = excluded.preco_medio_categoria,
+         atualizado_em = now()`,
+      [loja, itemId, mes, vendasBrutas ?? null, unidades ?? null, precoMedio ?? null]
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Erro no /mercado/categoria (post):', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.delete('/mercado/categoria', async (req, res) => {
+  try {
+    const { loja, itemId, mes } = req.query;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    await pool.query('delete from ml_mercado_categoria where loja = $1 and ml_item_id = $2 and mes = $3', [loja, itemId, mes]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Erro no /mercado/categoria (delete):', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* vendas PROPRIAS do produto, mes a mes (calculado, nao precisa print) - reaproveita a mesma
+   busca de pedidos usada no /sync, so' que agrupada por mes civil (fuso America/Sao_Paulo) em vez
+   de janela corrida de 7/15/30 dias. */
+app.get('/mercado/vendas-proprias', async (req, res) => {
+  const loja = req.query.loja;
+  const itemId = req.query.itemId;
+  const meses = Math.min(Math.max(parseInt(req.query.meses, 10) || 12, 1), 24);
+  if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  if (!itemId) return res.status(400).json({ ok: false, erro: 'Informe itemId.' });
+  try {
+    const conta = await pegarConta(loja);
+    if (!conta) return res.status(400).json({ ok: false, erro: `A loja "${loja}" ainda nao foi autorizada.` });
+    const accessToken = await tokenValido(loja);
+    const sellerId = conta.ml_user_id;
+    const log = { avisos: [] };
+    const listaMeses = ultimosMeses(meses);
+    const statusExcluidos = new Set(['cancelled', 'invalid']);
+    const porMes = [];
+    for (const mes of listaMeses) {
+      const { de, ate } = mesReferencia(mes);
+      const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
+      let unidades = 0, valorBruto = 0;
+      for (const pedido of pedidos) {
+        if (statusExcluidos.has(pedido.status)) continue;
+        for (const oi of (pedido.order_items || [])) {
+          if (!oi.item || oi.item.id !== itemId) continue;
+          const qtd = oi.quantity || 0;
+          unidades += qtd;
+          valorBruto += qtd * (oi.unit_price || 0);
+        }
+      }
+      porMes.push({ mes, unidades, valorBruto: Math.round(valorBruto * 100) / 100 });
+    }
+    res.json({ ok: true, meses: porMes, avisos: log.avisos });
+  } catch (e) {
+    console.error('Erro no /mercado/vendas-proprias:', e);
     res.status(500).json({ ok: false, erro: e.message });
   }
 });

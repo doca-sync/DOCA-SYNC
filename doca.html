@@ -465,6 +465,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
       <button data-tab="full" aria-selected="false">FULL</button>
+      <button data-tab="mercado" aria-selected="false">Análise de Mercado</button>
       <button data-tab="amauri" aria-selected="false">Amauri</button>
     </nav>
   </div>
@@ -499,6 +500,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
     <div id="tab-envio" class="hidden"></div>
     <div id="tab-ruptura" class="hidden"></div>
   </section>
+  <section id="tab-mercado" class="tabpanel hidden"></section>
   <section id="tab-amauri" class="tabpanel hidden"></section>
 </main>
 <div class="modal-overlay hidden" id="modalOverlay"><div class="modal" id="modalBody"></div></div>
@@ -3484,7 +3486,11 @@ function aplicarItemSincronizado(p,item,loja){
    até você decidir o que fazer. Se o produto reaparecer numa sincronização futura, a marca sai
    sozinha (ver aplicarItemSincronizado acima). */
 function marcarAusentesNoML(loja,itensDoResultado){
-  const encontrados=new Set((itensDoResultado||[]).map(it=>it.ml_item_id));
+  // trata item com status "closed" como se nao tivesse vindo na sincronizacao - o Mercado Livre as
+  // vezes ainda devolve o anuncio encerrado por um tempo na listagem de itens do vendedor, mas pra
+  // nos ele ja era (nao vai vender mais); sem isso, um anúncio recem-encerrado continuava aparecendo
+  // como se estivesse ativo, escondendo do "mlAusente" (achado com dado real do Felipe, 21/08).
+  const encontrados=new Set((itensDoResultado||[]).filter(it=>it.status!=='closed').map(it=>it.ml_item_id));
   let mudou=false;
   state.produtos.filter(p=>p.loja===loja&&p.mlItemId).forEach(p=>{
     const ausenteAgora=!encontrados.has(p.mlItemId);
@@ -6400,6 +6406,174 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
     </body></html>`);
   win.document.close();
 }
+/* ================= Análise de Mercado (21/08) =================
+   Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre, mês a mês.
+   Não existe API pública pro painel "Análise de mercado" do vendedor (tendências por categoria) -
+   só dá pra ver logado, no navegador (vendedores.mercadolivre.com.br/metricas/...). Por isso os
+   números da CATEGORIA são colados aqui à mão (abre o link, copia o print, cola no formulário) -
+   já as SUAS vendas de cada mês são 100% automáticas (calculadas pelo backend). */
+let mercadoAberto=new Set(); // chaves "loja|itemId" expandidas no momento
+let mercadoDados={}; // "loja|itemId" -> {carregando,erro,categoriaId,urlTendencia,historico,vendasProprias}
+let mercadoFormMes={}; // "loja|itemId" -> rascunho do formulário de "colar mês da categoria"
+function mercadoKey(loja,itemId){ return loja+'|'+itemId; }
+function mercadoMesAtual(){ return new Date().toISOString().slice(0,7); }
+async function carregarMercadoProduto(loja,itemId){
+  const key=mercadoKey(loja,itemId);
+  mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:true,erro:null});
+  renderMercado();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const [rc,rv]=await Promise.all([
+      fetchComTimeout(`${base}/mercado/categoria?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}`,{},20000),
+      fetchComTimeout(`${base}/mercado/vendas-proprias?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&meses=12`,{},45000)
+    ]);
+    let jc; try{ jc=await rc.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao buscar a categoria (status '+rc.status+').'); }
+    if(!rc.ok||!jc.ok) throw new Error(jc.erro||('Falha ao buscar dados da categoria (status '+rc.status+').'));
+    let jv; try{ jv=await rv.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao buscar as vendas próprias (status '+rv.status+').'); }
+    if(!rv.ok||!jv.ok) throw new Error(jv.erro||('Falha ao buscar as vendas próprias (status '+rv.status+').'));
+    mercadoDados[key]={carregando:false,erro:null,categoriaId:jc.categoriaId,urlTendencia:jc.urlTendencia,historico:jc.historico||[],vendasProprias:jv.meses||[]};
+  }catch(e){
+    mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:false,erro:e.message});
+  }
+  renderMercado();
+}
+async function salvarMercadoMes(loja,itemId){
+  const key=mercadoKey(loja,itemId);
+  const f=mercadoFormMes[key]||{};
+  if(!/^\d{4}-\d{2}$/.test(f.mes||'')){ alert('Escolha o mês antes de salvar.'); return; }
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/mercado/categoria`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({loja,itemId,mes:f.mes,vendasBrutas:parseMoeda(f.vendasBrutas||0),unidades:f.unidades?Number(String(f.unidades).replace(/\./g,'')):null,precoMedio:parseMoeda(f.precoMedio||0)})
+    });
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao salvar (status '+r.status+').'));
+    toast('✓ Mês salvo na Análise de Mercado.');
+    delete mercadoFormMes[key];
+    await carregarMercadoProduto(loja,itemId);
+  }catch(e){ alert('Não foi possível salvar: '+e.message); }
+}
+async function excluirMercadoMes(loja,itemId,mes){
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/mercado/categoria?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&mes=${encodeURIComponent(mes)}`,{method:'DELETE'});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao excluir (status '+r.status+').'));
+    await carregarMercadoProduto(loja,itemId);
+  }catch(e){ alert('Não foi possível excluir: '+e.message); }
+}
+/* gráfico simples em SVG inline (sem lib externa, igual ao resto do Doca) - cada série é
+   normalizada pro próprio máximo (0-100%), pra comparar a FORMA/sazonalidade das duas curvas
+   mesmo com escalas bem diferentes (categoria inteira vs um produto só). */
+function svgMercadoChart(labels,catVals,propVals){
+  const w=Math.max(340,labels.length*66), h=150, padL=8,padR=8,padT=14,padB=24;
+  const norm=(arr)=>{ const max=Math.max(1,...arr.map(v=>Number(v)||0)); return arr.map(v=>(Number(v)||0)/max*100); };
+  const nc=norm(catVals), np=norm(propVals);
+  const stepX=labels.length>1?(w-padL-padR)/(labels.length-1):0;
+  const y=(v)=>padT+(100-v)/100*(h-padT-padB);
+  const pts=(arr)=>arr.map((v,i)=>`${(padL+i*stepX).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const labelsHtml=labels.map((l,i)=>`<text x="${(padL+i*stepX).toFixed(1)}" y="${h-8}" font-size="9" text-anchor="middle" fill="#999">${esc(l.slice(2))}</text>`).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px;display:block">
+    <polyline points="${pts(nc)}" fill="none" stroke="#8a8aff" stroke-width="2"/>
+    <polyline points="${pts(np)}" fill="none" stroke="#ffb020" stroke-width="2"/>
+    ${labelsHtml}
+  </svg>`;
+}
+function renderMercadoCorpo(p,key,d){
+  if(!d||d.carregando) return barraIndeterminada('Carregando dados de mercado...');
+  if(d.erro) return `<p class="hint" style="color:#e66">⚠ ${esc(d.erro)}</p><button class="btn sm" data-mercadorecarregar="${esc(p.loja)}|${esc(p.mlItemId)}">🔄 Tentar de novo</button>`;
+  const f=mercadoFormMes[key]||{mes:mercadoMesAtual()};
+  const historico=(d.historico||[]);
+  const proprias=(d.vendasProprias||[]);
+  const mesesUnion=Array.from(new Set([...historico.map(h=>h.mes),...proprias.map(v=>v.mes)])).sort();
+  const catPorMes={}; historico.forEach(h=>catPorMes[h.mes]=h);
+  const propPorMes={}; proprias.forEach(v=>propPorMes[v.mes]=v);
+  const catVals=mesesUnion.map(m=>catPorMes[m]?Number(catPorMes[m].vendas_brutas_categoria)||0:0);
+  const propVals=mesesUnion.map(m=>propPorMes[m]?Number(propPorMes[m].valorBruto)||0:0);
+  return `
+    ${d.categoriaId?`<p class="hint">Categoria <span class="mono">${esc(d.categoriaId)}</span> — <a href="${esc(d.urlTendencia)}" target="_blank" rel="noopener">abrir tendência da categoria no Mercado Livre ↗</a></p>`
+      :`<p class="hint" style="color:#e66">⚠ Esse produto ainda não tem categoria salva — sincronize os produtos de novo (aba Produtos → Atualizar) pra puxar.</p>`}
+    ${mesesUnion.length?`
+    <div style="margin:8px 0">
+      <div class="acoes-linha" style="margin-bottom:6px;gap:14px">
+        <span class="mono" style="font-size:11px;color:#8a8aff">▬ categoria (índice)</span>
+        <span class="mono" style="font-size:11px;color:#ffb020">▬ suas vendas (índice)</span>
+      </div>
+      ${svgMercadoChart(mesesUnion,catVals,propVals)}
+    </div>
+    <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">Vendas categoria</th><th class="num">Suas vendas</th><th class="num">Participação</th><th></th></tr></thead><tbody>
+      ${mesesUnion.map(m=>{
+        const cat=catPorMes[m], prop=propPorMes[m];
+        const partic=(cat&&cat.vendas_brutas_categoria)?(((prop?prop.valorBruto:0)/Number(cat.vendas_brutas_categoria))*100):null;
+        return `<tr>
+          <td class="mono">${esc(m)}</td>
+          <td class="num">${cat&&cat.vendas_brutas_categoria!=null?fmtMoney(cat.vendas_brutas_categoria):'<span class="muted">—</span>'}</td>
+          <td class="num">${prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>'}</td>
+          <td class="num">${partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>'}</td>
+          <td>${cat?`<button class="btn sm danger" data-mercadoexcluirmes="${esc(p.loja)}|${esc(p.mlItemId)}|${esc(m)}">✕</button>`:''}</td>
+        </tr>`;
+      }).join('')}
+    </tbody></table></div>
+    `:'<p class="hint">Ainda sem nenhum mês registrado — cole os números da categoria abaixo pra começar.</p>'}
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:13px">➕ Colar dados de um mês da categoria (print de vendedores.mercadolivre.com.br)</summary>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:8px">
+        <label>Mês<input type="month" value="${esc(f.mes||mercadoMesAtual())}" data-mercadomes="${esc(key)}"></label>
+        <label>Vendas brutas categoria (R$)<input type="text" inputmode="decimal" placeholder="1.300.000,00" value="${f.vendasBrutas!=null?f.vendasBrutas:''}" data-mercadocampo="${esc(key)}||vendasBrutas"></label>
+        <label>Unidades vendidas categoria<input type="text" inputmode="numeric" placeholder="30.000" value="${f.unidades!=null?f.unidades:''}" data-mercadocampo="${esc(key)}||unidades"></label>
+        <label>Preço médio categoria (R$)<input type="text" inputmode="decimal" placeholder="47,00" value="${f.precoMedio!=null?f.precoMedio:''}" data-mercadocampo="${esc(key)}||precoMedio"></label>
+      </div>
+      <button class="btn gold sm" style="margin-top:8px" data-mercadosalvar="${esc(p.loja)}|${esc(p.mlItemId)}">💾 Salvar mês</button>
+    </details>
+  `;
+}
+function renderMercado(){
+  const el=document.getElementById('tab-mercado'); if(!el) return;
+  const produtosComItem=state.produtos.filter(p=>p.mlItemId).sort((a,b)=>(a.loja||'').localeCompare(b.loja||'')||(a.titulo||a.sku||'').localeCompare(b.titulo||b.sku||''));
+  el.innerHTML=`
+    <h1 class="page-title">Análise de Mercado</h1>
+    <p class="hint" style="margin:0 0 14px">Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre. Não existe API pra isso — só dá pra ver logado no painel do vendedor — por isso os números da categoria são colados aqui à mão, mês a mês (abre o link, copia do print). Já as suas vendas são automáticas.</p>
+    ${produtosComItem.length?produtosComItem.map(p=>{
+      const key=mercadoKey(p.loja,p.mlItemId);
+      const aberto=mercadoAberto.has(key);
+      const d=mercadoDados[key];
+      return `<details class="card" style="margin-bottom:10px" ${aberto?'open':''} data-mercadodetails="${esc(key)}">
+        <summary style="cursor:pointer;font-weight:600">${esc(p.titulo||p.sku)} <span class="muted" style="font-weight:400">— ${esc(p.loja)} · SKU ${esc(p.sku)}</span></summary>
+        <div style="margin-top:12px">${aberto?renderMercadoCorpo(p,key,d):''}</div>
+      </details>`;
+    }).join(''):'<p class="empty">Nenhum produto com anúncio vinculado ainda.</p>'}
+  `;
+  el.querySelectorAll('[data-mercadodetails]').forEach(det=>{
+    det.ontoggle=()=>{
+      const key=det.dataset.mercadodetails;
+      if(det.open){ mercadoAberto.add(key); if(!mercadoDados[key]){ const [loja,itemId]=key.split('|'); carregarMercadoProduto(loja,itemId); } else renderMercado(); }
+      else{ mercadoAberto.delete(key); renderMercado(); }
+    };
+  });
+  el.querySelectorAll('[data-mercadomes]').forEach(inp=>{
+    inp.onchange=()=>{ const key=inp.dataset.mercadomes; mercadoFormMes[key]=Object.assign({},mercadoFormMes[key],{mes:inp.value}); };
+  });
+  el.querySelectorAll('[data-mercadocampo]').forEach(inp=>{
+    inp.oninput=()=>{
+      if(inp.dataset.mercadocampo.endsWith('||unidades')){ inp.value=inp.value.replace(/[^\d.]/g,''); } else { filtrarValorMoeda(inp); }
+      const [key,campo]=inp.dataset.mercadocampo.split('||');
+      mercadoFormMes[key]=Object.assign({},mercadoFormMes[key],{[campo]:inp.value});
+    };
+  });
+  el.querySelectorAll('[data-mercadosalvar]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadosalvar.split('|'); salvarMercadoMes(loja,itemId); };
+  });
+  el.querySelectorAll('[data-mercadoexcluirmes]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId,mes]=b.dataset.mercadoexcluirmes.split('|'); confirmAction(`Excluir os dados de ${mes} dessa categoria?`,()=>excluirMercadoMes(loja,itemId,mes)); };
+  });
+  el.querySelectorAll('[data-mercadorecarregar]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadorecarregar.split('|'); carregarMercadoProduto(loja,itemId); };
+  });
+}
 function renderAmauri(){
   const el=document.getElementById('tab-amauri'); if(!el) return;
   const todosTorvStore=state.produtos.filter(p=>p.loja==='TorvStore').sort((a,b)=>(a.sku||'').localeCompare(b.sku||''));
@@ -7973,7 +8147,7 @@ function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],
-   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
+   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['análise de mercado',renderMercado],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
