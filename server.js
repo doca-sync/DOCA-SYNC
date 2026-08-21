@@ -2888,16 +2888,19 @@ async function buscarMensagensPendentes(loja) {
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const sellerId = conta.ml_user_id;
-  /* O endpoint "/marketplace/messages/unread" (doc do "Global Selling") devolvia 403 "Invalid
-     caller.id" em TODAS as lojas, com ou sem "user_id" - descobri (21/08) que esse prefixo
-     "marketplace/" e' de um programa a parte (Global Selling / cross-border), que exige um tipo de
-     app/permissao diferente do token normal de vendedor. O endpoint CLASSICO (documentado em
-     developers.mercadolibre.com, sem "marketplace/") e' esse aqui, e usa "role" (sem "tag"):
-     https://api.mercadolibre.com/messages/unread?role=$ROLE
-     A resposta desse tambem vem no formato "/packs/{packId}/sellers/{sellerId}" (nao so'
-     "/packs/{packId}" como no outro) - por isso o replace do packId foi trocado por uma regex, pra
-     pegar so' o numero do pack independente do formato. */
-  const j = await fetchMLDebug(`https://api.mercadolibre.com/messages/unread?role=seller`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  /* Historico de tentativas nesse endpoint (21/08), pra quem for mexer aqui de novo:
+     1) "/marketplace/messages/unread?role=seller&tag=post_sale&user_id=X" -> 403 "Invalid caller.id"
+     2) mesma coisa sem o user_id -> 403 "Invalid caller.id" de novo (nao era o user_id o problema)
+     3) endpoint classico "/messages/unread?role=seller" (sem "marketplace/") -> 404 "resource not
+        found" (parece que foi descontinuado pra contas nao inscritas no Global Selling)
+     4) essa aqui: "/marketplace/messages/unread" SEM NENHUM parametro (exatamente como o primeiro
+        exemplo "basico" da doc oficial do Global Selling, antes da secao "Use modes") - ainda nao
+        confirmado se funciona, precisa testar com dado real. Se continuar dando 403, o mais
+        provavel e' que essa conta/app nao esteja habilitada pro programa "Global Selling" da API
+        de mensagens - nesse caso o jeito seria trocar de estrategia (webhook do topico "messages"
+        em vez de buscar sob demanda, ou perguntar pro suporte do ML se a conta precisa de algum
+        cadastro extra). */
+  const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread`, { headers: { Authorization: `Bearer ${accessToken}` } });
   const packs = (j.results || []).slice(0, 25); // limite de seguranca - nao processa uma avalanche de packs de uma vez
   // (25 packs x ~2 chamadas cada + pausa = pode levar uns 20-30s; acima disso arrisca estourar o
   // timeout do proxy do Render/navegador e o card de Mensagens pos-venda no Doca fica "carregando"
