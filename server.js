@@ -338,12 +338,34 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
          "related_entities" contendo "return" = devolucao ja em andamento. Por isso busca o detalhe
          completo aqui (so' quando cai nesse caso, pra nao gastar chamada a toa nos outros). */
       let jaEmAndamento = false;
+      let motivoAndamento = '';
       try {
         const detalhe = await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-        jaEmAndamento = Array.isArray(detalhe.related_entities) && detalhe.related_entities.includes('return');
-      } catch (e) { /* nao conseguiu confirmar - segue tratando como pendente mesmo, pra nao esconder um caso real */ }
+        if (Array.isArray(detalhe.related_entities) && detalhe.related_entities.includes('return')) {
+          jaEmAndamento = true;
+          motivoAndamento = 'o Mercado Livre ja habilitou a devolucao sozinho (related_entities: return)';
+        }
+      } catch (e) { /* nao conseguiu confirmar por esse lado - ainda tenta o outro sinal abaixo */ }
+      if (!jaEmAndamento) {
+        /* segundo sinal, achado em 21/08 (Felipe viu no proprio ML: reclamacao com "Mercado Livre:
+           Perfeito! Vamos oferecer ao comprador um reembolso total..." e status "esperando resposta
+           do comprador", mesmo com related_entities vazio e acoes vazias) - o assistente do proprio
+           Mercado Livre as vezes ja manda uma mensagem em nome do vendedor oferecendo solucao, sem
+           que isso apareca no related_entities. Unico jeito de pegar isso e' olhando o HISTORICO de
+           mensagens da reclamacao: se ja existe QUALQUER mensagem com sender_role "respondent"
+           (o proprio vendedor, incluindo as que o assistente do ML manda em nome dele), quer dizer
+           que ja foi respondida - so' falta o comprador reagir. */
+        try {
+          const mensagens = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/messages`, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const lista = Array.isArray(mensagens) ? mensagens : (mensagens.results || []);
+          if (lista.some(m => m.sender_role === 'respondent')) {
+            jaEmAndamento = true;
+            motivoAndamento = 'ja existe mensagem do vendedor nessa reclamacao (respondida antes, inclusive pelo proprio assistente do Mercado Livre)';
+          }
+        } catch (e) { /* nao conseguiu confirmar - segue tratando como pendente mesmo, pra nao esconder um caso real */ }
+      }
       if (jaEmAndamento) {
-        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: 'devolucao/mediacao ja habilitada pelo Mercado Livre - aguardando o comprador', sucesso: true, motivo: motivoAcaoIndisponivel + ' - mas o Mercado Livre ja habilitou a devolucao sozinho (related_entities: return) e esta esperando o comprador agir - nada a fazer da nossa parte' });
+        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: 'ja respondida (pelo Doca ou pelo proprio Mercado Livre) - aguardando o comprador', sucesso: true, motivo: motivoAcaoIndisponivel + ` - mas ${motivoAndamento}, esperando o comprador agir - nada a fazer da nossa parte` });
         return { claimId, ok: true, acao: 'aguardando-comprador' };
       }
       await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ` - e nem mensagem pro comprador/mediador esta disponivel nessa reclamacao (estagio: ${claim.stage || '?'}) - precisa revisao manual` });
@@ -462,12 +484,30 @@ app.get('/debug/claims/simular', async (req, res) => {
     // texto do fallback depende do frete: gratis pro vendedor -> oferece devolucao junto; senao -> sem devolucao
     // (mesma logica de tentarFallbackMensagem la' embaixo, corrigido em 20/08)
     const textoFallbackSimulado = frete.absorvidoPeloVendedor ? 'reembolso 100% com devolucao' : 'reembolso 100% sem devolucao';
-    const fallbackTxt = temFallbackMensagem ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "${textoFallbackSimulado}" (estagio: ${claim.stage || '?'})` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente`;
+    // mesmos 2 sinais de "ja em andamento/ja respondida" usados de verdade em tentarFallbackMensagem
+    // (21/08) - so' verifica se cair no caso sem acao nenhuma disponivel, pra nao gastar chamada a toa
+    let jaEmAndamento = false, motivoAndamento = '', relatedEntities = null, mensagensClaim = null;
+    if (!temFallbackMensagem) {
+      relatedEntities = claim.related_entities || [];
+      if (Array.isArray(relatedEntities) && relatedEntities.includes('return')) {
+        jaEmAndamento = true; motivoAndamento = 'devolucao ja habilitada pelo Mercado Livre (related_entities: return)';
+      }
+      try {
+        mensagensClaim = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/messages`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const lista = Array.isArray(mensagensClaim) ? mensagensClaim : (mensagensClaim.results || []);
+        if (!jaEmAndamento && lista.some(m => m.sender_role === 'respondent')) {
+          jaEmAndamento = true; motivoAndamento = 'ja existe mensagem do vendedor nessa reclamacao (respondida antes, inclusive pelo assistente do proprio Mercado Livre)';
+        }
+      } catch (e) { /* nao bloqueia a simulacao */ }
+    }
+    const fallbackTxt = temFallbackMensagem
+      ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "${textoFallbackSimulado}" (estagio: ${claim.stage || '?'})`
+      : (jaEmAndamento ? `sem acao/mensagem disponivel, MAS ja em andamento (${motivoAndamento}) - contaria como resolvida, aguardando o comprador` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente de verdade`);
     if (claim.resource !== 'order') regraAplicavel = 'fora da regra (resource != order)';
     else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : `devolucao indisponivel - ${fallbackTxt}`;
     else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : `reembolso indisponivel - ${fallbackTxt}`;
     else regraAplicavel = 'nao foi possivel determinar o frete';
-    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, stage: claim.stage, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, regraAplicavel, claim });
+    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, stage: claim.stage, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, jaEmAndamento, motivoAndamento, mensagensClaim, regraAplicavel, claim });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 /* processa de verdade (EXECUTA a acao automatica) todas as reclamacoes abertas da loja - roda
@@ -2975,6 +3015,55 @@ app.get('/debug/mensagens/detalhe', async (req, res) => {
     const accessToken = await tokenValido(loja);
     const detalhe = await fetchMLDebug(`https://api.mercadolibre.com${resource}`, { headers: { Authorization: `Bearer ${accessToken}` } });
     res.json({ ok: true, loja, resource, detalhe });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+/* rota de diagnostico (so' LE, nao manda nada) - a partir de um numero de pedido que o Felipe ja'
+   sabe que tem mensagem (visto direto no Mercado Livre), acha o pack_id e o buyer_id, e busca a
+   conversa (sem marcar como lida) - serve pra confirmar que o GET pontual funciona ANTES de tentar
+   mandar mensagem de verdade. Ex.: /debug/mensagens/pack-do-pedido?loja=Orbix%20Brasil&orderId=2000014582806363 */
+app.get('/debug/mensagens/pack-do-pedido', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const orderId = req.query.orderId;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!orderId) return res.status(400).json({ ok: false, erro: 'Parametro "orderId" obrigatorio (numero do pedido, visto no Mercado Livre).' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const pedido = await fetchMLDebug(`https://api.mercadolibre.com/orders/${orderId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const packId = String(pedido.pack_id || pedido.id); // se pack_id vier vazio, usa o proprio id do pedido (mesmo criterio da doc oficial)
+    const buyerId = pedido.buyer && pedido.buyer.id;
+    let thread = null, erroThread = null;
+    try {
+      thread = await fetchMLDebug(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${conta.ml_user_id}?tag=post_sale&mark_as_read=false&limit=5&offset=0`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    } catch (e) { erroThread = e.message; }
+    res.json({ ok: true, loja, orderId, packId, buyerId, thread, erroThread });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+/* rota de diagnostico que MANDA MENSAGEM DE VERDADE (nao e' so' leitura) - serve pra testar se o
+   envio funciona nessa conta ANTES de depender do webhook, usando um pedido que o Felipe ja' sabe
+   que tem conversa em aberto. Usa os mesmos dados/endpoint de /mensagens/responder. Ex.:
+   /debug/mensagens/testar-envio?loja=Orbix%20Brasil&orderId=2000014582806363&texto=Ola! Como posso ajudar? */
+app.get('/debug/mensagens/testar-envio', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const orderId = req.query.orderId;
+    const texto = req.query.texto;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!orderId || !texto) return res.status(400).json({ ok: false, erro: 'Parametros "orderId" e "texto" obrigatorios.' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const pedido = await fetchMLDebug(`https://api.mercadolibre.com/orders/${orderId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const packId = String(pedido.pack_id || pedido.id);
+    const buyerId = pedido.buyer && pedido.buyer.id;
+    if (!buyerId) return res.status(200).json({ ok: false, erro: 'Nao achei o buyer_id desse pedido.', pedido });
+    const r = await fetch(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${conta.ml_user_id}?tag=post_sale`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: { user_id: String(conta.ml_user_id) }, to: { user_id: String(buyerId) }, text: texto })
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(200).json({ ok: false, loja, orderId, packId, buyerId, erro: j.message || 'Falha ao enviar a mensagem.', corpo: j });
+    res.json({ ok: true, loja, orderId, packId, buyerId, resposta: j });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 app.get('/mensagens', async (req, res) => {
