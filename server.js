@@ -322,10 +322,21 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     let ultimoErro = null;
     for (const c of disponiveis) {
       try {
-        await fetchMLDebug(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/actions/send-message`, {
+        /* NAO usa fetchMLDebug aqui de proposito - esse endpoint devolve 201 Created com o CORPO
+           VAZIO quando da certo (confirmado na doc oficial: "Response: status 201 created", sem
+           nenhum JSON junto). fetchMLDebug trata corpo vazio como erro (pensado pra endpoints que
+           SEMPRE devolvem JSON) - usar ele aqui fazia a mensagem ser enviada com sucesso de
+           verdade mas o Doca registrar como falha, tentar de novo no proximo sync, e mandar a
+           MESMA mensagem duplicada toda vez (bug real encontrado em 20/08, corrigido). Confere so'
+           r.ok (2xx) direto, sem exigir corpo JSON nenhum. */
+        const rMsg = await fetch(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/actions/send-message`, {
           method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ receiver_role: c.role, message: 'Reembolso de 100% sem devolução.', attachments: [] })
         });
+        if (!rMsg.ok) {
+          const brutoMsg = await rMsg.text().catch(() => '');
+          throw new Error(`send-message respondeu status ${rMsg.status}${brutoMsg ? ': ' + brutoMsg.slice(0, 300) : ''}`);
+        }
         await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: `mensagem pro ${c.role === 'mediator' ? 'mediador' : 'comprador'}: reembolso 100% sem devolução (sem botão de ação formal disponível)`, sucesso: true, motivo: motivoAcaoIndisponivel + ` - mandada mensagem (estagio: ${claim.stage || '?'}) oferecendo reembolso 100% sem devolução, no lugar da ação formal` });
         return { claimId, ok: true, acao: 'mensagem-reembolso' };
       } catch (e) {
