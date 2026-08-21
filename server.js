@@ -2888,20 +2888,26 @@ async function buscarMensagensPendentes(loja) {
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const sellerId = conta.ml_user_id;
-  /* NAO manda "user_id" aqui de proposito (mesmo tendo o sellerId disponivel): a doc oficial mostra
-     o uso basico so' com role+tag, deixando o Mercado Livre identificar o usuario pelo proprio
-     token (o "userId" volta no corpo da resposta) - passar um user_id (mesmo que correto) fez a
-     API devolver 403 "Invalid caller.id" em TODAS as lojas (bug real encontrado em 21/08, nunca
-     tinha funcionado desde que essa tela foi criada - ficava preso em "carregando" por causa do
-     bug antigo do carregarMensagens que nao mostrava erro). */
-  const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread?role=seller&tag=post_sale`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  /* O endpoint "/marketplace/messages/unread" (doc do "Global Selling") devolvia 403 "Invalid
+     caller.id" em TODAS as lojas, com ou sem "user_id" - descobri (21/08) que esse prefixo
+     "marketplace/" e' de um programa a parte (Global Selling / cross-border), que exige um tipo de
+     app/permissao diferente do token normal de vendedor. O endpoint CLASSICO (documentado em
+     developers.mercadolibre.com, sem "marketplace/") e' esse aqui, e usa "role" (sem "tag"):
+     https://api.mercadolibre.com/messages/unread?role=$ROLE
+     A resposta desse tambem vem no formato "/packs/{packId}/sellers/{sellerId}" (nao so'
+     "/packs/{packId}" como no outro) - por isso o replace do packId foi trocado por uma regex, pra
+     pegar so' o numero do pack independente do formato. */
+  const j = await fetchMLDebug(`https://api.mercadolibre.com/messages/unread?role=seller`, { headers: { Authorization: `Bearer ${accessToken}` } });
   const packs = (j.results || []).slice(0, 25); // limite de seguranca - nao processa uma avalanche de packs de uma vez
   // (25 packs x ~2 chamadas cada + pausa = pode levar uns 20-30s; acima disso arrisca estourar o
   // timeout do proxy do Render/navegador e o card de Mensagens pos-venda no Doca fica "carregando"
   // pra sempre - reduzido de 60 pra 25 por causa disso, 20/08)
   const resultado = [];
   for (const p of packs) {
-    const packId = String(p.resource || '').replace('/packs/', '');
+    // extrai so' o numero do pack de "resource" - aceita tanto "/packs/123" quanto
+    // "/packs/123/sellers/456" (formatos diferentes vistos entre os dois endpoints de unread)
+    const matchPack = String(p.resource || '').match(/\/packs\/(\d+)/);
+    const packId = matchPack ? matchPack[1] : '';
     if (!packId) continue;
     try {
       // mark_as_read=false: nao consome o "nao lido" oficial do ML so' por ter mostrado no Doca -
