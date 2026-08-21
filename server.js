@@ -291,11 +291,38 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
   }
   const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
   const acoes = (respondent.available_actions || []).map(a => a.action);
+  /* fallback (Felipe, 20/08): quando a reclamacao NAO tem o botao formal disponivel - o que ele diz
+     ser o caso mais comum na pratica - em vez de so' ficar "pendente de revisao manual" pra sempre,
+     manda uma MENSAGEM pro comprador oferecendo "Reembolso de 100% sem devolucao" (mesmo truque que
+     ele ja usa manualmente no proprio Mercado Livre). Usa a acao "send_message_to_complainant"
+     (quase sempre disponivel, mesmo quando refund/allow_return ainda nao estao) - endpoint
+     confirmado na doc oficial: POST /marketplace/v2/claims/{id}/actions/send-message. Isso NAO e'
+     um refund automatico de verdade (o comprador ainda precisa aceitar/a ML precisa processar) -
+     por isso fica marcado como resolvido (nao fica preso em "pendente"), mas com o motivo deixando
+     claro que foi por mensagem, nao pela acao formal. So' usado como fallback - NUNCA no lugar da
+     devolucao formal quando ela estiver disponivel (pra nao dar reembolso sem pedir o produto de
+     volta quando dava pra fazer a devolucao de verdade). */
+  async function tentarFallbackMensagem(motivoAcaoIndisponivel) {
+    if (!acoes.includes('send_message_to_complainant')) {
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ' - e nem "send_message_to_complainant" esta disponivel pra mandar a mensagem de reembolso - precisa revisao manual' });
+      return { claimId, erro: 'acao indisponivel' };
+    }
+    try {
+      await fetchMLDebug(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/actions/send-message`, {
+        method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ receiver_role: 'complainant', message: 'Reembolso de 100% sem devolução.', attachments: [] })
+      });
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: 'mensagem: reembolso 100% sem devolução (sem botão de ação disponível)', sucesso: true, motivo: motivoAcaoIndisponivel + ' - mandada mensagem oferecendo reembolso 100% sem devolução, no lugar da ação formal' });
+      return { claimId, ok: true, acao: 'mensagem-reembolso' };
+    } catch (e) {
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ' - falha ao mandar a mensagem de reembolso: ' + e.message });
+      return { claimId, erro: e.message };
+    }
+  }
   if (absorvidoPeloVendedor) {
     // regra 1: frete gratis pro vendedor -> devolucao
     if (!acoes.includes('allow_return') && !acoes.includes('allow_return_label')) {
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: true, valorFreteVendedor: valor, sucesso: false, motivo: 'frete foi do vendedor (deveria virar devolucao), mas a acao "allow_return"/"allow_return_label" ainda nao esta disponivel nessa reclamacao - precisa revisao manual' });
-      return { claimId, erro: 'acao indisponivel' };
+      return tentarFallbackMensagem('frete foi do vendedor (deveria virar devolucao), mas a acao "allow_return"/"allow_return_label" ainda nao esta disponivel nessa reclamacao');
     }
     try {
       await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/expected-resolutions/allow-return`, {
@@ -310,8 +337,7 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
   } else {
     // regra 2: frete NAO foi do vendedor -> reembolso 100% sem devolucao
     if (!acoes.includes('refund')) {
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: false, valorFreteVendedor: valor, sucesso: false, motivo: 'frete nao foi do vendedor (deveria virar reembolso 100%), mas a acao "refund" ainda nao esta disponivel nessa reclamacao - precisa revisao manual' });
-      return { claimId, erro: 'acao indisponivel' };
+      return tentarFallbackMensagem('frete nao foi do vendedor (deveria virar reembolso 100%), mas a acao "refund" ainda nao esta disponivel nessa reclamacao');
     }
     try {
       await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/expected-resolutions/refund`, {
@@ -371,9 +397,10 @@ app.get('/debug/claims/simular', async (req, res) => {
     const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
     const acoes = (respondent.available_actions || []).map(a => a.action);
     let regraAplicavel = null;
+    const temFallbackMensagem = acoes.includes('send_message_to_complainant');
     if (claim.resource !== 'order') regraAplicavel = 'fora da regra (resource != order)';
-    else if (frete.absorvidoPeloVendedor === true) regraAplicavel = acoes.includes('allow_return') || acoes.includes('allow_return_label') ? 'devolucao (acao disponivel)' : 'devolucao (acao AINDA NAO disponivel - ficaria pendente)';
-    else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : 'reembolso 100% (acao AINDA NAO disponivel - ficaria pendente)';
+    else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : (temFallbackMensagem ? 'devolucao indisponivel - cairia no fallback: mensagem "reembolso 100% sem devolucao"' : 'devolucao indisponivel E fallback de mensagem tambem indisponivel - ficaria pendente');
+    else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : (temFallbackMensagem ? 'reembolso indisponivel - cairia no fallback: mensagem "reembolso 100% sem devolucao"' : 'reembolso indisponivel E fallback de mensagem tambem indisponivel - ficaria pendente');
     else regraAplicavel = 'nao foi possivel determinar o frete';
     res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, regraAplicavel, claim });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
