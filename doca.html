@@ -516,6 +516,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const STORES=["TorvStore","Dor Block","Orbix Brasil","TorvShop"];
@@ -6406,17 +6407,30 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
     </body></html>`);
   win.document.close();
 }
-/* ================= Análise de Mercado (21/08) =================
-   Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre, mês a mês.
-   Não existe API pública pro painel "Análise de mercado" do vendedor (tendências por categoria) -
-   só dá pra ver logado, no navegador (vendedores.mercadolivre.com.br/metricas/...). Por isso os
-   números da CATEGORIA são colados aqui à mão (abre o link, copia o print, cola no formulário) -
-   já as SUAS vendas de cada mês são 100% automáticas (calculadas pelo backend). */
+/* ================= Análise de Mercado (21/08, atualizado no mesmo dia) =================
+   Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre, período a
+   período. Não existe API pública pro painel "Análise de mercado" do vendedor - só dá pra ver
+   logado, no navegador (vendedores.mercadolivre.com.br/metricas/...). MAS o próprio painel tem um
+   botão "Baixar relatório" que gera um .xlsx com os 100 produtos mais vendidos da categoria (preço,
+   unidades vendidas, visualizações, etc) - o Doca lê esse arquivo (com a lib SheetJS, direto no
+   navegador) e calcula os números da categoria sozinho, sem precisar digitar nada. Quem não tiver
+   o arquivo à mão ainda pode digitar manualmente (aba "ou digitar manualmente", só com o resumo do
+   topo da tela). Já as SUAS vendas de cada período são 100% automáticas (calculadas pelo backend a
+   partir do histórico real de pedidos). */
 let mercadoAberto=new Set(); // chaves "loja|itemId" expandidas no momento
 let mercadoDados={}; // "loja|itemId" -> {carregando,erro,categoriaId,urlTendencia,historico,vendasProprias}
-let mercadoFormMes={}; // "loja|itemId" -> rascunho do formulário de "colar mês da categoria"
+let mercadoFormMes={}; // "loja|itemId" -> rascunho do formulário manual "colar mês da categoria"
+let mercadoImportPreview={}; // "loja|itemId" -> prévia do .xlsx lido, antes de confirmar salvar
 function mercadoKey(loja,itemId){ return loja+'|'+itemId; }
 function mercadoMesAtual(){ return new Date().toISOString().slice(0,7); }
+function mercadoFmtDiaMes(iso){ const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(iso||''); return m?`${m[3]}/${m[2]}`:(iso||''); }
+// rótulo curto pra mostrar na tabela/gráfico: mês civil (digitado à mão) vira "08/26"; período
+// exato importado do relatório vira "01/08–21/08"
+function mercadoLabelHistorico(h){
+  if(/^\d{4}-\d{2}$/.test(h.mes||'')){ const [a,m]=h.mes.split('-'); return `${m}/${a.slice(2)}`; }
+  if(h.periodo_de&&h.periodo_ate) return `${mercadoFmtDiaMes(h.periodo_de)}–${mercadoFmtDiaMes(h.periodo_ate)}`;
+  return h.mes;
+}
 async function carregarMercadoProduto(loja,itemId){
   const key=mercadoKey(loja,itemId);
   mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:true,erro:null});
@@ -6432,7 +6446,20 @@ async function carregarMercadoProduto(loja,itemId){
     if(!rc.ok||!jc.ok) throw new Error(jc.erro||('Falha ao buscar dados da categoria (status '+rc.status+').'));
     let jv; try{ jv=await rv.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao buscar as vendas próprias (status '+rv.status+').'); }
     if(!rv.ok||!jv.ok) throw new Error(jv.erro||('Falha ao buscar as vendas próprias (status '+rv.status+').'));
-    mercadoDados[key]={carregando:false,erro:null,categoriaId:jc.categoriaId,urlTendencia:jc.urlTendencia,historico:jc.historico||[],vendasProprias:jv.meses||[]};
+    const historico=jc.historico||[];
+    const vendasProprias={};
+    (jv.meses||[]).forEach(v=>{ vendasProprias[v.mes]={unidades:v.unidades,valorBruto:v.valorBruto}; });
+    // linhas importadas de .xlsx tem um período exato (quase nunca um mês civil fechado) - busca
+    // as SUAS vendas nesse período exato, uma de cada vez (poucas importações por produto, então
+    // não pesa)
+    await Promise.all(historico.filter(h=>h.periodo_de&&h.periodo_ate).map(async h=>{
+      try{
+        const rr=await fetchComTimeout(`${base}/mercado/vendas-proprias?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&de=${h.periodo_de}&ate=${h.periodo_ate}`,{},45000);
+        const jj=await rr.json();
+        if(rr.ok&&jj.ok) vendasProprias[h.mes]={unidades:jj.unidades,valorBruto:jj.valorBruto};
+      }catch(e){ /* uma falha aqui não trava o resto */ }
+    }));
+    mercadoDados[key]={carregando:false,erro:null,categoriaId:jc.categoriaId,urlTendencia:jc.urlTendencia,historico,vendasProprias};
   }catch(e){
     mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:false,erro:e.message});
   }
@@ -6447,7 +6474,7 @@ async function salvarMercadoMes(loja,itemId){
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
     const r=await fetch(`${base}/mercado/categoria`,{
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({loja,itemId,mes:f.mes,vendasBrutas:parseMoeda(f.vendasBrutas||0),unidades:f.unidades?Number(String(f.unidades).replace(/\./g,'')):null,precoMedio:parseMoeda(f.precoMedio||0)})
+      body:JSON.stringify({loja,itemId,mes:f.mes,vendasBrutas:parseMoeda(f.vendasBrutas||0),unidades:f.unidades?Number(String(f.unidades).replace(/\./g,'')):null,precoMedio:parseMoeda(f.precoMedio||0),fonte:'manual'})
     });
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao salvar (status '+r.status+').'));
@@ -6466,6 +6493,94 @@ async function excluirMercadoMes(loja,itemId,mes){
     await carregarMercadoProduto(loja,itemId);
   }catch(e){ alert('Não foi possível excluir: '+e.message); }
 }
+/* -------- importação do relatório .xlsx "Mais vendidos nas suas categorias" -------- */
+// acha a aba mais ESPECÍFICA do arquivo (o relatório vem com uma aba por nível da categoria, da
+// mais ampla pra mais estreita, tipo "Casa, Móveis e Decoração" > "Cozinha" > ... > "Afiadores de
+// Facas Manuais" - as últimas abas ficam vazias/placeholder quando a árvore não desce tanto).
+function mercadoAcharPlanilhaValida(wb){
+  let ultimaValida=null;
+  for(const nome of wb.SheetNames){
+    if(nome==='Definições') continue;
+    const aoa=XLSX.utils.sheet_to_json(wb.Sheets[nome],{header:1,raw:true,blankrows:false});
+    if(!aoa.length) continue;
+    const primeiraCel=String((aoa[0]&&aoa[0][0])||'');
+    if(primeiraCel.startsWith('{')) continue; // placeholder tipo "{CAT_L6_TITLE}"
+    const linhaHeader=aoa.findIndex(r=>r.includes('Nome')&&r.includes('Unidades vendidas'));
+    if(linhaHeader<0) continue;
+    const dados=aoa.slice(linhaHeader+1).filter(r=>r&&r[1]&&String(r[1]).trim()&&String(r[1]).trim()!=='-');
+    if(!dados.length) continue;
+    ultimaValida={nome, header:aoa[linhaHeader], dados};
+  }
+  return ultimaValida;
+}
+function parseRelatorioMercadoXlsx(arrayBuffer){
+  const wb=XLSX.read(arrayBuffer,{type:'array'});
+  const achado=mercadoAcharPlanilhaValida(wb);
+  if(!achado) throw new Error('Não encontrei uma aba com produtos nesse arquivo. Confira se é o relatório "Mais vendidos nas suas categorias" baixado do Mercado Livre (Métricas → Análise de mercado → Tendências por categoria → Baixar relatório).');
+  const h=achado.header;
+  const iNome=h.indexOf('Nome'), iPreco=h.indexOf('Preço'), iUnid=h.indexOf('Unidades vendidas'), iVis=h.indexOf('Visualizações');
+  const produtos=achado.dados.map(r=>({
+    nome:String(r[iNome]||'').trim(),
+    preco:parseMoeda(r[iPreco]),
+    unidades:Number(r[iUnid])||0,
+    visualizacoes:Number(r[iVis])||0
+  }));
+  const unidadesTotais=produtos.reduce((s,pr)=>s+pr.unidades,0);
+  const vendasBrutasTotais=produtos.reduce((s,pr)=>s+pr.unidades*pr.preco,0);
+  return {
+    categoriaNome:achado.nome,
+    produtos,
+    unidadesTotais,
+    vendasBrutasTotais:Math.round(vendasBrutasTotais*100)/100,
+    precoMedio:unidadesTotais>0?Math.round((vendasBrutasTotais/unidadesTotais)*100)/100:0
+  };
+}
+function mercadoExtrairPeriodoDoNome(nomeArquivo){
+  const m=/(\d{4}-\d{2}-\d{2})a(\d{4}-\d{2}-\d{2})/.exec(nomeArquivo||'');
+  return m?{de:m[1],ate:m[2]}:{de:'',ate:''};
+}
+async function onArquivoMercadoSelecionado(loja,itemId,input){
+  const key=mercadoKey(loja,itemId);
+  const file=input.files&&input.files[0];
+  input.value='';
+  if(!file) return;
+  try{
+    if(!window.XLSX) throw new Error('A biblioteca de leitura de planilha ainda não carregou — recarregue a página e tente de novo.');
+    const buf=await file.arrayBuffer();
+    const resultado=parseRelatorioMercadoXlsx(buf);
+    const periodo=mercadoExtrairPeriodoDoNome(file.name);
+    mercadoImportPreview[key]=Object.assign({},resultado,{periodoDe:periodo.de,periodoAte:periodo.ate,nomeArquivo:file.name});
+  }catch(e){ alert('Não consegui ler esse arquivo: '+e.message); }
+  renderMercado();
+}
+async function confirmarImportacaoMercado(loja,itemId){
+  const key=mercadoKey(loja,itemId);
+  const pv=mercadoImportPreview[key];
+  if(!pv) return;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(pv.periodoDe||'')||!/^\d{4}-\d{2}-\d{2}$/.test(pv.periodoAte||'')){ alert('Confirme as datas de início e fim do período antes de salvar (o Doca tenta detectar sozinho pelo nome do arquivo, mas dá pra corrigir).'); return; }
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/mercado/categoria`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        loja,itemId,
+        mes:`${pv.periodoDe}_a_${pv.periodoAte}`,
+        periodoDe:pv.periodoDe, periodoAte:pv.periodoAte,
+        vendasBrutas:pv.vendasBrutasTotais, unidades:pv.unidadesTotais, precoMedio:pv.precoMedio,
+        categoriaNome:pv.categoriaNome, produtosAnalisados:pv.produtos.length,
+        topProdutos:pv.produtos.slice(0,20),
+        fonte:'xlsx'
+      })
+    });
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao salvar (status '+r.status+').'));
+    toast('✓ Relatório importado na Análise de Mercado.');
+    delete mercadoImportPreview[key];
+    await carregarMercadoProduto(loja,itemId);
+  }catch(e){ alert('Não foi possível salvar: '+e.message); }
+}
+function cancelarImportacaoMercado(loja,itemId){ delete mercadoImportPreview[mercadoKey(loja,itemId)]; renderMercado(); }
 /* gráfico simples em SVG inline (sem lib externa, igual ao resto do Doca) - cada série é
    normalizada pro próprio máximo (0-100%), pra comparar a FORMA/sazonalidade das duas curvas
    mesmo com escalas bem diferentes (categoria inteira vs um produto só). */
@@ -6476,7 +6591,7 @@ function svgMercadoChart(labels,catVals,propVals){
   const stepX=labels.length>1?(w-padL-padR)/(labels.length-1):0;
   const y=(v)=>padT+(100-v)/100*(h-padT-padB);
   const pts=(arr)=>arr.map((v,i)=>`${(padL+i*stepX).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-  const labelsHtml=labels.map((l,i)=>`<text x="${(padL+i*stepX).toFixed(1)}" y="${h-8}" font-size="9" text-anchor="middle" fill="#999">${esc(l.slice(2))}</text>`).join('');
+  const labelsHtml=labels.map((l,i)=>`<text x="${(padL+i*stepX).toFixed(1)}" y="${h-8}" font-size="9" text-anchor="middle" fill="#999">${esc(l)}</text>`).join('');
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px;display:block">
     <polyline points="${pts(nc)}" fill="none" stroke="#8a8aff" stroke-width="2"/>
     <polyline points="${pts(np)}" fill="none" stroke="#ffb020" stroke-width="2"/>
@@ -6487,40 +6602,67 @@ function renderMercadoCorpo(p,key,d){
   if(!d||d.carregando) return barraIndeterminada('Carregando dados de mercado...');
   if(d.erro) return `<p class="hint" style="color:#e66">⚠ ${esc(d.erro)}</p><button class="btn sm" data-mercadorecarregar="${esc(p.loja)}|${esc(p.mlItemId)}">🔄 Tentar de novo</button>`;
   const f=mercadoFormMes[key]||{mes:mercadoMesAtual()};
-  const historico=(d.historico||[]);
-  const proprias=(d.vendasProprias||[]);
-  const mesesUnion=Array.from(new Set([...historico.map(h=>h.mes),...proprias.map(v=>v.mes)])).sort();
-  const catPorMes={}; historico.forEach(h=>catPorMes[h.mes]=h);
-  const propPorMes={}; proprias.forEach(v=>propPorMes[v.mes]=v);
-  const catVals=mesesUnion.map(m=>catPorMes[m]?Number(catPorMes[m].vendas_brutas_categoria)||0:0);
-  const propVals=mesesUnion.map(m=>propPorMes[m]?Number(propPorMes[m].valorBruto)||0:0);
+  const preview=mercadoImportPreview[key];
+  const historico=(d.historico||[]).slice().sort((a,b)=>(a.mes||'').localeCompare(b.mes||''));
+  const vendasProprias=d.vendasProprias||{};
+  const labels=historico.map(mercadoLabelHistorico);
+  const catVals=historico.map(h=>Number(h.vendas_brutas_categoria)||0);
+  const propVals=historico.map(h=>vendasProprias[h.mes]?vendasProprias[h.mes].valorBruto:0);
+  const ultimoComRanking=historico.slice().reverse().find(h=>h.top_produtos&&h.top_produtos.length);
   return `
     ${d.categoriaId?`<p class="hint">Categoria <span class="mono">${esc(d.categoriaId)}</span> — <a href="${esc(d.urlTendencia)}" target="_blank" rel="noopener">abrir tendência da categoria no Mercado Livre ↗</a></p>`
       :`<p class="hint" style="color:#e66">⚠ Esse produto ainda não tem categoria salva — sincronize os produtos de novo (aba Produtos → Atualizar) pra puxar.</p>`}
-    ${mesesUnion.length?`
+    ${historico.length?`
     <div style="margin:8px 0">
       <div class="acoes-linha" style="margin-bottom:6px;gap:14px">
         <span class="mono" style="font-size:11px;color:#8a8aff">▬ categoria (índice)</span>
         <span class="mono" style="font-size:11px;color:#ffb020">▬ suas vendas (índice)</span>
       </div>
-      ${svgMercadoChart(mesesUnion,catVals,propVals)}
+      ${svgMercadoChart(labels,catVals,propVals)}
     </div>
-    <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">Vendas categoria</th><th class="num">Suas vendas</th><th class="num">Participação</th><th></th></tr></thead><tbody>
-      ${mesesUnion.map(m=>{
-        const cat=catPorMes[m], prop=propPorMes[m];
-        const partic=(cat&&cat.vendas_brutas_categoria)?(((prop?prop.valorBruto:0)/Number(cat.vendas_brutas_categoria))*100):null;
+    <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Período</th><th class="num">Vendas categoria</th><th class="num">Suas vendas</th><th class="num">Participação</th><th></th></tr></thead><tbody>
+      ${historico.map(h=>{
+        const prop=vendasProprias[h.mes];
+        const partic=h.vendas_brutas_categoria?(((prop?prop.valorBruto:0)/Number(h.vendas_brutas_categoria))*100):null;
         return `<tr>
-          <td class="mono">${esc(m)}</td>
-          <td class="num">${cat&&cat.vendas_brutas_categoria!=null?fmtMoney(cat.vendas_brutas_categoria):'<span class="muted">—</span>'}</td>
+          <td class="mono">${esc(mercadoLabelHistorico(h))}${h.fonte==='xlsx'?' <span class="muted" style="font-size:10px">(relatório)</span>':''}</td>
+          <td class="num">${h.vendas_brutas_categoria!=null?fmtMoney(h.vendas_brutas_categoria):'<span class="muted">—</span>'}</td>
           <td class="num">${prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>'}</td>
           <td class="num">${partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>'}</td>
-          <td>${cat?`<button class="btn sm danger" data-mercadoexcluirmes="${esc(p.loja)}|${esc(p.mlItemId)}|${esc(m)}">✕</button>`:''}</td>
+          <td><button class="btn sm danger" data-mercadoexcluirmes="${esc(p.loja)}|${esc(p.mlItemId)}|${esc(h.mes)}">✕</button></td>
         </tr>`;
       }).join('')}
     </tbody></table></div>
-    `:'<p class="hint">Ainda sem nenhum mês registrado — cole os números da categoria abaixo pra começar.</p>'}
+    `:'<p class="hint">Ainda sem nenhum período registrado — importe o relatório do Mercado Livre ou cole os números abaixo pra começar.</p>'}
+    ${ultimoComRanking?`
     <details style="margin-top:10px">
-      <summary style="cursor:pointer;font-size:13px">➕ Colar dados de um mês da categoria (print de vendedores.mercadolivre.com.br)</summary>
+      <summary style="cursor:pointer;font-size:13px">🏆 Ranking de concorrentes (${esc(ultimoComRanking.categoria_nome||'categoria')} — ${esc(mercadoLabelHistorico(ultimoComRanking))})</summary>
+      <div class="table-wrap" style="margin-top:8px"><table class="tbl-produtos"><thead><tr><th>#</th><th>Produto</th><th class="num">Preço</th><th class="num">Unid. vendidas</th><th class="num">Visualizações</th></tr></thead><tbody>
+        ${(ultimoComRanking.top_produtos||[]).map((c,i)=>`<tr><td>${i+1}</td><td>${esc(c.nome)}</td><td class="num">${fmtMoney(c.preco)}</td><td class="num">${fmtInt(c.unidades)}</td><td class="num">${fmtInt(c.visualizacoes)}</td></tr>`).join('')}
+      </tbody></table></div>
+    </details>
+    `:''}
+    <details style="margin-top:10px" ${preview?'open':''}>
+      <summary style="cursor:pointer;font-size:13px">📥 Importar relatório "Mais vendidos nas suas categorias" (.xlsx)</summary>
+      <p class="hint" style="margin:8px 0">No Mercado Livre: Métricas → Análise de mercado → Tendências por categoria → escolha a categoria → botão "Baixar relatório". Depois selecione o arquivo baixado aqui.</p>
+      <input type="file" accept=".xlsx" data-mercadoarquivo="${esc(p.loja)}|${esc(p.mlItemId)}">
+      ${preview?`
+      <div class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))">
+        <p class="hint" style="margin:0 0 8px">Categoria detectada: <b>${esc(preview.categoriaNome)}</b> · ${fmtInt(preview.produtos.length)} produtos analisados</p>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr">
+          <label>Período — de<input type="date" value="${esc(preview.periodoDe||'')}" data-mercadoperiodo="${esc(key)}||de"></label>
+          <label>Período — até<input type="date" value="${esc(preview.periodoAte||'')}" data-mercadoperiodo="${esc(key)}||ate"></label>
+        </div>
+        <p class="hint" style="margin:8px 0">Total da categoria nesse período: ${fmtMoney(preview.vendasBrutasTotais)} · ${fmtInt(preview.unidadesTotais)} unidades · preço médio ${fmtMoney(preview.precoMedio)}</p>
+        <div class="acoes-linha">
+          <button class="btn gold sm" data-mercadoconfirmarimport="${esc(p.loja)}|${esc(p.mlItemId)}">💾 Salvar essa importação</button>
+          <button class="btn sm" data-mercadocancelarimport="${esc(p.loja)}|${esc(p.mlItemId)}">Cancelar</button>
+        </div>
+      </div>
+      `:''}
+    </details>
+    <details style="margin-top:10px">
+      <summary style="cursor:pointer;font-size:13px">✎ Ou digitar manualmente (a partir do resumo/print do mês)</summary>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:8px">
         <label>Mês<input type="month" value="${esc(f.mes||mercadoMesAtual())}" data-mercadomes="${esc(key)}"></label>
         <label>Vendas brutas categoria (R$)<input type="text" inputmode="decimal" placeholder="1.300.000,00" value="${f.vendasBrutas!=null?f.vendasBrutas:''}" data-mercadocampo="${esc(key)}||vendasBrutas"></label>
@@ -6536,7 +6678,7 @@ function renderMercado(){
   const produtosComItem=state.produtos.filter(p=>p.mlItemId).sort((a,b)=>(a.loja||'').localeCompare(b.loja||'')||(a.titulo||a.sku||'').localeCompare(b.titulo||b.sku||''));
   el.innerHTML=`
     <h1 class="page-title">Análise de Mercado</h1>
-    <p class="hint" style="margin:0 0 14px">Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre. Não existe API pra isso — só dá pra ver logado no painel do vendedor — por isso os números da categoria são colados aqui à mão, mês a mês (abre o link, copia do print). Já as suas vendas são automáticas.</p>
+    <p class="hint" style="margin:0 0 14px">Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre. O jeito mais preciso é importar o relatório "Mais vendidos nas suas categorias" (.xlsx) que o próprio Mercado Livre gera (Métricas → Análise de mercado → Tendências por categoria → Baixar relatório) — o Doca lê e calcula tudo sozinho. Sem o arquivo, dá pra digitar manualmente os números do resumo. Já as suas vendas são sempre automáticas.</p>
     ${produtosComItem.length?produtosComItem.map(p=>{
       const key=mercadoKey(p.loja,p.mlItemId);
       const aberto=mercadoAberto.has(key);
@@ -6572,6 +6714,22 @@ function renderMercado(){
   });
   el.querySelectorAll('[data-mercadorecarregar]').forEach(b=>{
     b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadorecarregar.split('|'); carregarMercadoProduto(loja,itemId); };
+  });
+  el.querySelectorAll('[data-mercadoarquivo]').forEach(inp=>{
+    inp.onchange=()=>{ const [loja,itemId]=inp.dataset.mercadoarquivo.split('|'); onArquivoMercadoSelecionado(loja,itemId,inp); };
+  });
+  el.querySelectorAll('[data-mercadoperiodo]').forEach(inp=>{
+    inp.onchange=()=>{
+      const [key,campo]=inp.dataset.mercadoperiodo.split('||');
+      const pv=mercadoImportPreview[key]; if(!pv) return;
+      if(campo==='de') pv.periodoDe=inp.value; else pv.periodoAte=inp.value;
+    };
+  });
+  el.querySelectorAll('[data-mercadoconfirmarimport]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadoconfirmarimport.split('|'); confirmarImportacaoMercado(loja,itemId); };
+  });
+  el.querySelectorAll('[data-mercadocancelarimport]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadocancelarimport.split('|'); cancelarImportacaoMercado(loja,itemId); };
   });
 }
 function renderAmauri(){

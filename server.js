@@ -226,6 +226,24 @@ pool.query(`create table if not exists ml_mercado_categoria (
   atualizado_em timestamptz not null default now(),
   unique(loja, ml_item_id, mes)
 )`).catch(e => console.error('Falha ao garantir tabela "ml_mercado_categoria":', e.message));
+/* 21/08 (2a rodada): Felipe achou o botao "Baixar relatorio" dentro do proprio painel do Mercado
+   Livre (relatorio .xlsx "Mais vendidos nas suas categorias" - top 100 produtos da categoria, com
+   preco/unidades vendidas/visualizacoes/etc de cada um, pro periodo escolhido). Isso e' bem melhor
+   que digitar 4 numeros de um print: da' pra somar os 100 produtos e ter um numero de categoria bem
+   mais preciso, e ainda mostrar um ranking de concorrentes dentro do Doca. O parse do .xlsx e' feito
+   no PROPRIO NAVEGADOR (lib SheetJS via CDN, doca.html so' manda o resumo ja' calculado pra ca) -
+   por isso essas colunas extras sao todas OPCIONAIS (o formulario manual de digitar 4 numeros
+   continua funcionando do jeito que estava, sem periodo_de/periodo_ate/etc). */
+/* periodo_de/periodo_ate sao TEXT (nao "date") de proposito: guardam so' a data "YYYY-MM-DD" que
+   o proprio Mercado Livre usou no relatorio, sem nenhuma conta em cima - assim nao corre risco do
+   driver do Postgres devolver um objeto Date pro node (em vez de string) e bagunçar a comparacao
+   com o nome do arquivo/rotulo mostrado no Doca. */
+pool.query('alter table ml_mercado_categoria add column if not exists periodo_de text').catch(e => console.error('Falha ao adicionar coluna "periodo_de":', e.message));
+pool.query('alter table ml_mercado_categoria add column if not exists periodo_ate text').catch(e => console.error('Falha ao adicionar coluna "periodo_ate":', e.message));
+pool.query('alter table ml_mercado_categoria add column if not exists categoria_nome text').catch(e => console.error('Falha ao adicionar coluna "categoria_nome":', e.message));
+pool.query('alter table ml_mercado_categoria add column if not exists produtos_analisados integer').catch(e => console.error('Falha ao adicionar coluna "produtos_analisados":', e.message));
+pool.query('alter table ml_mercado_categoria add column if not exists top_produtos jsonb').catch(e => console.error('Falha ao adicionar coluna "top_produtos":', e.message));
+pool.query("alter table ml_mercado_categoria add column if not exists fonte text default 'manual'").catch(e => console.error('Falha ao adicionar coluna "fonte":', e.message));
 
 pool.query(`create table if not exists ml_reclamacoes_log (
   id serial primary key,
@@ -3411,7 +3429,9 @@ app.get('/mercado/categoria', async (req, res) => {
   try {
     const prod = await pool.query('select categoria_id, titulo, sku from ml_produtos where loja = $1 and ml_item_id = $2', [loja, itemId]);
     const historico = await pool.query(
-      'select mes, vendas_brutas_categoria, unidades_categoria, preco_medio_categoria from ml_mercado_categoria where loja = $1 and ml_item_id = $2 order by mes',
+      `select mes, vendas_brutas_categoria, unidades_categoria, preco_medio_categoria,
+              periodo_de, periodo_ate, categoria_nome, produtos_analisados, top_produtos, fonte
+       from ml_mercado_categoria where loja = $1 and ml_item_id = $2 order by mes`,
       [loja, itemId]
     );
     const categoriaId = prod.rows[0] && prod.rows[0].categoria_id;
@@ -3430,19 +3450,42 @@ app.get('/mercado/categoria', async (req, res) => {
 });
 app.post('/mercado/categoria', async (req, res) => {
   try {
-    const { loja, itemId, mes, vendasBrutas, unidades, precoMedio } = req.body || {};
+    const {
+      loja, itemId, mes, vendasBrutas, unidades, precoMedio,
+      periodoDe, periodoAte, categoriaNome, produtosAnalisados, topProdutos, fonte
+    } = req.body || {};
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     if (!itemId) return res.status(400).json({ ok: false, erro: 'Informe itemId.' });
-    if (!/^\d{4}-\d{2}$/.test(mes || '')) return res.status(400).json({ ok: false, erro: 'Informe mes no formato YYYY-MM.' });
+    // "mes" e' so' uma CHAVE de identificacao do periodo (nao precisa ser um mes civil de verdade):
+    // digitacao manual manda "YYYY-MM"; importacao de .xlsx manda "YYYY-MM-DD_a_YYYY-MM-DD" (o
+    // periodo exato que o Mercado Livre usou no relatorio, que pode ser qualquer intervalo).
+    const mesRegexOk = /^\d{4}-\d{2}$/.test(mes || '') || /^\d{4}-\d{2}-\d{2}_a_\d{4}-\d{2}-\d{2}$/.test(mes || '');
+    if (!mesRegexOk) return res.status(400).json({ ok: false, erro: 'Informe mes no formato YYYY-MM (ou um periodo valido).' });
+    // top_produtos vem como array (top ~20 linhas do relatorio) - guarda so' o necessario pra
+    // mostrar um ranking, sem virar um payload gigante (o relatorio inteiro tem ate' 100 linhas).
+    const topProdutosSeguro = Array.isArray(topProdutos) ? topProdutos.slice(0, 20) : null;
     await pool.query(
-      `insert into ml_mercado_categoria (loja, ml_item_id, mes, vendas_brutas_categoria, unidades_categoria, preco_medio_categoria, atualizado_em)
-       values ($1,$2,$3,$4,$5,$6, now())
+      `insert into ml_mercado_categoria (
+         loja, ml_item_id, mes, vendas_brutas_categoria, unidades_categoria, preco_medio_categoria,
+         periodo_de, periodo_ate, categoria_nome, produtos_analisados, top_produtos, fonte, atualizado_em
+       )
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
        on conflict (loja, ml_item_id, mes) do update set
          vendas_brutas_categoria = excluded.vendas_brutas_categoria,
          unidades_categoria = excluded.unidades_categoria,
          preco_medio_categoria = excluded.preco_medio_categoria,
+         periodo_de = excluded.periodo_de,
+         periodo_ate = excluded.periodo_ate,
+         categoria_nome = excluded.categoria_nome,
+         produtos_analisados = excluded.produtos_analisados,
+         top_produtos = excluded.top_produtos,
+         fonte = excluded.fonte,
          atualizado_em = now()`,
-      [loja, itemId, mes, vendasBrutas ?? null, unidades ?? null, precoMedio ?? null]
+      [
+        loja, itemId, mes, vendasBrutas ?? null, unidades ?? null, precoMedio ?? null,
+        periodoDe || null, periodoAte || null, categoriaNome || null, produtosAnalisados ?? null,
+        topProdutosSeguro ? JSON.stringify(topProdutosSeguro) : null, fonte || 'manual'
+      ]
     );
     res.json({ ok: true });
   } catch (e) {
@@ -3464,10 +3507,26 @@ app.delete('/mercado/categoria', async (req, res) => {
 /* vendas PROPRIAS do produto, mes a mes (calculado, nao precisa print) - reaproveita a mesma
    busca de pedidos usada no /sync, so' que agrupada por mes civil (fuso America/Sao_Paulo) em vez
    de janela corrida de 7/15/30 dias. */
+function somarVendasDoItem(pedidos, itemId) {
+  const statusExcluidos = new Set(['cancelled', 'invalid']);
+  let unidades = 0, valorBruto = 0;
+  for (const pedido of pedidos) {
+    if (statusExcluidos.has(pedido.status)) continue;
+    for (const oi of (pedido.order_items || [])) {
+      if (!oi.item || oi.item.id !== itemId) continue;
+      const qtd = oi.quantity || 0;
+      unidades += qtd;
+      valorBruto += qtd * (oi.unit_price || 0);
+    }
+  }
+  return { unidades, valorBruto: Math.round(valorBruto * 100) / 100 };
+}
 app.get('/mercado/vendas-proprias', async (req, res) => {
   const loja = req.query.loja;
   const itemId = req.query.itemId;
-  const meses = Math.min(Math.max(parseInt(req.query.meses, 10) || 12, 1), 24);
+  // "de"/"ate" (opcionais, YYYY-MM-DD) pedem o total de UM periodo exato - usado pra comparar com
+  // um periodo importado de um relatorio .xlsx (que raramente e' um mes civil fechado). Sem isso,
+  // cai no comportamento antigo: quebra por mes civil, dos ultimos "meses" meses.
   if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
   if (!itemId) return res.status(400).json({ ok: false, erro: 'Informe itemId.' });
   try {
@@ -3476,23 +3535,21 @@ app.get('/mercado/vendas-proprias', async (req, res) => {
     const accessToken = await tokenValido(loja);
     const sellerId = conta.ml_user_id;
     const log = { avisos: [] };
+    if (req.query.de && req.query.ate) {
+      const de = `${req.query.de}T00:00:00-03:00`;
+      const ate = `${req.query.ate}T23:59:59-03:00`;
+      const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
+      const totalPeriodo = somarVendasDoItem(pedidos, itemId);
+      return res.json({ ok: true, periodo: { de: req.query.de, ate: req.query.ate }, ...totalPeriodo, avisos: log.avisos });
+    }
+    const meses = Math.min(Math.max(parseInt(req.query.meses, 10) || 12, 1), 24);
     const listaMeses = ultimosMeses(meses);
-    const statusExcluidos = new Set(['cancelled', 'invalid']);
     const porMes = [];
     for (const mes of listaMeses) {
       const { de, ate } = mesReferencia(mes);
       const pedidos = await buscarPedidosNoIntervalo(accessToken, sellerId, de, ate, log, 'order.date_closed');
-      let unidades = 0, valorBruto = 0;
-      for (const pedido of pedidos) {
-        if (statusExcluidos.has(pedido.status)) continue;
-        for (const oi of (pedido.order_items || [])) {
-          if (!oi.item || oi.item.id !== itemId) continue;
-          const qtd = oi.quantity || 0;
-          unidades += qtd;
-          valorBruto += qtd * (oi.unit_price || 0);
-        }
-      }
-      porMes.push({ mes, unidades, valorBruto: Math.round(valorBruto * 100) / 100 });
+      const { unidades, valorBruto } = somarVendasDoItem(pedidos, itemId);
+      porMes.push({ mes, unidades, valorBruto });
     }
     res.json({ ok: true, meses: porMes, avisos: log.avisos });
   } catch (e) {
