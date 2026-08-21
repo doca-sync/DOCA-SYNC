@@ -560,11 +560,17 @@ app.post('/reclamacoes/processar', async (req, res) => {
 app.get('/reclamacoes/relatorio', async (req, res) => {
   try {
     const loja = req.query.loja;
-    const dias = Math.max(1, Math.min(90, parseInt(req.query.dias || '14', 10)));
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    /* Felipe (21/08) pediu: pendente de verdade (sucesso=false) continua aparecendo sempre, nao
+       importa ha quanto tempo foi registrada - precisa mesmo de revisao manual, some sozinha so'
+       quando o processo de limpeza (ver processarReclamacoesDaLoja) confirma que ja fechou no ML.
+       Ja' as RESOLVIDAS (sucesso=true) - que so' aparecem no resumo, ja' nem entram na lista
+       detalhada (ver comentario no doca.html) - se acumulavam pra sempre no contador "resolvida
+       sozinha", ficando com um numero cada vez mais velho/menos util. Agora so' conta as resolvidas
+       nas ultimas 24h, pra refletir "o que o Doca resolveu hoje", nao o historico todo. */
     const r = await pool.query(
       `select claim_id, order_id, reason_id, frete_vendedor, valor_frete_vendedor, acao_tomada, sucesso, motivo, tentativas, criado_em, atualizado_em
-       from ml_reclamacoes_log where loja = $1 and atualizado_em > now() - interval '${dias} days'
+       from ml_reclamacoes_log where loja = $1 and (sucesso = false or atualizado_em > now() - interval '24 hours')
        order by atualizado_em desc`,
       [loja]
     );
@@ -2967,6 +2973,31 @@ app.post('/perguntas/responder', async (req, res) => {
     res.json({ ok: true, resposta: j });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* ================= Encerrar anuncio no Mercado Livre =================
+   Felipe (21/08) pediu: produto descontinuado que ele nao consegue excluir direto no Mercado
+   Livre (pelo site/app) - fazer isso pelo Doca. O Mercado Livre nao tem "excluir" de verdade pra
+   a maioria dos anuncios (so' pra alguns casos bem especificos, tipo status=payment_required) - o
+   equivalente e' ENCERRAR (status="closed"), que e' IRREVERSIVEL (diferente de pausar, que da' pra
+   reativar depois) - confirmado na doc oficial: "Once closed, it cannot be reactivated again, but
+   it can be relisted." Depois de encerrado, o Mercado Livre descarta o anuncio sozinho depois de
+   um tempo (nao precisa fazer mais nada). */
+app.post('/produtos/encerrar-anuncio', async (req, res) => {
+  try {
+    const loja = req.query.loja || req.body?.loja;
+    const itemId = req.body?.itemId;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!itemId) return res.status(400).json({ ok: false, erro: 'Informe itemId.' });
+    const accessToken = await tokenValido(loja);
+    const r = await fetch(`https://api.mercadolibre.com/items/${itemId}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'closed' })
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(200).json({ ok: false, erro: j.message || 'Falha ao encerrar o anuncio.', corpo: j });
+    res.json({ ok: true, item: j });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 /* ================= Mensagens pos-venda (mensagem privada apos a compra) =================
    Diferente de Perguntas (publicas, antes da venda), essas sao mensagens privadas trocadas
    DEPOIS da compra (duvida de uso, problema, etc). Felipe (20/08) pediu: responde MANUAL (nao
@@ -3112,7 +3143,17 @@ app.get('/mensagens', async (req, res) => {
   try {
     const loja = req.query.loja;
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    const r = await pool.query('select pack_id, buyer_id, titulo, texto, data_mensagem from ml_mensagens_pendentes where loja = $1 order by atualizado_em desc', [loja]);
+    /* Felipe (21/08) pediu: so' mostrar mensagem das ultimas 24h - se for de dias anteriores e ainda
+       nao foi respondida, ele ja deve ter cuidado direto no Mercado Livre, nao precisa continuar
+       aparecendo aqui (evita acumular mensagem velha no card). Usa coalesce porque data_mensagem
+       pode vir nula (se o parsing do webhook nao achou a data - nesse caso usa quando o Doca
+       recebeu/salvou, que e' sempre preenchido). */
+    const r = await pool.query(
+      `select pack_id, buyer_id, titulo, texto, data_mensagem from ml_mensagens_pendentes
+       where loja = $1 and coalesce(data_mensagem, criado_em) > now() - interval '24 hours'
+       order by atualizado_em desc`,
+      [loja]
+    );
     const mensagens = r.rows.map(row => ({
       packId: row.pack_id, buyerId: row.buyer_id, titulo: row.titulo,
       ultimaMensagem: row.texto ? { texto: row.texto, data: row.data_mensagem } : null

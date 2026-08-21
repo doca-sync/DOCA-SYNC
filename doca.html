@@ -3009,7 +3009,7 @@ let reclamacoesPorLoja={}; // loja -> {total,pendentes,resolvidas,itens} | undef
 async function carregarReclamacoes(loja){
   try{
     const base=backendUrl(); if(!base){ reclamacoesPorLoja[loja]={total:0,pendentes:0,resolvidas:0,itens:[],erro:'backend não configurado'}; return; }
-    const r=await fetchComTimeout(`${base}/reclamacoes/relatorio?loja=${encodeURIComponent(loja)}&dias=14`,{},30000);
+    const r=await fetchComTimeout(`${base}/reclamacoes/relatorio?loja=${encodeURIComponent(loja)}`,{},30000);
     const j=await r.json();
     if(r.ok&&j.ok) reclamacoesPorLoja[loja]=j;
     else reclamacoesPorLoja[loja]={total:0,pendentes:0,resolvidas:0,itens:[],erro:j.erro||('status '+r.status)};
@@ -3069,7 +3069,9 @@ function produtosPausadosOuPerdendo(){
   // encerrado no Mercado Livre) - senão um produto pausado ANTES de ser excluído fica preso pra
   // sempre nesse card (mlStatus fica "paused" congelado, o Doca nunca mais recebe atualização
   // dele pra saber que sumiu de vez). Mesmo critério já usado no alerta de ruptura (linha ~7814).
-  return state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
+  // exclui tambem p.repoPausada (produto que o Felipe ja marcou pra sair de linha pelo botao 🔕) -
+  // mesmo criterio do alerta de ruptura, reaproveitado aqui a pedido dele (21/08)
+  return state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&!p.repoPausada&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
 }
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
@@ -3255,8 +3257,9 @@ function renderDashboard(){
         const itens=produtosPausadosOuPerdendo().filter(p=>p.loja===loja);
         return `<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px">
           <b style="font-size:12.5px">${esc(loja)}</b>
-          <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Título</th><th>Situação</th></tr></thead><tbody>
-          ${itens.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.titulo||'')}</td><td>${[p.mlStatus==='paused'?'⏸ Pausado':'',concorrenciaLabel(p.mlConcorrenciaStatus)?'⚔ '+esc(concorrenciaLabel(p.mlConcorrenciaStatus))+(typeof p.mlConcorrenciaPreco==='number'?' (concorrente: '+fmtMoney(p.mlConcorrenciaPreco)+')':''):''].filter(Boolean).join(' · ')}</td></tr>`).join('')}
+          <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Título</th><th>Situação</th><th></th></tr></thead><tbody>
+          ${itens.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.titulo||'')}</td><td>${[p.mlStatus==='paused'?'⏸ Pausado':'',concorrenciaLabel(p.mlConcorrenciaStatus)?'⚔ '+esc(concorrenciaLabel(p.mlConcorrenciaStatus))+(typeof p.mlConcorrenciaPreco==='number'?' (concorrente: '+fmtMoney(p.mlConcorrenciaPreco)+')':''):''].filter(Boolean).join(' · ')}</td>
+          <td style="white-space:nowrap">${p.mlItemId?`<button class="btn sm danger" data-encerraranuncio="${esc(p.id)}" title="Encerra o anúncio de vez no Mercado Livre (IRREVERSÍVEL - não dá pra reativar depois, só recadastrar do zero)">Encerrar anúncio</button> `:''}<button class="btn sm" data-pausarcatalogo="${esc(p.id)}" title="Não mostrar mais este aviso pra este SKU (produto saindo de linha: vende o que resta, não repõe) - dá pra reativar depois">🔕</button></td></tr>`).join('')}
           </tbody></table></div>
         </div>`;
       }).join('')}
@@ -3317,6 +3320,33 @@ function renderDashboard(){
   });
   const btnVerPausados=document.getElementById('btnVerPausados');
   if(btnVerPausados) btnVerPausados.onclick=abrirPausadosModal;
+  /* card "Pausados / perdendo no catálogo" (21/08, pedido do Felipe): produto descontinuado que ele
+     não consegue excluir direto no Mercado Livre - "Encerrar anúncio" chama a API de verdade
+     (irreversível); "🔕" só silencia o aviso aqui no Doca (reaproveita o mesmo pausarReposicao já
+     usado no alerta de ruptura). */
+  el.querySelectorAll('[data-encerraranuncio]').forEach(b=>b.onclick=()=>{
+    const p=prodById(b.dataset.encerraranuncio); if(!p) return;
+    confirmAction(`Encerrar de vez o anúncio "${p.titulo||p.sku}" (SKU ${p.sku}) no Mercado Livre? Isso é IRREVERSÍVEL - depois de encerrado não dá pra reativar, só cadastrar um anúncio novo do zero. Use só se realmente não vai vender mais este produto.`,async()=>{
+      b.disabled=true; b.textContent='Encerrando...';
+      try{
+        const base=backendUrl(); if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+        const r=await fetch(`${base}/produtos/encerrar-anuncio?loja=${encodeURIComponent(p.loja)}`,{
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({itemId:p.mlItemId})
+        });
+        let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+        if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao encerrar (status '+r.status+').'));
+        p.mlAusente=true; persist();
+        toast('Anúncio encerrado no Mercado Livre.');
+        renderAll();
+      }catch(e){ alert('Não foi possível encerrar o anúncio: '+e.message); b.disabled=false; b.textContent='Encerrar anúncio'; }
+    });
+  });
+  el.querySelectorAll('[data-pausarcatalogo]').forEach(b=>b.onclick=()=>{
+    const p=prodById(b.dataset.pausarcatalogo); if(!p) return;
+    confirmAction(`Parar de mostrar este aviso pra ${p.sku}? Use isso pra produto que vai sair de linha (vende o que resta, não repõe). Dá pra reativar depois no mesmo lugar do aviso de ruptura.`,()=>{
+      pausarReposicao(p.id,true); toast('Aviso pausado pra este SKU.'); renderAll();
+    });
+  });
   el.querySelectorAll('[data-verperguntas]').forEach(b=>b.onclick=()=>carregarPerguntas(b.dataset.verperguntas));
   el.querySelectorAll('[data-responder]').forEach(b=>b.onclick=()=>{
     const [qid,loja,itemId]=b.dataset.responder.split('|');
