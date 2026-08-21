@@ -303,21 +303,37 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
      devolucao formal quando ela estiver disponivel (pra nao dar reembolso sem pedir o produto de
      volta quando dava pra fazer a devolucao de verdade). */
   async function tentarFallbackMensagem(motivoAcaoIndisponivel) {
-    if (!acoes.includes('send_message_to_complainant')) {
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ' - e nem "send_message_to_complainant" esta disponivel pra mandar a mensagem de reembolso - precisa revisao manual' });
+    /* qual papel recebe a mensagem depende do estagio da reclamacao (confirmado com dado real em
+       20/08: reclamacao em mediacao - stage "dispute" - so' oferece "send_message_to_mediator",
+       NAO "send_message_to_complainant", porque nesse estagio o vendedor fala com o mediador do
+       Mercado Livre, nao mais direto com o comprador):
+         estagio "claim"   -> send_message_to_complainant, receiver_role "complainant"
+         estagio "dispute" -> send_message_to_mediator, receiver_role "mediator"
+       Tenta o que fizer sentido pro estagio atual primeiro; se por algum motivo o outro tambem
+       estiver disponivel e o preferido falhar, tenta o outro antes de desistir. */
+    const candidatos = claim.stage === 'dispute'
+      ? [{ acao: 'send_message_to_mediator', role: 'mediator' }, { acao: 'send_message_to_complainant', role: 'complainant' }]
+      : [{ acao: 'send_message_to_complainant', role: 'complainant' }, { acao: 'send_message_to_mediator', role: 'mediator' }];
+    const disponiveis = candidatos.filter(c => acoes.includes(c.acao));
+    if (!disponiveis.length) {
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ` - e nem mensagem pro comprador/mediador esta disponivel nessa reclamacao (estagio: ${claim.stage || '?'}) - precisa revisao manual` });
       return { claimId, erro: 'acao indisponivel' };
     }
-    try {
-      await fetchMLDebug(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/actions/send-message`, {
-        method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ receiver_role: 'complainant', message: 'Reembolso de 100% sem devolução.', attachments: [] })
-      });
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: 'mensagem: reembolso 100% sem devolução (sem botão de ação disponível)', sucesso: true, motivo: motivoAcaoIndisponivel + ' - mandada mensagem oferecendo reembolso 100% sem devolução, no lugar da ação formal' });
-      return { claimId, ok: true, acao: 'mensagem-reembolso' };
-    } catch (e) {
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ' - falha ao mandar a mensagem de reembolso: ' + e.message });
-      return { claimId, erro: e.message };
+    let ultimoErro = null;
+    for (const c of disponiveis) {
+      try {
+        await fetchMLDebug(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/actions/send-message`, {
+          method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ receiver_role: c.role, message: 'Reembolso de 100% sem devolução.', attachments: [] })
+        });
+        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: `mensagem pro ${c.role === 'mediator' ? 'mediador' : 'comprador'}: reembolso 100% sem devolução (sem botão de ação formal disponível)`, sucesso: true, motivo: motivoAcaoIndisponivel + ` - mandada mensagem (estagio: ${claim.stage || '?'}) oferecendo reembolso 100% sem devolução, no lugar da ação formal` });
+        return { claimId, ok: true, acao: 'mensagem-reembolso' };
+      } catch (e) {
+        ultimoErro = e;
+      }
     }
+    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ' - falha ao mandar a mensagem de reembolso: ' + (ultimoErro && ultimoErro.message) });
+    return { claimId, erro: ultimoErro && ultimoErro.message };
   }
   if (absorvidoPeloVendedor) {
     // regra 1: frete gratis pro vendedor -> devolucao
@@ -397,12 +413,17 @@ app.get('/debug/claims/simular', async (req, res) => {
     const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
     const acoes = (respondent.available_actions || []).map(a => a.action);
     let regraAplicavel = null;
-    const temFallbackMensagem = acoes.includes('send_message_to_complainant');
+    // dado real (20/08): reclamacao em mediacao (stage "dispute") so' oferece send_message_to_mediator,
+    // nao send_message_to_complainant (que so' existe no estagio "claim") - simula os dois certinho
+    const papelFallback = claim.stage === 'dispute' ? 'mediator' : 'complainant';
+    const acaoFallback = claim.stage === 'dispute' ? 'send_message_to_mediator' : 'send_message_to_complainant';
+    const temFallbackMensagem = acoes.includes(acaoFallback) || acoes.includes('send_message_to_complainant') || acoes.includes('send_message_to_mediator');
+    const fallbackTxt = temFallbackMensagem ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "reembolso 100% sem devolucao" (estagio: ${claim.stage || '?'})` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente`;
     if (claim.resource !== 'order') regraAplicavel = 'fora da regra (resource != order)';
-    else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : (temFallbackMensagem ? 'devolucao indisponivel - cairia no fallback: mensagem "reembolso 100% sem devolucao"' : 'devolucao indisponivel E fallback de mensagem tambem indisponivel - ficaria pendente');
-    else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : (temFallbackMensagem ? 'reembolso indisponivel - cairia no fallback: mensagem "reembolso 100% sem devolucao"' : 'reembolso indisponivel E fallback de mensagem tambem indisponivel - ficaria pendente');
+    else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : `devolucao indisponivel - ${fallbackTxt}`;
+    else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : `reembolso indisponivel - ${fallbackTxt}`;
     else regraAplicavel = 'nao foi possivel determinar o frete';
-    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, regraAplicavel, claim });
+    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, stage: claim.stage, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, regraAplicavel, claim });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 /* processa de verdade (EXECUTA a acao automatica) todas as reclamacoes abertas da loja - roda
