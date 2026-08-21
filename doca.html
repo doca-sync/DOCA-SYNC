@@ -3038,7 +3038,11 @@ async function responderMensagem(loja,packId,buyerId,texto){
    100% calculado localmente a partir do que já vem no /sync normal (mlStatus, mlConcorrenciaStatus)
    - não precisa de chamada extra nenhuma ao backend. */
 function produtosPausadosOuPerdendo(){
-  return state.produtos.filter(p=>p.mlItemId&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
+  // exclui p.mlAusente (anúncio que não apareceu mais no último sync — provavelmente excluído/
+  // encerrado no Mercado Livre) - senão um produto pausado ANTES de ser excluído fica preso pra
+  // sempre nesse card (mlStatus fica "paused" congelado, o Doca nunca mais recebe atualização
+  // dele pra saber que sumiu de vez). Mesmo critério já usado no alerta de ruptura (linha ~7814).
+  return state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
 }
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
