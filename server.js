@@ -2793,6 +2793,114 @@ app.post('/perguntas/responder', async (req, res) => {
     res.json({ ok: true, resposta: j });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* ================= Mensagens pos-venda (mensagem privada apos a compra) =================
+   Diferente de Perguntas (publicas, antes da venda), essas sao mensagens privadas trocadas
+   DEPOIS da compra (duvida de uso, problema, etc). Felipe (20/08) pediu: responde MANUAL (nao
+   automatico), mas com sugestao de resposta pronta pra so' clicar Responder. Mostrada logo
+   abaixo de Perguntas no Doca. */
+async function buscarMensagensPendentes(loja) {
+  const accessToken = await tokenValido(loja);
+  const conta = await pegarConta(loja);
+  const sellerId = conta.ml_user_id;
+  const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread?role=seller&tag=post_sale&user_id=${sellerId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const packs = (j.results || []).slice(0, 60); // limite de seguranca - nao processa uma avalanche de packs de uma vez
+  const resultado = [];
+  for (const p of packs) {
+    const packId = String(p.resource || '').replace('/packs/', '');
+    if (!packId) continue;
+    try {
+      // mark_as_read=false: nao consome o "nao lido" oficial do ML so' por ter mostrado no Doca -
+      // so' fica "lido" de verdade quando o Felipe manda uma resposta (ou olha direto no ML).
+      const thread = await fetchMLDebug(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&mark_as_read=false&limit=5&offset=0`, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const mensagens = (thread.messages || []).slice().sort((a, b) => new Date(a.message_date?.received || 0) - new Date(b.message_date?.received || 0));
+      const ultima = mensagens[mensagens.length - 1];
+      const buyerId = ultima && ultima.from && String(ultima.from.user_id) !== String(sellerId) ? ultima.from.user_id : null;
+      let titulo = null;
+      try {
+        const rOrd = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sellerId}&pack_id=${packId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const jOrd = await rOrd.json();
+        const pedido = (jOrd.results || [])[0];
+        const oi = pedido && pedido.order_items && pedido.order_items[0];
+        titulo = (oi && oi.item && oi.item.title) || null;
+      } catch (e) { /* segue sem titulo do produto - nao e' bloqueante */ }
+      resultado.push({
+        packId, count: p.count, buyerId,
+        ultimaMensagem: ultima ? { texto: ultima.text, data: ultima.message_date && ultima.message_date.received } : null,
+        titulo
+      });
+    } catch (e) {
+      resultado.push({ packId, count: p.count, erro: e.message });
+    }
+    await sleep(120);
+  }
+  return resultado;
+}
+app.get('/mensagens', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const mensagens = await buscarMensagensPendentes(loja);
+    res.json({ ok: true, loja, mensagens });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+app.post('/mensagens/responder', async (req, res) => {
+  try {
+    const loja = req.query.loja || req.body?.loja;
+    const packId = req.body?.packId;
+    const buyerId = req.body?.buyerId;
+    const texto = req.body?.texto;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!packId || !buyerId || !texto) return res.status(400).json({ ok: false, erro: 'Informe packId, buyerId e texto.' });
+    if (String(texto).length > 2000) return res.status(400).json({ ok: false, erro: 'Resposta com mais de 2000 caracteres.' });
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const r = await fetch(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${conta.ml_user_id}?tag=post_sale`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: { user_id: String(conta.ml_user_id) }, to: { user_id: String(buyerId) }, text: texto })
+    });
+    const j = await r.json();
+    if (!r.ok) return res.status(200).json({ ok: false, erro: j.message || 'Falha ao enviar a mensagem.', corpo: j });
+    res.json({ ok: true, resposta: j });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+/* ================= Sugestao de resposta pronta (IA) - Perguntas e Mensagens pos-venda =================
+   Felipe (20/08) pediu: tanto em Perguntas quanto em Mensagens pos-venda, deixar uma resposta
+   sugerida ja' pronta na caixa de texto, so' pra clicar Responder (ou editar antes). Usa a API do
+   Claude (Anthropic) - precisa da variavel de ambiente ANTHROPIC_API_KEY no Render. Custo e'
+   pequeno (poucos centavos por chamada, so' gera quando o Felipe abre o item pra responder). */
+async function gerarSugestaoResposta({ tipo, texto, titulo }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error('Faltou a variavel de ambiente ANTHROPIC_API_KEY no Render (crie uma chave em console.anthropic.com).');
+  const contexto = titulo ? ` Produto: "${titulo}".` : '';
+  const instrucao = tipo === 'mensagem'
+    ? 'Voce e um atendente de uma loja no Mercado Livre respondendo a uma MENSAGEM PRIVADA pos-venda de um cliente que ja comprou o produto (duvida, problema, ou pedido de informacao).'
+    : 'Voce e um atendente de uma loja no Mercado Livre respondendo a uma PERGUNTA publica de um possivel comprador, feita ANTES da compra, direto no anuncio.';
+  const prompt = `${instrucao}${contexto}
+
+Mensagem do cliente: "${texto}"
+
+Escreva uma resposta curta (1 a 3 frases), educada, direta e profissional, em portugues do Brasil, PRONTA pra ser enviada sem edicao - sem saudacao tipo "Prezado(a)" ou "Ola, tudo bem?" desnecessaria, sem assinatura no final. Se a pergunta pedir uma informacao especifica que voce nao tem (prazo exato de entrega, status daquele pedido especifico, etc), responda de forma generica mas util, sem inventar numero ou prazo que voce nao sabe. Responda so' com o texto da mensagem, nada mais.`;
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 300, messages: [{ role: 'user', content: prompt }] })
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error('Falha ao gerar sugestao: ' + ((j.error && j.error.message) || JSON.stringify(j)));
+  const textoResposta = (j.content || []).map(c => c.text || '').join('').trim();
+  if (!textoResposta) throw new Error('A IA nao devolveu texto de sugestao.');
+  return textoResposta;
+}
+app.post('/sugestao/resposta', async (req, res) => {
+  try {
+    const { tipo, texto, titulo } = req.body || {};
+    if (!texto) return res.status(400).json({ ok: false, erro: 'Informe "texto".' });
+    const sugestao = await gerarSugestaoResposta({ tipo: tipo === 'mensagem' ? 'mensagem' : 'pergunta', texto, titulo: titulo || null });
+    res.json({ ok: true, sugestao });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+
 app.post('/sync', async (req, res) => {
 const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
