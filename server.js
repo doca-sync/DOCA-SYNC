@@ -322,6 +322,24 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     const textoMensagem = absorvidoPeloVendedor ? 'Reembolso de 100% com devolução.' : 'Reembolso de 100% sem devolução.';
     const disponiveis = candidatos.filter(c => acoes.includes(c.acao));
     if (!disponiveis.length) {
+      /* Antes de marcar como "precisa revisao manual": as vezes o vendedor NAO tem mais nenhuma
+         acao disponivel (nem botao formal, nem mensagem) porque o Mercado Livre JA habilitou uma
+         devolucao/mediacao sozinho e esta so' esperando o comprador agir - nesse caso nao e' um caso
+         travado, e' um caso que ja esta andando por conta propria. Confirmado com dado real em 20/08
+         e 21/08 (Felipe verificou manualmente no ML: reclamacao ja tinha resposta do vendedor,
+         "esperando resposta do comprador", so' que o campo "available_actions" da busca de lista fica
+         vazio nesses casos). Sinal disponivel so' no detalhe completo da reclamacao:
+         "related_entities" contendo "return" = devolucao ja em andamento. Por isso busca o detalhe
+         completo aqui (so' quando cai nesse caso, pra nao gastar chamada a toa nos outros). */
+      let jaEmAndamento = false;
+      try {
+        const detalhe = await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        jaEmAndamento = Array.isArray(detalhe.related_entities) && detalhe.related_entities.includes('return');
+      } catch (e) { /* nao conseguiu confirmar - segue tratando como pendente mesmo, pra nao esconder um caso real */ }
+      if (jaEmAndamento) {
+        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: 'devolucao/mediacao ja habilitada pelo Mercado Livre - aguardando o comprador', sucesso: true, motivo: motivoAcaoIndisponivel + ' - mas o Mercado Livre ja habilitou a devolucao sozinho (related_entities: return) e esta esperando o comprador agir - nada a fazer da nossa parte' });
+        return { claimId, ok: true, acao: 'aguardando-comprador' };
+      }
       await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ` - e nem mensagem pro comprador/mediador esta disponivel nessa reclamacao (estagio: ${claim.stage || '?'}) - precisa revisao manual` });
       return { claimId, erro: 'acao indisponivel' };
     }
@@ -2870,7 +2888,13 @@ async function buscarMensagensPendentes(loja) {
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const sellerId = conta.ml_user_id;
-  const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread?role=seller&tag=post_sale&user_id=${sellerId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  /* NAO manda "user_id" aqui de proposito (mesmo tendo o sellerId disponivel): a doc oficial mostra
+     o uso basico so' com role+tag, deixando o Mercado Livre identificar o usuario pelo proprio
+     token (o "userId" volta no corpo da resposta) - passar um user_id (mesmo que correto) fez a
+     API devolver 403 "Invalid caller.id" em TODAS as lojas (bug real encontrado em 21/08, nunca
+     tinha funcionado desde que essa tela foi criada - ficava preso em "carregando" por causa do
+     bug antigo do carregarMensagens que nao mostrava erro). */
+  const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread?role=seller&tag=post_sale`, { headers: { Authorization: `Bearer ${accessToken}` } });
   const packs = (j.results || []).slice(0, 25); // limite de seguranca - nao processa uma avalanche de packs de uma vez
   // (25 packs x ~2 chamadas cada + pausa = pode levar uns 20-30s; acima disso arrisca estourar o
   // timeout do proxy do Render/navegador e o card de Mensagens pos-venda no Doca fica "carregando"
