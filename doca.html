@@ -3293,7 +3293,8 @@ function renderDashboard(){
              OUTROS produtos */
           const envioTxt=r.zeraAntesDoEnvio
             ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
-            :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`:' — este SKU não tem nenhum FULL programado ainda');
+            :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
+              :(r.foraDoProximoEnvio?` — <b class="pend">🚨 este SKU não está no próximo envio da loja (${fmtData(r.prox.data)}) e vai zerar antes — inclua ele nesse envio</b>`:' — este SKU não tem nenhum FULL programado ainda'));
           return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
         }).join('')}</div></div>`).join('')}</div>`:''}
     ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
@@ -7859,9 +7860,18 @@ function rupturaLojaLista(loja,diasLimite){
       const zeraAntesDoEnvio=!!kr.pendenteTardio; /* ESSE produto tem FULL programado, mas tarde */
       const proximoFullProduto=kr.pendentes&&kr.pendentes.length?kr.pendentes[0]:null;
       const diaZero=kr.diaZero||new Date(Date.now()+Math.max(0,cobDias)*864e5).toISOString().slice(0,10);
-      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero};
+      /* regra nova (Felipe, 21/08): mesmo fora da janela normal de alerta (diasLimite, ex.: 10 dias),
+         se esse SKU NAO tem nenhum FULL programado pra ele (proximoFullProduto null) E a loja já
+         tem um próximo envio agendado (prox) que não vai chegar a tempo de evitar a ruptura, avisa
+         de qualquer forma - senão o produto só entraria no radar quando a ruptura já estivesse a
+         menos de 10 dias, tarde demais pra entrar no próximo envio que já está sendo montado agora.
+         Caso real que motivou isso: o PERLON80 não estava em nenhum envio programado e só apareceu
+         no alerta quando a ruptura já estava a 10 dias - com essa regra, teria aparecido antes,
+         assim que ficasse claro que ele não ia entrar a tempo no próximo envio da loja. */
+      const foraDoProximoEnvio=!proximoFullProduto&&!!prox&&!!prox.data&&diaZero<=prox.data;
+      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero,foraDoProximoEnvio};
     })
-    .filter(x=>x.cobDias<=diasLimite||x.zeraAntesDoEnvio)
+    .filter(x=>x.cobDias<=diasLimite||x.zeraAntesDoEnvio||x.foraDoProximoEnvio)
     .sort((a,b)=>a.cobDias-b.cobDias)
     .map(x=>({...x,prox}));
 }
@@ -7899,13 +7909,14 @@ function renderRuptura(){
         <button class="btn sm danger" data-remerg="${esc(loja)}">🚨 FULL de emergência</button></span></div>`:''}
       <div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
         <th>SKU</th><th class="num">Estoque FULL</th><th class="num">Vendas/dia</th><th class="num">Cobertura</th><th>Zera em</th><th>FULL programado pra este SKU</th><th></th></tr></thead><tbody>
-        ${l.map(({i,k,p,cobDias,zeraAntesDoEnvio,diaZero,proximoFullProduto})=>`<tr>
+        ${l.map(({i,k,p,cobDias,zeraAntesDoEnvio,diaZero,proximoFullProduto,foraDoProximoEnvio})=>`<tr>
           <td class="mono">${esc(fullSku(i))}</td>
           <td class="num">${fmtInt(k.full)}</td>
           <td class="num">${k.media.toFixed(2)}</td>
           <td class="num">${cobDias} d</td>
           <td>${zeraAntesDoEnvio?`<span class="pend">${fmtData(diaZero)} — antes do envio</span>`:fmtData(diaZero)}</td>
-          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(proximoFullProduto.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data)):'<span class="muted">nenhum</span>'}</td>
+          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(proximoFullProduto.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data))
+            :(foraDoProximoEnvio?`<span class="pend">nenhum — vai zerar antes do próximo envio da loja (${fmtData(prox.data)}), inclua ele</span>`:'<span class="muted">nenhum</span>')}</td>
           <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button> <button class="btn sm" data-pausarrup2="${p.id}" title="Produto saindo de linha — para de mostrar este aviso">🔕</button></td>
         </tr>`).join('')}
       </tbody></table></div>`}
