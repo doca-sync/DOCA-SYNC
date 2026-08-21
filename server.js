@@ -1792,12 +1792,21 @@ function fimHojeBRT() {
 async function buscarPaginaComRetry(url, accessToken, log, tentativa) {
   tentativa = tentativa || 0;
   const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const j = await r.json();
+  let j;
+  try { j = await r.json(); } catch (e) { j = { error: 'resposta_invalida', message: 'corpo da resposta nao era JSON valido' }; }
   if (!r.ok) {
     const rateLimited = r.status === 429 || j.error === 'local_rate_limited' || j.message === 'local_rate_limited';
-    if (rateLimited && tentativa < 5) {
+    /* alem do rate limit, tambem tenta de novo em erro 5xx (instabilidade passageira do lado do
+       Mercado Livre, tipo "Oops! Something went wrong...") - encontrado em 21/08 com dado real: a
+       Dor Block e a Orbix Brasil, por terem MUITO mais pedidos que TorvStore/TorvShop, precisam
+       dividir a busca em bem mais paginas/intervalos (ver o "offset >= 950" mais abaixo) - isso
+       aumenta a chance de pegar um 500 passageiro no meio do caminho, e antes disso NAO tentava de
+       novo, so' desistia na hora - a venda inteira daquele sync ficava silenciosamente zerada
+       (pega no catch generico do /sync, so' loga no servidor, o Doca nunca mostrava esse erro). */
+    const erroPassageiro = rateLimited || r.status >= 500;
+    if (erroPassageiro && tentativa < 5) {
       const espera = 800 * Math.pow(2, tentativa);
-      if (log) log.avisos.push(`rate limit (429) na busca de pedidos - tentativa ${tentativa + 1}/5, esperando ${espera}ms`);
+      if (log) log.avisos.push(`${rateLimited ? 'rate limit (429)' : 'erro ' + r.status + ' do Mercado Livre'} na busca de pedidos - tentativa ${tentativa + 1}/5, esperando ${espera}ms`);
       await sleep(espera);
       return buscarPaginaComRetry(url, accessToken, log, tentativa + 1);
     }
