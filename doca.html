@@ -6530,9 +6530,13 @@ async function carregarMercadoProduto(loja,itemId){
       try{
         const {de,ate}=(h.periodo_de&&h.periodo_ate)?{de:h.periodo_de,ate:h.periodo_ate}:mercadoLimitesDoMes(h.mes);
         const rr=await fetchComTimeout(`${base}/mercado/vendas-proprias?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&de=${de}&ate=${ate}`,{},60000);
-        const jj=await rr.json();
+        let jj; try{ jj=await rr.json(); }catch(e2){ throw new Error('resposta inesperada (status '+rr.status+')'); }
         if(rr.ok&&jj.ok) vendasProprias[h.mes]={unidades:jj.unidades,valorBruto:jj.valorBruto};
-      }catch(e){ /* uma falha num período não trava os outros */ }
+        // 21/08 (achado real do Felipe): quando esse período específico falhava, a célula ficava
+        // pra sempre em "—" sem nenhuma pista do motivo - antes isso era engolido em silêncio.
+        // Agora guarda o erro pra mostrar na tabela (com hover) em vez de fingir que não tem dado.
+        else vendasProprias[h.mes]={erro:(jj&&jj.erro)||('status '+rr.status)};
+      }catch(e){ vendasProprias[h.mes]={erro:e.message||'falha desconhecida'}; }
     }));
     mercadoDados[key]=Object.assign({},mercadoDados[key],{vendasProprias,vendasCarregando:false});
   }catch(e){
@@ -6681,7 +6685,7 @@ function renderMercadoCorpo(p,key,d){
   const vendasProprias=d.vendasProprias||{};
   const labels=historico.map(mercadoLabelHistorico);
   const catVals=historico.map(h=>Number(h.vendas_brutas_categoria)||0);
-  const propVals=historico.map(h=>vendasProprias[h.mes]?vendasProprias[h.mes].valorBruto:0);
+  const propVals=historico.map(h=>(vendasProprias[h.mes]&&!vendasProprias[h.mes].erro)?vendasProprias[h.mes].valorBruto:0);
   const ultimoComRanking=historico.slice().reverse().find(h=>h.top_produtos&&h.top_produtos.length);
   return `
     ${d.categoriaId?`<p class="hint">Categoria <span class="mono">${esc(d.categoriaId)}</span> — <a href="${esc(d.urlTendencia)}" target="_blank" rel="noopener" data-mercadoabrirtendencia="1">abrir tendência da categoria no Mercado Livre ↗</a></p>`
@@ -6698,12 +6702,17 @@ function renderMercadoCorpo(p,key,d){
       ${historico.map(h=>{
         const prop=vendasProprias[h.mes];
         const aindaCalculando=d.vendasCarregando&&!prop;
-        const partic=h.vendas_brutas_categoria?(((prop?prop.valorBruto:0)/Number(h.vendas_brutas_categoria))*100):null;
+        // 21/08 (achado real do Felipe): quando o cálculo de "suas vendas" falhava pra um período
+        // específico, a célula ficava pra sempre em "—" sem contar o motivo, e "Participação" ainda
+        // assim mostrava "0%" (calculado com valorBruto=0) como se tivesse dado certo. Agora, se
+        // deu erro, mostra "⚠ erro" (com o motivo no hover) nas duas colunas em vez de fingir 0%.
+        const propErro=prop&&prop.erro;
+        const partic=(h.vendas_brutas_categoria&&!propErro)?(((prop?prop.valorBruto:0)/Number(h.vendas_brutas_categoria))*100):null;
         return `<tr>
           <td class="mono">${esc(mercadoLabelHistorico(h))}${h.fonte==='xlsx'?' <span class="muted" style="font-size:10px">(relatório)</span>':''}</td>
           <td class="num">${h.vendas_brutas_categoria!=null?fmtMoney(h.vendas_brutas_categoria):'<span class="muted">—</span>'}</td>
-          <td class="num">${aindaCalculando?'<span class="muted">calculando…</span>':(prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>')}</td>
-          <td class="num">${aindaCalculando?'<span class="muted">…</span>':(partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>')}</td>
+          <td class="num">${aindaCalculando?'<span class="muted">calculando…</span>':(propErro?`<span style="color:#e66;cursor:help" title="${esc(prop.erro)}">⚠ erro</span>`:(prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>'))}</td>
+          <td class="num">${aindaCalculando?'<span class="muted">…</span>':(propErro?'<span class="muted">—</span>':(partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>'))}</td>
           <td><button class="btn sm danger" data-mercadoexcluirmes="${esc(p.loja)}|${esc(p.mlItemId)}|${esc(h.mes)}">✕</button></td>
         </tr>`;
       }).join('')}
