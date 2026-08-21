@@ -2966,6 +2966,80 @@ async function responderPergunta(loja,questionId,itemId,texto){
   }catch(e){ alert('Não foi possível responder: '+e.message); }
   finally{ delete perguntasEnviando[questionId]; renderDashboard(); }
 }
+/* ---------- sugestão de resposta pronta (IA) - Perguntas e Mensagens pós-venda ----------
+   Pedido do Felipe (20/08): tanto em Perguntas quanto em Mensagens pós-venda, deixar a resposta
+   sugerida já pronta na caixa de texto, só pra clicar Responder (ou editar antes). Busca em
+   paralelo pra todos os itens de uma vez e só re-renderiza no final (evita apagar o que a pessoa
+   já esteja digitando a cada sugestão que for chegando). */
+let sugestoesResposta={}; // chave (questionId ou packId) -> texto sugerido | 'carregando' | ''(falhou)
+async function buscarSugestaoSilenciosa(chave,tipo,texto,titulo){
+  sugestoesResposta[chave]='carregando';
+  try{
+    const base=backendUrl(); if(!base) return;
+    const r=await fetch(`${base}/sugestao/resposta`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tipo,texto,titulo:titulo||null})
+    });
+    const j=await r.json();
+    sugestoesResposta[chave]=(r.ok&&j.ok&&j.sugestao)?j.sugestao:'';
+  }catch(e){ sugestoesResposta[chave]=''; }
+}
+/* ---------- reclamações e mediações (card na Visão Geral) ----------
+   Resolvidas automaticamente pelo backend (dentro do /sync, pela regra do frete) - aqui só busca
+   o relatório do que já foi feito, pra mostrar sempre visível (inclusive quando não tem
+   pendência nenhuma). Carregado junto com a sincronização normal (ver sincronizarMlAoAbrir e o
+   botão Atualizar). */
+let reclamacoesPorLoja={}; // loja -> {total,pendentes,resolvidas,itens} | undefined = ainda não carregou
+async function carregarReclamacoes(loja){
+  try{
+    const base=backendUrl(); if(!base) return;
+    const r=await fetch(`${base}/reclamacoes/relatorio?loja=${encodeURIComponent(loja)}&dias=14`);
+    const j=await r.json();
+    if(r.ok&&j.ok) reclamacoesPorLoja[loja]=j;
+  }catch(e){ console.error('Falha ao buscar relatório de reclamações ('+loja+'):',e.message); }
+}
+/* ---------- mensagens pós-venda (card na Visão Geral, logo abaixo de Perguntas) ----------
+   Diferente de Perguntas, o Felipe pediu isso sempre visível (sem precisar clicar pra carregar) -
+   por isso é buscado junto com a sincronização normal, igual Reclamações. Resposta continua
+   manual (só a sugestão vem pronta). */
+let mensagensCarregadas={}; // loja -> array de mensagens pendentes | undefined = ainda não carregou
+let mensagensEnviando={}; // packId -> true enquanto envia a resposta
+async function carregarMensagens(loja){
+  try{
+    const base=backendUrl(); if(!base) return;
+    const r=await fetch(`${base}/mensagens?loja=${encodeURIComponent(loja)}`);
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.erro||'falha ao buscar mensagens');
+    mensagensCarregadas[loja]=j.mensagens||[];
+    const lista=mensagensCarregadas[loja];
+    await Promise.all(lista.filter(m=>m.ultimaMensagem&&sugestoesResposta[m.packId]===undefined)
+      .map(m=>buscarSugestaoSilenciosa(m.packId,'mensagem',m.ultimaMensagem.texto,m.titulo)));
+  }catch(e){ console.error('Falha ao buscar mensagens pós-venda ('+loja+'):',e.message); }
+}
+async function responderMensagem(loja,packId,buyerId,texto){
+  if(!texto||!texto.trim()){ alert('Escreva uma resposta antes de enviar.'); return; }
+  if(!buyerId){ alert('Não foi possível identificar o comprador dessa conversa - atualize a página e tente de novo.'); return; }
+  mensagensEnviando[packId]=true; renderDashboard();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/mensagens/responder?loja=${encodeURIComponent(loja)}`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({packId,buyerId,texto:texto.trim()})
+    });
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao responder (status '+r.status+').'));
+    if(mensagensCarregadas[loja]) mensagensCarregadas[loja]=mensagensCarregadas[loja].filter(m=>m.packId!==packId);
+    toast('Resposta enviada pro Mercado Livre.');
+  }catch(e){ alert('Não foi possível responder: '+e.message); }
+  finally{ delete mensagensEnviando[packId]; renderDashboard(); }
+}
+/* ---------- pausado / perdendo no catálogo (card na Visão Geral) ----------
+   100% calculado localmente a partir do que já vem no /sync normal (mlStatus, mlConcorrenciaStatus)
+   - não precisa de chamada extra nenhuma ao backend. */
+function produtosPausadosOuPerdendo(){
+  return state.produtos.filter(p=>p.mlItemId&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
+}
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
   const totals=STORES.map(loja=>{
@@ -3078,10 +3152,76 @@ function renderDashboard(){
             <div style="font-size:12px;color:var(--muted)">${q.titulo?esc(q.titulo):esc(q.itemId||'')}${q.permalink?` · <a href="${esc(q.permalink)}" target="_blank" rel="noopener">ver anúncio</a>`:''}${q.dataCriada?' · '+new Date(q.dataCriada).toLocaleString('pt-BR'):''}</div>
             <div style="margin:6px 0"><b>${esc(q.texto||'')}</b></div>
             <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
-              <label style="font-size:11.5px">Resposta<textarea data-respostatexto="${esc(q.id)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${perguntasEnviando[q.id]?'disabled':''}></textarea></label>
+              <label style="font-size:11.5px">Resposta${sugestoesResposta[q.id]==='carregando'?' <span class="muted" style="font-weight:400">(gerando sugestão...)</span>':(sugestoesResposta[q.id]?' <span class="muted" style="font-weight:400">(sugestão da IA - revise antes de enviar)</span>':'')}<textarea data-respostatexto="${esc(q.id)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${perguntasEnviando[q.id]?'disabled':''}>${esc(sugestoesResposta[q.id]&&sugestoesResposta[q.id]!=='carregando'?sugestoesResposta[q.id]:'')}</textarea></label>
               <button class="btn sm acc" data-responder="${esc(q.id)}|${esc(l)}|${esc(q.itemId||'')}" ${perguntasEnviando[q.id]?'disabled':''}>${perguntasEnviando[q.id]?'Enviando...':'Responder'}</button>
             </div>
           </div>`).join(''):'<p class="empty-inline">Nenhuma pergunta sem resposta agora.</p>'}
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="card" style="margin:20px 0">
+      <h3 style="margin-top:0">💬 Mensagens pós-venda</h3>
+      <div class="acoes-linha" style="flex-wrap:wrap">
+        ${STORES.map(loja=>{
+          const lista=mensagensCarregadas[loja];
+          if(lista===undefined) return `<span class="badge" style="padding:6px 10px">${esc(loja)}: carregando...</span>`;
+          if(lista.length>0) return `<span class="badge pend" style="padding:6px 10px">${esc(loja)}: ${lista.length} sem resposta</span>`;
+          return `<span class="badge okv" style="padding:6px 10px">${esc(loja)}: em dia</span>`;
+        }).join('')}
+      </div>
+      ${STORES.filter(l=>mensagensCarregadas[l]&&mensagensCarregadas[l].length).map(l=>{
+        const lista=mensagensCarregadas[l];
+        return `<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px">
+          <b style="font-size:12.5px">${esc(l)}</b>
+          ${lista.map(m=>`<div class="envio-card" style="margin-top:8px">
+            <div style="font-size:12px;color:var(--muted)">${m.titulo?esc(m.titulo):'Pedido do pack '+esc(m.packId)}${m.ultimaMensagem&&m.ultimaMensagem.data?' · '+new Date(m.ultimaMensagem.data).toLocaleString('pt-BR'):''}</div>
+            <div style="margin:6px 0"><b>${esc((m.ultimaMensagem&&m.ultimaMensagem.texto)||'')}</b></div>
+            <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
+              <label style="font-size:11.5px">Resposta${sugestoesResposta[m.packId]==='carregando'?' <span class="muted" style="font-weight:400">(gerando sugestão...)</span>':(sugestoesResposta[m.packId]?' <span class="muted" style="font-weight:400">(sugestão da IA - revise antes de enviar)</span>':'')}<textarea data-mensagemtexto="${esc(m.packId)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${mensagensEnviando[m.packId]?'disabled':''}>${esc(sugestoesResposta[m.packId]&&sugestoesResposta[m.packId]!=='carregando'?sugestoesResposta[m.packId]:'')}</textarea></label>
+              <button class="btn sm acc" data-respondermsg="${esc(m.packId)}|${esc(l)}|${esc(m.buyerId||'')}" ${mensagensEnviando[m.packId]?'disabled':''}>${mensagensEnviando[m.packId]?'Enviando...':'Responder'}</button>
+            </div>
+          </div>`).join('')}
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="card" style="margin:20px 0">
+      <h3 style="margin-top:0">⚖ Reclamações e mediações</h3>
+      <p class="hint" style="margin:0 0 10px">Resolvidas automaticamente: frete grátis pro vendedor → devolução; frete não grátis → reembolso 100%. Últimos 14 dias.</p>
+      <div class="acoes-linha" style="flex-wrap:wrap">
+        ${STORES.map(loja=>{
+          const rl=reclamacoesPorLoja[loja];
+          if(!rl) return `<span class="badge" style="padding:6px 10px">${esc(loja)}: carregando...</span>`;
+          if(rl.pendentes>0) return `<span class="badge pend" style="padding:6px 10px">${esc(loja)}: ${rl.pendentes} pendente${rl.pendentes===1?'':'s'} de revisão</span>`;
+          return `<span class="badge okv" style="padding:6px 10px">${esc(loja)}: sem pendências${rl.resolvidas?` (${rl.resolvidas} resolvida${rl.resolvidas===1?'':'s'})`:''}</span>`;
+        }).join('')}
+      </div>
+      ${STORES.filter(l=>reclamacoesPorLoja[l]&&reclamacoesPorLoja[l].itens&&reclamacoesPorLoja[l].itens.length).map(l=>{
+        const itens=reclamacoesPorLoja[l].itens;
+        return `<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px">
+          <b style="font-size:12.5px">${esc(l)}</b>
+          ${itens.map(it=>`<div class="envio-card" style="margin-top:8px">
+            <div style="font-size:12px;color:var(--muted)">Reclamação ${esc(it.claim_id)}${it.order_id?' · pedido '+esc(it.order_id):''} · ${new Date(it.atualizado_em).toLocaleString('pt-BR')}</div>
+            <div style="margin:6px 0">${it.sucesso?`<span class="badge okv">✓ ${esc(it.acao_tomada||'resolvida')}</span>`:`<span class="badge pend">⚠ pendente de revisão</span>`} <span class="muted">${esc(it.motivo||'')}</span></div>
+          </div>`).join('')}
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="card" style="margin:20px 0">
+      <h3 style="margin-top:0">⏸ Pausados / perdendo no catálogo</h3>
+      <div class="acoes-linha" style="flex-wrap:wrap">
+        ${STORES.map(loja=>{
+          const itens=produtosPausadosOuPerdendo().filter(p=>p.loja===loja);
+          if(!itens.length) return `<span class="badge okv" style="padding:6px 10px">${esc(loja)}: em dia</span>`;
+          return `<span class="badge pend" style="padding:6px 10px">${esc(loja)}: ${itens.length} SKU${itens.length===1?'':'s'}</span>`;
+        }).join('')}
+      </div>
+      ${STORES.filter(loja=>produtosPausadosOuPerdendo().some(p=>p.loja===loja)).map(loja=>{
+        const itens=produtosPausadosOuPerdendo().filter(p=>p.loja===loja);
+        return `<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px">
+          <b style="font-size:12.5px">${esc(loja)}</b>
+          <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Título</th><th>Situação</th></tr></thead><tbody>
+          ${itens.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.titulo||'')}</td><td>${[p.mlStatus==='paused'?'⏸ Pausado':'',concorrenciaLabel(p.mlConcorrenciaStatus)?'⚔ '+esc(concorrenciaLabel(p.mlConcorrenciaStatus))+(typeof p.mlConcorrenciaPreco==='number'?' (concorrente: '+fmtMoney(p.mlConcorrenciaPreco)+')':''):''].filter(Boolean).join(' · ')}</td></tr>`).join('')}
+          </tbody></table></div>
         </div>`;
       }).join('')}
     </div>
@@ -3145,6 +3285,11 @@ function renderDashboard(){
     const [qid,loja,itemId]=b.dataset.responder.split('|');
     const ta=el.querySelector(`[data-respostatexto="${qid}"]`);
     responderPergunta(loja,qid,itemId,ta?ta.value:'');
+  });
+  el.querySelectorAll('[data-respondermsg]').forEach(b=>b.onclick=()=>{
+    const [packId,loja,buyerId]=b.dataset.respondermsg.split('|');
+    const ta=el.querySelector(`[data-mensagemtexto="${packId}"]`);
+    responderMensagem(loja,packId,buyerId,ta?ta.value:'');
   });
   el.querySelectorAll('[data-coletaconf]').forEach(c=>c.onchange=()=>{
     const e=envioById(c.dataset.coletaconf); if(!e) return;
@@ -3378,12 +3523,14 @@ function abrirSincronizacaoML(){
         st.textContent=`Sincronizando ${outras[i]}... (${i+1}/${outras.length+1})`;
         try{ aplicarSincronizacaoAutomatica(await mlSincronizarLoja(outras[i])); }
         catch(e){ falhas.push(outras[i]); }
+        try{ await carregarReclamacoes(outras[i]); await carregarMensagens(outras[i]); renderDashboard(); }catch(e){}
         try{ aplicarSincronizacaoFinanceira(outras[i],await mpSincronizarFinanceiro(outras[i])); }catch(e){}
       }
       st.textContent=`Sincronizando ${c.loja}... (${outras.length+1}/${outras.length+1}) — pode levar até 1 minuto se o servidor estava dormindo.`;
       try{
         const resultado=await mlSincronizarLoja(c.loja);
         ultimoResultadoMl=resultado;
+        try{ await carregarReclamacoes(c.loja); await carregarMensagens(c.loja); renderDashboard(); }catch(e){}
         try{ aplicarSincronizacaoFinanceira(c.loja,await mpSincronizarFinanceiro(c.loja)); }catch(e){}
         render(resultado,null);
         toast('Todas as lojas sincronizadas'+(falhas.length?` (falhou: ${falhas.join(', ')})`:'')+'.');
@@ -7859,6 +8006,13 @@ tentarReconectar();
       console.error(`Sincronização automática com o Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
       mlUltimoErroAuto[loja]=e.message;
       renderProdutos();
+    }
+    try{
+      await carregarReclamacoes(loja);
+      await carregarMensagens(loja);
+      renderDashboard();
+    }catch(e){
+      console.error(`Sincronização automática de reclamações/mensagens falhou ao abrir o Doca (loja ${loja}):`,e.message);
     }
     try{
       aplicarSincronizacaoFinanceira(loja,await mpSincronizarFinanceiro(loja));
