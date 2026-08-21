@@ -314,6 +314,12 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     const candidatos = claim.stage === 'dispute'
       ? [{ acao: 'send_message_to_mediator', role: 'mediator' }, { acao: 'send_message_to_complainant', role: 'complainant' }]
       : [{ acao: 'send_message_to_complainant', role: 'complainant' }, { acao: 'send_message_to_mediator', role: 'mediator' }];
+    /* texto da mensagem depende de qual regra caiu: se o frete foi do vendedor a regra pedia
+       devolucao (so' nao rolou por falta de botao), entao a mensagem tem que OFERECER devolucao
+       junto com o reembolso - "sem devolucao" so' vale quando o frete nao era do vendedor (regra 2).
+       Corrigido em 20/08 a pedido do Felipe - antes mandava sempre "sem devolucao", errado pro caso
+       de frete gratis pro vendedor. */
+    const textoMensagem = absorvidoPeloVendedor ? 'Reembolso de 100% com devolução.' : 'Reembolso de 100% sem devolução.';
     const disponiveis = candidatos.filter(c => acoes.includes(c.acao));
     if (!disponiveis.length) {
       await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ` - e nem mensagem pro comprador/mediador esta disponivel nessa reclamacao (estagio: ${claim.stage || '?'}) - precisa revisao manual` });
@@ -331,13 +337,13 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
            r.ok (2xx) direto, sem exigir corpo JSON nenhum. */
         const rMsg = await fetch(`https://api.mercadolibre.com/marketplace/v2/claims/${claimId}/actions/send-message`, {
           method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ receiver_role: c.role, message: 'Reembolso de 100% sem devolução.', attachments: [] })
+          body: JSON.stringify({ receiver_role: c.role, message: textoMensagem, attachments: [] })
         });
         if (!rMsg.ok) {
           const brutoMsg = await rMsg.text().catch(() => '');
           throw new Error(`send-message respondeu status ${rMsg.status}${brutoMsg ? ': ' + brutoMsg.slice(0, 300) : ''}`);
         }
-        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: `mensagem pro ${c.role === 'mediator' ? 'mediador' : 'comprador'}: reembolso 100% sem devolução (sem botão de ação formal disponível)`, sucesso: true, motivo: motivoAcaoIndisponivel + ` - mandada mensagem (estagio: ${claim.stage || '?'}) oferecendo reembolso 100% sem devolução, no lugar da ação formal` });
+        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: `mensagem pro ${c.role === 'mediator' ? 'mediador' : 'comprador'}: ${textoMensagem} (sem botão de ação formal disponível)`, sucesso: true, motivo: motivoAcaoIndisponivel + ` - mandada mensagem (estagio: ${claim.stage || '?'}): "${textoMensagem}", no lugar da ação formal` });
         return { claimId, ok: true, acao: 'mensagem-reembolso' };
       } catch (e) {
         ultimoErro = e;
@@ -429,7 +435,10 @@ app.get('/debug/claims/simular', async (req, res) => {
     const papelFallback = claim.stage === 'dispute' ? 'mediator' : 'complainant';
     const acaoFallback = claim.stage === 'dispute' ? 'send_message_to_mediator' : 'send_message_to_complainant';
     const temFallbackMensagem = acoes.includes(acaoFallback) || acoes.includes('send_message_to_complainant') || acoes.includes('send_message_to_mediator');
-    const fallbackTxt = temFallbackMensagem ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "reembolso 100% sem devolucao" (estagio: ${claim.stage || '?'})` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente`;
+    // texto do fallback depende do frete: gratis pro vendedor -> oferece devolucao junto; senao -> sem devolucao
+    // (mesma logica de tentarFallbackMensagem la' embaixo, corrigido em 20/08)
+    const textoFallbackSimulado = frete.absorvidoPeloVendedor ? 'reembolso 100% com devolucao' : 'reembolso 100% sem devolucao';
+    const fallbackTxt = temFallbackMensagem ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "${textoFallbackSimulado}" (estagio: ${claim.stage || '?'})` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente`;
     if (claim.resource !== 'order') regraAplicavel = 'fora da regra (resource != order)';
     else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : `devolucao indisponivel - ${fallbackTxt}`;
     else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : `reembolso indisponivel - ${fallbackTxt}`;
@@ -2862,7 +2871,10 @@ async function buscarMensagensPendentes(loja) {
   const conta = await pegarConta(loja);
   const sellerId = conta.ml_user_id;
   const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread?role=seller&tag=post_sale&user_id=${sellerId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const packs = (j.results || []).slice(0, 60); // limite de seguranca - nao processa uma avalanche de packs de uma vez
+  const packs = (j.results || []).slice(0, 25); // limite de seguranca - nao processa uma avalanche de packs de uma vez
+  // (25 packs x ~2 chamadas cada + pausa = pode levar uns 20-30s; acima disso arrisca estourar o
+  // timeout do proxy do Render/navegador e o card de Mensagens pos-venda no Doca fica "carregando"
+  // pra sempre - reduzido de 60 pra 25 por causa disso, 20/08)
   const resultado = [];
   for (const p of packs) {
     const packId = String(p.resource || '').replace('/packs/', '');
