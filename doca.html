@@ -2513,6 +2513,18 @@ function confirmarEnvioFull(envioId,manterCompra){
     const p=prodById(i.produtoId); if(!p||!(i.solicitado>0)) return;
     const fi=state.full.itens.find(x=>x.loja===e.loja&&fullProduto(x)&&fullProduto(x).id===p.id);
     if(fi) fi.ajuste=null;
+    /* 21/08 (Felipe): assim que confirma um envio, ele some de "Próximos programados" (de
+       propósito - ver comentário lá em cima) e o Mercado Livre ainda demora uns dias pra
+       registrar o recebimento (aptas/em transferência) - nesse intervalo, o alerta de ruptura
+       voltava a disparar "esse SKU não está no próximo envio, vai zerar antes" mesmo já tendo
+       saído material pra lá. Em vez de inventar um número de estoque "a caminho" (isso já foi
+       tentado antes como "Entrada pendente" e foi removido - ver aviso acima - porque travava
+       errado sempre que algo mudava fora do Doca), guarda só um marcador leve: quando esse SKU
+       foi confirmado e quanto tinha de aptas+transf NAQUELE momento. Enquanto esse número real
+       não SUBIR (prova de que o ML já processou algo) e o prazo de segurança não vencer, o
+       alerta "não está no próximo envio" fica suspenso pra esse SKU - o resto do cálculo
+       (zera em X dias, etc) continua 100% real, sem gerar número congelado. */
+    p.ultimoEnvioConfirmado={data:hoje(),baselineFull:fi?((fi.aptas||0)+(fi.transf||0)):0};
     somado.push(p.sku);
     flashFull[p.id]=Date.now();
   });
@@ -2980,17 +2992,41 @@ async function responderPergunta(loja,questionId,itemId,texto){
    paralelo pra todos os itens de uma vez e só re-renderiza no final (evita apagar o que a pessoa
    já esteja digitando a cada sugestão que for chegando). */
 let sugestoesResposta={}; // chave (questionId ou packId) -> texto sugerido | 'carregando' | ''(falhou)
+let sugestoesErro={}; // chave -> motivo da última falha (só existe quando sugestoesResposta[chave]==='')
+let sugestoesContexto={}; // chave -> {tipo,texto,titulo} guardado pra dar pra "tentar de novo" sem reconstruir nada
+// 21/08: até aqui, se a chamada de IA falhasse (ex: faltou configurar a ANTHROPIC_API_KEY no
+// Render, ou a API do Claude deu erro), o Doca engolia o erro em silêncio - a caixa de resposta só
+// ficava sem sugestão nenhuma, sem avisar PORQUE, e o Felipe (21/08) reportou isso como "bug" sem
+// ter como saber o motivo. Agora guarda o motivo da falha (aparece no hover) e mostra um link
+// "tentar de novo".
 async function buscarSugestaoSilenciosa(chave,tipo,texto,titulo){
+  sugestoesContexto[chave]={tipo,texto,titulo};
   sugestoesResposta[chave]='carregando';
+  delete sugestoesErro[chave];
   try{
-    const base=backendUrl(); if(!base) return;
+    const base=backendUrl();
+    if(!base){ sugestoesResposta[chave]=''; sugestoesErro[chave]='Configure a URL do backend primeiro (em Produtos → Atualizar).'; return; }
     const r=await fetch(`${base}/sugestao/resposta`,{
       method:'POST', headers:{'Content-Type':'application/json'},
       body:JSON.stringify({tipo,texto,titulo:titulo||null})
     });
-    const j=await r.json();
-    sugestoesResposta[chave]=(r.ok&&j.ok&&j.sugestao)?j.sugestao:'';
-  }catch(e){ sugestoesResposta[chave]=''; }
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('o backend respondeu algo inesperado (status '+r.status+')'); }
+    if(r.ok&&j.ok&&j.sugestao){ sugestoesResposta[chave]=j.sugestao; }
+    else{ sugestoesResposta[chave]=''; sugestoesErro[chave]=j.erro||('falha desconhecida (status '+r.status+')'); }
+  }catch(e){ sugestoesResposta[chave]=''; sugestoesErro[chave]=e.message; }
+  if(sugestoesErro[chave]) console.error('Sugestão de IA falhou ('+chave+'):', sugestoesErro[chave]);
+}
+async function tentarSugestaoDeNovo(chave){
+  const ctx=sugestoesContexto[chave]; if(!ctx) return;
+  await buscarSugestaoSilenciosa(chave,ctx.tipo,ctx.texto,ctx.titulo);
+  renderDashboard();
+}
+// rótulo mostrado ao lado de "Resposta" - reaproveitado em Perguntas e Mensagens pós-venda
+function rotuloSugestao(chave){
+  if(sugestoesResposta[chave]==='carregando') return ' <span class="muted" style="font-weight:400">(gerando sugestão...)</span>';
+  if(sugestoesResposta[chave]) return ' <span class="muted" style="font-weight:400">(sugestão da IA - revise antes de enviar)</span>';
+  if(sugestoesErro[chave]) return ` <span style="font-weight:400;color:#e66" title="${esc(sugestoesErro[chave])}">(sugestão indisponível — <a href="#" data-sugestaotentar="${esc(chave)}">tentar de novo</a>)</span>`;
+  return '';
 }
 /* ---------- reclamações e mediações (card na Visão Geral) ----------
    Resolvidas automaticamente pelo backend (dentro do /sync, pela regra do frete) - aqui só busca
@@ -3188,7 +3224,7 @@ function renderDashboard(){
             <div style="font-size:12px;color:var(--muted)">${q.titulo?esc(q.titulo):esc(q.itemId||'')}${q.permalink?` · <a href="${esc(q.permalink)}" target="_blank" rel="noopener">ver anúncio</a>`:''}${q.dataCriada?' · '+new Date(q.dataCriada).toLocaleString('pt-BR'):''}</div>
             <div style="margin:6px 0"><b>${esc(q.texto||'')}</b></div>
             <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
-              <label style="font-size:11.5px">Resposta${sugestoesResposta[q.id]==='carregando'?' <span class="muted" style="font-weight:400">(gerando sugestão...)</span>':(sugestoesResposta[q.id]?' <span class="muted" style="font-weight:400">(sugestão da IA - revise antes de enviar)</span>':'')}<textarea data-respostatexto="${esc(q.id)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${perguntasEnviando[q.id]?'disabled':''}>${esc(sugestoesResposta[q.id]&&sugestoesResposta[q.id]!=='carregando'?sugestoesResposta[q.id]:'')}</textarea></label>
+              <label style="font-size:11.5px">Resposta${rotuloSugestao(q.id)}<textarea data-respostatexto="${esc(q.id)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${perguntasEnviando[q.id]?'disabled':''}>${esc(sugestoesResposta[q.id]&&sugestoesResposta[q.id]!=='carregando'?sugestoesResposta[q.id]:'')}</textarea></label>
               <button class="btn sm acc" data-responder="${esc(q.id)}|${esc(l)}|${esc(q.itemId||'')}" ${perguntasEnviando[q.id]?'disabled':''}>${perguntasEnviando[q.id]?'Enviando...':'Responder'}</button>
             </div>
           </div>`).join(''):'<p class="empty-inline">Nenhuma pergunta sem resposta agora.</p>'}
@@ -3214,7 +3250,7 @@ function renderDashboard(){
             <div style="font-size:12px;color:var(--muted)">${m.titulo?esc(m.titulo):'Pedido do pack '+esc(m.packId)}${m.ultimaMensagem&&m.ultimaMensagem.data?' · '+new Date(m.ultimaMensagem.data).toLocaleString('pt-BR'):''}</div>
             <div style="margin:6px 0"><b>${esc((m.ultimaMensagem&&m.ultimaMensagem.texto)||'')}</b></div>
             <div class="form-grid" style="grid-template-columns:1fr auto;align-items:end">
-              <label style="font-size:11.5px">Resposta${sugestoesResposta[m.packId]==='carregando'?' <span class="muted" style="font-weight:400">(gerando sugestão...)</span>':(sugestoesResposta[m.packId]?' <span class="muted" style="font-weight:400">(sugestão da IA - revise antes de enviar)</span>':'')}<textarea data-mensagemtexto="${esc(m.packId)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${mensagensEnviando[m.packId]?'disabled':''}>${esc(sugestoesResposta[m.packId]&&sugestoesResposta[m.packId]!=='carregando'?sugestoesResposta[m.packId]:'')}</textarea></label>
+              <label style="font-size:11.5px">Resposta${rotuloSugestao(m.packId)}<textarea data-mensagemtexto="${esc(m.packId)}" rows="2" placeholder="Escreva a resposta..." style="resize:vertical" ${mensagensEnviando[m.packId]?'disabled':''}>${esc(sugestoesResposta[m.packId]&&sugestoesResposta[m.packId]!=='carregando'?sugestoesResposta[m.packId]:'')}</textarea></label>
               <button class="btn sm acc" data-respondermsg="${esc(m.packId)}|${esc(l)}|${esc(m.buyerId||'')}" ${mensagensEnviando[m.packId]?'disabled':''}>${mensagensEnviando[m.packId]?'Enviando...':'Responder'}</button>
             </div>
           </div>`).join('')}
@@ -3300,7 +3336,8 @@ function renderDashboard(){
           const envioTxt=r.zeraAntesDoEnvio
             ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
             :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
-              :(r.foraDoProximoEnvio?` — <b class="pend">🚨 este SKU não está no próximo envio da loja (${fmtData(r.prox.data)}) e vai zerar antes — inclua ele nesse envio</b>`:' — este SKU não tem nenhum FULL programado ainda'));
+              :(r.emGracaEnvio?` — envio confirmado como FULL em ${fmtData(r.dataEnvioConfirmado)}, aguardando o Mercado Livre processar (ver Próximos programados)`
+              :(r.foraDoProximoEnvio?` — <b class="pend">🚨 este SKU não está no próximo envio da loja (${fmtData(r.prox.data)}) e vai zerar antes — inclua ele nesse envio</b>`:' — este SKU não tem nenhum FULL programado ainda')));
           return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
         }).join('')}</div></div>`).join('')}</div>`:''}
     ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
@@ -3351,6 +3388,7 @@ function renderDashboard(){
     });
   });
   el.querySelectorAll('[data-verperguntas]').forEach(b=>b.onclick=()=>carregarPerguntas(b.dataset.verperguntas));
+  el.querySelectorAll('[data-sugestaotentar]').forEach(a=>a.onclick=(ev)=>{ ev.preventDefault(); tentarSugestaoDeNovo(a.dataset.sugestaotentar); });
   el.querySelectorAll('[data-responder]').forEach(b=>b.onclick=()=>{
     const [qid,loja,itemId]=b.dataset.responder.split('|');
     const ta=el.querySelector(`[data-respostatexto="${qid}"]`);
@@ -3421,6 +3459,16 @@ function mlAtualizarFullDoSinc(p,item,loja){
   fi.confirmadoNaoVerificado=0;
   fi.movido=null;
   state.full.lidoEm[loja]=Date.now();
+  // limpa o marcador de "envio confirmado, aguardando o ML registrar" (ver confirmarEnvioFull)
+  // assim que o real aptas+transf subir em relação ao que era no momento da confirmação - é o
+  // sinal de que o Mercado Livre já processou (nem que seja só uma parte) o que foi enviado.
+  // Prazo de segurança: 5 dias (Felipe, 21/08 - normalmente leva 2 dias úteis pra constar no
+  // estoque; 5 dias cobre folga de fim de semana sem deixar passar tempo demais se algo travar).
+  if(p.ultimoEnvioConfirmado){
+    const atual=(fi.aptas||0)+(fi.transf||0);
+    const diasDesde=(Date.now()-Date.parse(p.ultimoEnvioConfirmado.data+'T00:00:00-03:00'))/864e5;
+    if(atual>p.ultimoEnvioConfirmado.baselineFull||diasDesde>5) p.ultimoEnvioConfirmado=null;
+  }
 }
 /* chama o backend hospedado: primeiro manda sincronizar (POST /sync), depois busca o resultado (GET /data) */
 async function mlSincronizarLoja(loja){
@@ -5046,7 +5094,7 @@ function abrirEditarDespesaModal(id){
   body.innerHTML=`<h3>Editar despesa</h3>
     <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
       <label>Descrição<input id="feDescricao" type="text" value="${esc(d.descricao)}"></label>
-      <label>Valor (R$)<input id="feValor" type="number" min="0" step="0.01" value="${d.valor}"></label>
+      <label>Valor (R$)<input id="feValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${d.valor?String(d.valor).replace('.',','):''}"></label>
       <label>Data de pagamento<input id="feData" type="date" value="${esc(d.dataPagamento)}"></label>
       <label>Loja<select id="feLoja"><option value="" ${d.loja?'':'selected'}>Geral (todas)</option>${optsLojas(d.loja)}</select></label>
     </div>
@@ -5059,7 +5107,7 @@ function abrirEditarDespesaModal(id){
   document.getElementById('btnSalvarEditDesp').onclick=()=>{
     const r=editarDespesa(id,{
       descricao:document.getElementById('feDescricao').value.trim(),
-      valor:Number(document.getElementById('feValor').value),
+      valor:parseMoeda(document.getElementById('feValor').value),
       dataPagamento:document.getElementById('feData').value,
       loja:document.getElementById('feLoja').value||null,
       recorrente:document.getElementById('feRecorrente').checked,
@@ -5246,7 +5294,7 @@ function abrirEditarSocioModal(loja,socio,id){
       <label>Sócio<select id="seQuem"><option value="felipe" ${socio==='felipe'?'selected':''}>Felipe</option><option value="thiago" ${socio==='thiago'?'selected':''}>Thiago</option></select></label>
       <label>Tipo<select id="seTipo"><option value="retirada" ${d.tipo==='retirada'?'selected':''}>Retirada</option><option value="reembolso" ${d.tipo==='reembolso'?'selected':''}>Reembolso</option></select></label>
       <label style="grid-column:1/-1">Descrição<input id="seDescricao" type="text" value="${esc(d.descricao)}"></label>
-      <label>Valor (R$)<input id="seValor" type="number" min="0" step="0.01" value="${d.valor}"></label>
+      <label>Valor (R$)<input id="seValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${d.valor?String(d.valor).replace('.',','):''}"></label>
       <label>Data<input id="seData" type="date" value="${esc(d.data)}"></label>
     </div>
     <div class="modal-actions"><button class="btn" id="btnCancelarEditSocio">Cancelar</button><button class="btn acc" id="btnSalvarEditSocio">Salvar alterações</button></div>`;
@@ -5256,7 +5304,7 @@ function abrirEditarSocioModal(loja,socio,id){
       socio:document.getElementById('seQuem').value,
       tipo:document.getElementById('seTipo').value,
       descricao:document.getElementById('seDescricao').value.trim(),
-      valor:Number(document.getElementById('seValor').value),
+      valor:parseMoeda(document.getElementById('seValor').value),
       data:document.getElementById('seData').value,
     });
     if(!r.ok){ alert(r.msg); return; }
@@ -5900,7 +5948,7 @@ function renderSociosCard(){
         <label>Sócio<select id="socQuem"><option value="felipe">Felipe</option><option value="thiago">Thiago</option></select></label>
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
         <label>Descrição<input id="socDescricao" type="text" placeholder="Ex: combustível"></label>
-        <label>Valor (R$)<input id="socValor" type="number" min="0" step="0.01"></label>
+        <label>Valor (R$)<input id="socValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
         <label>Data${botaoData('socData',novoSocioData||hoje(),{style:''})}</label>
         <button class="btn gold" id="btnAddSocio" style="align-self:end">+ Adicionar</button>
       </div>
@@ -5971,7 +6019,7 @@ function renderFinancas(){
       <h3 style="margin-top:0">Nova despesa</h3>
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr">
         <label>Descrição<input id="fnDescricao" type="text" placeholder="Ex: Aluguel do galpão"></label>
-        <label>Valor (R$)<input id="fnValor" type="number" min="0" step="0.01"></label>
+        <label>Valor (R$)<input id="fnValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
         <label>Data de pagamento${botaoData('fnData',novaDespesaData||hoje(),{style:''})}</label>
         <label>Loja<select id="fnLoja"><option value="">Geral (todas)</option>${optsLojas(null)}</select></label>
       </div>
@@ -6042,7 +6090,7 @@ function renderFinancas(){
   if(btnFnData) btnFnData.onclick=()=>abrirSeletorData(novaDespesaData||hoje(),(iso)=>{ novaDespesaData=iso; renderFinancas(); });
   if(btnAddDespesa) btnAddDespesa.onclick=()=>{
     const descricao=document.getElementById('fnDescricao').value.trim();
-    const valor=Number(document.getElementById('fnValor').value);
+    const valor=parseMoeda(document.getElementById('fnValor').value);
     const dataPagamento=novaDespesaData||hoje();
     const loja=document.getElementById('fnLoja').value||null;
     const recorrente=document.getElementById('fnRecorrente').checked;
@@ -6119,7 +6167,7 @@ function renderFinancas(){
     const socio=document.getElementById('socQuem').value;
     const tipo=document.getElementById('socTipo').value;
     const descricao=document.getElementById('socDescricao').value.trim();
-    const valor=Number(document.getElementById('socValor').value);
+    const valor=parseMoeda(document.getElementById('socValor').value);
     const data=novoSocioData||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
     novoSocioData='';
@@ -6431,37 +6479,45 @@ function mercadoLabelHistorico(h){
   if(h.periodo_de&&h.periodo_ate) return `${mercadoFmtDiaMes(h.periodo_de)}–${mercadoFmtDiaMes(h.periodo_ate)}`;
   return h.mes;
 }
+function mercadoLimitesDoMes(mesYYYYMM){
+  // "YYYY-MM" -> {de,ate} (primeiro e último dia civil desse mês, formato YYYY-MM-DD)
+  const [ano,mes]=mesYYYYMM.split('-').map(Number);
+  const ultimoDia=new Date(Date.UTC(ano,mes,0)).getUTCDate(); // truque: mes (1-indexado) como índice 0-indexado do MÊS SEGUINTE, dia 0 = último dia deste mês
+  return { de:`${mesYYYYMM}-01`, ate:`${mesYYYYMM}-${String(ultimoDia).padStart(2,'0')}` };
+}
 async function carregarMercadoProduto(loja,itemId){
   const key=mercadoKey(loja,itemId);
+  // 21/08 (achado no teste real do Felipe): antes essa função sempre esperava um cálculo de "suas
+  // vendas dos últimos 12 meses" ANTES de mostrar qualquer coisa - pra loja com muito pedido isso
+  // demora bastante (é 12 buscas completas no histórico de pedidos), e a tela ficava presa em
+  // "Carregando..." mesmo num produto novo, sem nenhum dado ainda, escondendo até o botão de
+  // importar o relatório. Agora: busca só a categoria (rápido, é só banco de dados) e MOSTRA a
+  // tela na hora — o cálculo de "suas vendas" só roda depois, em paralelo, e só pros períodos que
+  // realmente existem no histórico (em vez de 12 meses fixos toda vez).
   mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:true,erro:null});
   renderMercado();
   try{
     const base=backendUrl();
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-    const [rc,rv]=await Promise.all([
-      fetchComTimeout(`${base}/mercado/categoria?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}`,{},20000),
-      fetchComTimeout(`${base}/mercado/vendas-proprias?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&meses=12`,{},45000)
-    ]);
+    const rc=await fetchComTimeout(`${base}/mercado/categoria?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}`,{},20000);
     let jc; try{ jc=await rc.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao buscar a categoria (status '+rc.status+').'); }
     if(!rc.ok||!jc.ok) throw new Error(jc.erro||('Falha ao buscar dados da categoria (status '+rc.status+').'));
-    let jv; try{ jv=await rv.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado ao buscar as vendas próprias (status '+rv.status+').'); }
-    if(!rv.ok||!jv.ok) throw new Error(jv.erro||('Falha ao buscar as vendas próprias (status '+rv.status+').'));
     const historico=jc.historico||[];
+    mercadoDados[key]={carregando:false,erro:null,categoriaId:jc.categoriaId,urlTendencia:jc.urlTendencia,historico,vendasProprias:{},vendasCarregando:historico.length>0};
+    renderMercado();
+    if(!historico.length) return; // nada registrado ainda - só o botão de importar/digitar, sem espera nenhuma
     const vendasProprias={};
-    (jv.meses||[]).forEach(v=>{ vendasProprias[v.mes]={unidades:v.unidades,valorBruto:v.valorBruto}; });
-    // linhas importadas de .xlsx tem um período exato (quase nunca um mês civil fechado) - busca
-    // as SUAS vendas nesse período exato, uma de cada vez (poucas importações por produto, então
-    // não pesa)
-    await Promise.all(historico.filter(h=>h.periodo_de&&h.periodo_ate).map(async h=>{
+    await Promise.all(historico.map(async h=>{
       try{
-        const rr=await fetchComTimeout(`${base}/mercado/vendas-proprias?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&de=${h.periodo_de}&ate=${h.periodo_ate}`,{},45000);
+        const {de,ate}=(h.periodo_de&&h.periodo_ate)?{de:h.periodo_de,ate:h.periodo_ate}:mercadoLimitesDoMes(h.mes);
+        const rr=await fetchComTimeout(`${base}/mercado/vendas-proprias?loja=${encodeURIComponent(loja)}&itemId=${encodeURIComponent(itemId)}&de=${de}&ate=${ate}`,{},60000);
         const jj=await rr.json();
         if(rr.ok&&jj.ok) vendasProprias[h.mes]={unidades:jj.unidades,valorBruto:jj.valorBruto};
-      }catch(e){ /* uma falha aqui não trava o resto */ }
+      }catch(e){ /* uma falha num período não trava os outros */ }
     }));
-    mercadoDados[key]={carregando:false,erro:null,categoriaId:jc.categoriaId,urlTendencia:jc.urlTendencia,historico,vendasProprias};
+    mercadoDados[key]=Object.assign({},mercadoDados[key],{vendasProprias,vendasCarregando:false});
   }catch(e){
-    mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:false,erro:e.message});
+    mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:false,vendasCarregando:false,erro:e.message});
   }
   renderMercado();
 }
@@ -6623,12 +6679,13 @@ function renderMercadoCorpo(p,key,d){
     <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Período</th><th class="num">Vendas categoria</th><th class="num">Suas vendas</th><th class="num">Participação</th><th></th></tr></thead><tbody>
       ${historico.map(h=>{
         const prop=vendasProprias[h.mes];
+        const aindaCalculando=d.vendasCarregando&&!prop;
         const partic=h.vendas_brutas_categoria?(((prop?prop.valorBruto:0)/Number(h.vendas_brutas_categoria))*100):null;
         return `<tr>
           <td class="mono">${esc(mercadoLabelHistorico(h))}${h.fonte==='xlsx'?' <span class="muted" style="font-size:10px">(relatório)</span>':''}</td>
           <td class="num">${h.vendas_brutas_categoria!=null?fmtMoney(h.vendas_brutas_categoria):'<span class="muted">—</span>'}</td>
-          <td class="num">${prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>'}</td>
-          <td class="num">${partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>'}</td>
+          <td class="num">${aindaCalculando?'<span class="muted">calculando…</span>':(prop?fmtMoney(prop.valorBruto):'<span class="muted">—</span>')}</td>
+          <td class="num">${aindaCalculando?'<span class="muted">…</span>':(partic!=null?partic.toLocaleString('pt-BR',{maximumFractionDigits:2})+'%':'<span class="muted">—</span>')}</td>
           <td><button class="btn sm danger" data-mercadoexcluirmes="${esc(p.loja)}|${esc(p.mlItemId)}|${esc(h.mes)}">✕</button></td>
         </tr>`;
       }).join('')}
@@ -8230,8 +8287,13 @@ function rupturaLojaLista(loja,diasLimite){
          Caso real que motivou isso: o PERLON80 não estava em nenhum envio programado e só apareceu
          no alerta quando a ruptura já estava a 10 dias - com essa regra, teria aparecido antes,
          assim que ficasse claro que ele não ia entrar a tempo no próximo envio da loja. */
-      const foraDoProximoEnvio=!proximoFullProduto&&!!prox&&!!prox.data&&diaZero<=prox.data;
-      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero,foraDoProximoEnvio};
+      // 21/08: se esse SKU acabou de ter um envio confirmado como FULL e o Mercado Livre ainda
+      // não mostrou movimento real (ver mlAtualizarFullDoSinc/confirmarEnvioFull), suspende só o
+      // aviso "não está no próximo envio" - ele ficaria fora de lugar (material já foi, só falta
+      // o ML processar). O resto do alerta (cobDias/diaZero) continua real, sem mexer.
+      const emGracaEnvio=!!(x.p&&x.p.ultimoEnvioConfirmado);
+      const foraDoProximoEnvio=!emGracaEnvio&&!proximoFullProduto&&!!prox&&!!prox.data&&diaZero<=prox.data;
+      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero,foraDoProximoEnvio,emGracaEnvio,dataEnvioConfirmado:emGracaEnvio?x.p.ultimoEnvioConfirmado.data:null};
     })
     .filter(x=>x.cobDias<=diasLimite||x.zeraAntesDoEnvio||x.foraDoProximoEnvio)
     .sort((a,b)=>a.cobDias-b.cobDias)
@@ -8271,14 +8333,15 @@ function renderRuptura(){
         <button class="btn sm danger" data-remerg="${esc(loja)}">🚨 FULL de emergência</button></span></div>`:''}
       <div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
         <th>SKU</th><th class="num">Estoque FULL</th><th class="num">Vendas/dia</th><th class="num">Cobertura</th><th>Zera em</th><th>FULL programado pra este SKU</th><th></th></tr></thead><tbody>
-        ${l.map(({i,k,p,cobDias,zeraAntesDoEnvio,diaZero,proximoFullProduto,foraDoProximoEnvio})=>`<tr>
+        ${l.map(({i,k,p,cobDias,zeraAntesDoEnvio,diaZero,proximoFullProduto,foraDoProximoEnvio,emGracaEnvio,dataEnvioConfirmado})=>`<tr>
           <td class="mono">${esc(fullSku(i))}</td>
           <td class="num">${fmtInt(k.full)}</td>
           <td class="num">${k.media.toFixed(2)}</td>
           <td class="num">${cobDias} d</td>
           <td>${zeraAntesDoEnvio?`<span class="pend">${fmtData(diaZero)} — antes do envio</span>`:fmtData(diaZero)}</td>
           <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(proximoFullProduto.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data))
-            :(foraDoProximoEnvio?`<span class="pend">nenhum — vai zerar antes do próximo envio da loja (${fmtData(prox.data)}), inclua ele</span>`:'<span class="muted">nenhum</span>')}</td>
+            :(emGracaEnvio?`<span class="muted">confirmado em ${fmtData(dataEnvioConfirmado)} — aguardando o Mercado Livre processar</span>`
+            :(foraDoProximoEnvio?`<span class="pend">nenhum — vai zerar antes do próximo envio da loja (${fmtData(prox.data)}), inclua ele</span>`:'<span class="muted">nenhum</span>'))}</td>
           <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button> <button class="btn sm" data-pausarrup2="${p.id}" title="Produto saindo de linha — para de mostrar este aviso">🔕</button></td>
         </tr>`).join('')}
       </tbody></table></div>`}
