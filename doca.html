@@ -531,6 +531,7 @@ let fileHandle=null;
 let filtro={loja:'todas',busca:'',ordem:'loja'};
 let confirmarLojaAtual='todas';
 let envioKitAberto=new Set(); // ids de item "guarda-chuva" de kit com o detalhe dos componentes expandido, na tela de Envios FULL
+let envioForcarLiberado=new Set(); // ids de envio com o botão "Virou FULL" liberado antes da data programada (ver renderEnvio) - só dura a sessão, de propósito
 let pendingConfirm=null;
 let pdfPreview=null;
 let undoStack=[];
@@ -6657,7 +6658,6 @@ function svgMercadoChart(labels,catVals,propVals){
 function renderMercadoCorpo(p,key,d){
   if(!d||d.carregando) return barraIndeterminada('Carregando dados de mercado...');
   if(d.erro) return `<p class="hint" style="color:#e66">⚠ ${esc(d.erro)}</p><button class="btn sm" data-mercadorecarregar="${esc(p.loja)}|${esc(p.mlItemId)}">🔄 Tentar de novo</button>`;
-  const f=mercadoFormMes[key]||{mes:mercadoMesAtual()};
   const preview=mercadoImportPreview[key];
   const historico=(d.historico||[]).slice().sort((a,b)=>(a.mes||'').localeCompare(b.mes||''));
   const vendasProprias=d.vendasProprias||{};
@@ -6666,7 +6666,7 @@ function renderMercadoCorpo(p,key,d){
   const propVals=historico.map(h=>vendasProprias[h.mes]?vendasProprias[h.mes].valorBruto:0);
   const ultimoComRanking=historico.slice().reverse().find(h=>h.top_produtos&&h.top_produtos.length);
   return `
-    ${d.categoriaId?`<p class="hint">Categoria <span class="mono">${esc(d.categoriaId)}</span> — <a href="${esc(d.urlTendencia)}" target="_blank" rel="noopener">abrir tendência da categoria no Mercado Livre ↗</a></p>`
+    ${d.categoriaId?`<p class="hint">Categoria <span class="mono">${esc(d.categoriaId)}</span> — <a href="${esc(d.urlTendencia)}" target="_blank" rel="noopener" data-mercadoabrirtendencia="1">abrir tendência da categoria no Mercado Livre ↗</a></p>`
       :`<p class="hint" style="color:#e66">⚠ Esse produto ainda não tem categoria salva — sincronize os produtos de novo (aba Produtos → Atualizar) pra puxar.</p>`}
     ${historico.length?`
     <div style="margin:8px 0">
@@ -6702,7 +6702,8 @@ function renderMercadoCorpo(p,key,d){
     <details style="margin-top:10px" ${(preview||!historico.length)?'open':''}>
       <summary style="cursor:pointer;font-size:13px">📥 Importar relatório "Mais vendidos nas suas categorias" (.xlsx)</summary>
       <p class="hint" style="margin:8px 0">No Mercado Livre: Métricas → Análise de mercado → Tendências por categoria → escolha a categoria → botão "Baixar relatório". Depois selecione o arquivo baixado aqui.</p>
-      <input type="file" accept=".xlsx" data-mercadoarquivo="${esc(p.loja)}|${esc(p.mlItemId)}">
+      <button type="button" class="btn sm" data-mercadoescolherarquivo="${esc(key)}">📎 Escolher arquivo .xlsx</button>
+      <input type="file" accept=".xlsx" style="display:none" data-mercadoarquivo="${esc(key)}">
       ${preview?`
       <div class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))">
         <p class="hint" style="margin:0 0 8px">Categoria detectada: <b>${esc(preview.categoriaNome)}</b> · ${fmtInt(preview.produtos.length)} produtos analisados</p>
@@ -6718,16 +6719,6 @@ function renderMercadoCorpo(p,key,d){
       </div>
       `:''}
     </details>
-    <details style="margin-top:10px">
-      <summary style="cursor:pointer;font-size:13px">✎ Ou digitar manualmente (a partir do resumo/print do mês)</summary>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;margin-top:8px">
-        <label>Mês<input type="month" value="${esc(f.mes||mercadoMesAtual())}" data-mercadomes="${esc(key)}"></label>
-        <label>Vendas brutas categoria (R$)<input type="text" inputmode="decimal" placeholder="1.300.000,00" value="${f.vendasBrutas!=null?f.vendasBrutas:''}" data-mercadocampo="${esc(key)}||vendasBrutas"></label>
-        <label>Unidades vendidas categoria<input type="text" inputmode="numeric" placeholder="30.000" value="${f.unidades!=null?f.unidades:''}" data-mercadocampo="${esc(key)}||unidades"></label>
-        <label>Preço médio categoria (R$)<input type="text" inputmode="decimal" placeholder="47,00" value="${f.precoMedio!=null?f.precoMedio:''}" data-mercadocampo="${esc(key)}||precoMedio"></label>
-      </div>
-      <button class="btn gold sm" style="margin-top:8px" data-mercadosalvar="${esc(p.loja)}|${esc(p.mlItemId)}">💾 Salvar mês</button>
-    </details>
   `;
 }
 function renderMercado(){
@@ -6735,7 +6726,7 @@ function renderMercado(){
   const produtosComItem=state.produtos.filter(p=>p.mlItemId).sort((a,b)=>(a.loja||'').localeCompare(b.loja||'')||(a.titulo||a.sku||'').localeCompare(b.titulo||b.sku||''));
   el.innerHTML=`
     <h1 class="page-title">Análise de Mercado</h1>
-    <p class="hint" style="margin:0 0 14px">Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre. O jeito mais preciso é importar o relatório "Mais vendidos nas suas categorias" (.xlsx) que o próprio Mercado Livre gera (Métricas → Análise de mercado → Tendências por categoria → Baixar relatório) — o Doca lê e calcula tudo sozinho. Sem o arquivo, dá pra digitar manualmente os números do resumo. Já as suas vendas são sempre automáticas.</p>
+    <p class="hint" style="margin:0 0 14px">Compara as vendas de cada produto com a categoria inteira dele no Mercado Livre. Importe o relatório "Mais vendidos nas suas categorias" (.xlsx) que o próprio Mercado Livre gera (Métricas → Análise de mercado → Tendências por categoria → Baixar relatório) — o Doca lê e calcula tudo sozinho. Já as suas vendas são sempre automáticas.</p>
     ${produtosComItem.length?produtosComItem.map(p=>{
       const key=mercadoKey(p.loja,p.mlItemId);
       const aberto=mercadoAberto.has(key);
@@ -6753,19 +6744,6 @@ function renderMercado(){
       else{ mercadoAberto.delete(key); renderMercado(); }
     };
   });
-  el.querySelectorAll('[data-mercadomes]').forEach(inp=>{
-    inp.onchange=()=>{ const key=inp.dataset.mercadomes; mercadoFormMes[key]=Object.assign({},mercadoFormMes[key],{mes:inp.value}); };
-  });
-  el.querySelectorAll('[data-mercadocampo]').forEach(inp=>{
-    inp.oninput=()=>{
-      if(inp.dataset.mercadocampo.endsWith('||unidades')){ inp.value=inp.value.replace(/[^\d.]/g,''); } else { filtrarValorMoeda(inp); }
-      const [key,campo]=inp.dataset.mercadocampo.split('||');
-      mercadoFormMes[key]=Object.assign({},mercadoFormMes[key],{[campo]:inp.value});
-    };
-  });
-  el.querySelectorAll('[data-mercadosalvar]').forEach(b=>{
-    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadosalvar.split('|'); salvarMercadoMes(loja,itemId); };
-  });
   el.querySelectorAll('[data-mercadoexcluirmes]').forEach(b=>{
     b.onclick=()=>{ const [loja,itemId,mes]=b.dataset.mercadoexcluirmes.split('|'); confirmAction(`Excluir os dados de ${mes} dessa categoria?`,()=>excluirMercadoMes(loja,itemId,mes)); };
   });
@@ -6774,6 +6752,23 @@ function renderMercado(){
   });
   el.querySelectorAll('[data-mercadoarquivo]').forEach(inp=>{
     inp.onchange=()=>{ const [loja,itemId]=inp.dataset.mercadoarquivo.split('|'); onArquivoMercadoSelecionado(loja,itemId,inp); };
+  });
+  // 21/08 (achado real do Felipe): o <input type="file"> sozinho não estava abrindo o seletor de
+  // arquivo ao clicar (só o input cru, sem nenhum botão visível) - trocado pro mesmo padrão já
+  // usado no importador de PDF de Comprar: um botão comum dispara o clique no input escondido via
+  // JS, que é mais confiável que depender do clique direto no <input type="file"> puro.
+  el.querySelectorAll('[data-mercadoescolherarquivo]').forEach(b=>{
+    b.onclick=()=>{
+      const chave=b.dataset.mercadoescolherarquivo;
+      const inp=Array.from(el.querySelectorAll('[data-mercadoarquivo]')).find(i=>i.dataset.mercadoarquivo===chave);
+      if(inp) inp.click();
+    };
+  });
+  // mesma lógica pro link "abrir tendência": em vez de confiar só no clique nativo do <a>, abre
+  // explicitamente via JS (window.open) dentro do próprio gesto de clique - mais robusto contra
+  // qualquer coisa que possa estar interceptando o clique simples no link (relatado pelo Felipe).
+  el.querySelectorAll('[data-mercadoabrirtendencia]').forEach(a=>{
+    a.onclick=(ev)=>{ ev.preventDefault(); window.open(a.getAttribute('href'),'_blank','noopener'); };
   });
   el.querySelectorAll('[data-mercadoperiodo]').forEach(inp=>{
     inp.onchange=()=>{
@@ -7148,8 +7143,17 @@ function renderEnvio(){
             <button class="btn sm" data-editenvio="${e.id}">✎ Editar</button>
             <button class="btn sm" data-addsku="${e.id}">+ Adicionar SKU</button>
             ${podeAlocar?`<button class="btn sm acc" data-alocar="${e.id}">Reservar do estoque local</button>`:''}
-            <button class="btn sm danger" data-confirmar="${e.id}" ${(a<=0||c>0||g>0)?'disabled':''}
-              title="${a<=0?'Nada reservado neste envio':(c>0||g>0)?'Só dá pra finalizar quando todas as unidades estiverem prontas no galpão':'Finalizar como FULL no Mercado Livre'}">✓ Virou FULL</button>
+            ${(()=>{
+              // 21/08 (Felipe): trava o botão "Virou FULL" até chegar a data programada do envio,
+              // pra não confirmar sem querer antes da hora - mas sem travar de vez: dá pra liberar
+              // manualmente com o link "forçar antes da data" (ex: coleta adiantada de verdade).
+              const cedoDemais=!!e.data&&e.data>hoje()&&!envioForcarLiberado.has(e.id);
+              const desabilitado=a<=0||c>0||g>0||cedoDemais;
+              const titulo=a<=0?'Nada reservado neste envio':(c>0||g>0)?'Só dá pra finalizar quando todas as unidades estiverem prontas no galpão'
+                :(cedoDemais?`Envio programado pra ${fmtData(e.data)} - só libera nessa data (ou use "forçar antes da data")`:'Finalizar como FULL no Mercado Livre');
+              return `<button class="btn sm danger" data-confirmar="${e.id}" ${desabilitado?'disabled':''} title="${titulo}">✓ Virou FULL</button>`
+                +(cedoDemais&&!(a<=0||c>0||g>0)?` <button class="btn sm" data-forcarcedo="${e.id}" title="Libera o botão acima antes da data programada">🔓 forçar antes da data</button>`:'');
+            })()}
             <button class="btn sm danger-outline" data-cancelar="${e.id}">Cancelar</button>
           </div>
         </div>
@@ -7267,6 +7271,12 @@ function renderEnvio(){
     if(falta>0){ alert(`Não dá pra finalizar: faltam ${fmtInt(falta)} un. para completar este envio.`); return; }
     confirmAction(`Confirmar o envio "${e.nome}" (${fmtData(e.data)} · ${e.loja}) com ${fmtInt(a)} unidade(s) como FULL no Mercado Livre? Isso remove o envio do controle. Dá pra reverter no botão Desfazer.`,()=>{
       confirmarEnvioFull(b.dataset.confirmar,true); toast('Envio confirmado como FULL.');
+    });
+  });
+  el.querySelectorAll('[data-forcarcedo]').forEach(b=>b.onclick=()=>{
+    const e=envioById(b.dataset.forcarcedo); if(!e) return;
+    confirmAction(`Esse envio está programado pra ${fmtData(e.data)} - ainda não chegou a data. Liberar o botão "Virou FULL" mesmo assim (ex: coleta adiantada de verdade)?`,()=>{
+      envioForcarLiberado.add(e.id); renderEnvio();
     });
   });
 }
