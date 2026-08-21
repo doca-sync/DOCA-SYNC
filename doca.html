@@ -6699,7 +6699,7 @@ function renderMercadoCorpo(p,key,d){
       </tbody></table></div>
     </details>
     `:''}
-    <details style="margin-top:10px" ${preview?'open':''}>
+    <details style="margin-top:10px" ${(preview||!historico.length)?'open':''}>
       <summary style="cursor:pointer;font-size:13px">📥 Importar relatório "Mais vendidos nas suas categorias" (.xlsx)</summary>
       <p class="hint" style="margin:8px 0">No Mercado Livre: Métricas → Análise de mercado → Tendências por categoria → escolha a categoria → botão "Baixar relatório". Depois selecione o arquivo baixado aqui.</p>
       <input type="file" accept=".xlsx" data-mercadoarquivo="${esc(p.loja)}|${esc(p.mlItemId)}">

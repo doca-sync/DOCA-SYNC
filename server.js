@@ -3435,10 +3435,15 @@ app.get('/mercado/categoria', async (req, res) => {
       [loja, itemId]
     );
     const categoriaId = prod.rows[0] && prod.rows[0].categoria_id;
+    // o category_id que a API normal devolve vem com o prefixo da letra do site (ex: "MLB244659"),
+    // mas essa pagina especifica de tendencias por categoria so' aceita a parte numerica (ex:
+    // "244659") - sem isso a pagina cai direto em "Ocorreu um erro" (achado com teste real do
+    // Felipe, 21/08: o link gerado com "MLB244659" quebrava, o exemplo funcional dele usava so' "244659").
+    const categoriaIdNumerica = categoriaId ? categoriaId.replace(/^\D+/, '') : null;
     res.json({
       ok: true,
       categoriaId: categoriaId || null,
-      urlTendencia: categoriaId ? `https://vendedores.mercadolivre.com.br/metricas/analise-de-mercado/tendencias-por-categorias/detalhe?category_id=${categoriaId}&period=currentMonth` : null,
+      urlTendencia: categoriaIdNumerica ? `https://vendedores.mercadolivre.com.br/metricas/analise-de-mercado/tendencias-por-categorias/detalhe?category_id=${categoriaIdNumerica}&period=currentMonth` : null,
       titulo: prod.rows[0] ? prod.rows[0].titulo : null,
       sku: prod.rows[0] ? prod.rows[0].sku : null,
       historico: historico.rows
