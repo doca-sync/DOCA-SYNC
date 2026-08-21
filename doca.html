@@ -6486,17 +6486,35 @@ function mercadoLimitesDoMes(mesYYYYMM){
   const ultimoDia=new Date(Date.UTC(ano,mes,0)).getUTCDate(); // truque: mes (1-indexado) como índice 0-indexado do MÊS SEGUINTE, dia 0 = último dia deste mês
   return { de:`${mesYYYYMM}-01`, ate:`${mesYYYYMM}-${String(ultimoDia).padStart(2,'0')}` };
 }
+// vira um id de elemento HTML seguro (a "key" tem espaço e barra, ex: "Dor Block|MLB123" - não dá
+// pra usar direto como id de elemento)
+function mercadoIdSeguro(key){ return 'mc_'+key.replace(/[^a-zA-Z0-9]/g,'_'); }
+/* 21/08 (achado real do Felipe): expandir um produto travava a tela inteira - não dava nem pra
+   colapsar de volta nem clicar em mais nada. Causa: toda atualização (inclusive as automáticas,
+   tipo "carregando categoria" -> "carregando vendas" -> "pronto") chamava renderMercado(), que
+   reconstrói o HTML de TODOS os produtos da lista inteira via innerHTML - isso destrói e recria o
+   próprio <details> que o navegador estava processando o clique dele NAQUELE EXATO MOMENTO,
+   deixando o clique/toggle num estado inconsistente. A partir de agora, qualquer atualização DE UM
+   PRODUTO SÓ (carregar dados, importar arquivo, excluir período, etc) atualiza só a div daquele
+   produto (ver atualizarCorpoMercado) - nunca mais mexe no <details> dos outros nem no dele
+   próprio, só no conteúdo de dentro. Só a lista de produtos em si (renderMercado) reconstrói tudo,
+   e só quando ela realmente muda (troca de aba, sync novo, etc). */
+function atualizarCorpoMercado(loja,itemId){
+  const key=mercadoKey(loja,itemId);
+  const corpo=document.getElementById('corpo_'+mercadoIdSeguro(key));
+  if(!corpo) return; // produto não está mais na tela (trocou de aba, fechou o card, etc) - nada a atualizar
+  const p=state.produtos.find(x=>x.loja===loja&&x.mlItemId===itemId);
+  if(!p) return;
+  corpo.innerHTML=renderMercadoCorpo(p,key,mercadoDados[key]);
+  bindMercadoCorpo(corpo,p,key);
+}
 async function carregarMercadoProduto(loja,itemId){
   const key=mercadoKey(loja,itemId);
-  // 21/08 (achado no teste real do Felipe): antes essa função sempre esperava um cálculo de "suas
-  // vendas dos últimos 12 meses" ANTES de mostrar qualquer coisa - pra loja com muito pedido isso
-  // demora bastante (é 12 buscas completas no histórico de pedidos), e a tela ficava presa em
-  // "Carregando..." mesmo num produto novo, sem nenhum dado ainda, escondendo até o botão de
-  // importar o relatório. Agora: busca só a categoria (rápido, é só banco de dados) e MOSTRA a
-  // tela na hora — o cálculo de "suas vendas" só roda depois, em paralelo, e só pros períodos que
-  // realmente existem no histórico (em vez de 12 meses fixos toda vez).
+  // busca só a categoria primeiro (rápido, é só banco de dados) e MOSTRA a tela na hora - o
+  // cálculo de "suas vendas" roda depois, em paralelo, e só pros períodos que realmente existem
+  // no histórico (em vez de 12 meses fixos toda vez, que travava produto novo sem dado nenhum).
   mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:true,erro:null});
-  renderMercado();
+  atualizarCorpoMercado(loja,itemId);
   try{
     const base=backendUrl();
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -6505,8 +6523,8 @@ async function carregarMercadoProduto(loja,itemId){
     if(!rc.ok||!jc.ok) throw new Error(jc.erro||('Falha ao buscar dados da categoria (status '+rc.status+').'));
     const historico=jc.historico||[];
     mercadoDados[key]={carregando:false,erro:null,categoriaId:jc.categoriaId,urlTendencia:jc.urlTendencia,historico,vendasProprias:{},vendasCarregando:historico.length>0};
-    renderMercado();
-    if(!historico.length) return; // nada registrado ainda - só o botão de importar/digitar, sem espera nenhuma
+    atualizarCorpoMercado(loja,itemId);
+    if(!historico.length) return; // nada registrado ainda - só o botão de importar, sem espera nenhuma
     const vendasProprias={};
     await Promise.all(historico.map(async h=>{
       try{
@@ -6520,7 +6538,7 @@ async function carregarMercadoProduto(loja,itemId){
   }catch(e){
     mercadoDados[key]=Object.assign({},mercadoDados[key],{carregando:false,vendasCarregando:false,erro:e.message});
   }
-  renderMercado();
+  atualizarCorpoMercado(loja,itemId);
 }
 async function salvarMercadoMes(loja,itemId){
   const key=mercadoKey(loja,itemId);
@@ -6608,7 +6626,7 @@ async function onArquivoMercadoSelecionado(loja,itemId,input){
     const periodo=mercadoExtrairPeriodoDoNome(file.name);
     mercadoImportPreview[key]=Object.assign({},resultado,{periodoDe:periodo.de,periodoAte:periodo.ate,nomeArquivo:file.name});
   }catch(e){ alert('Não consegui ler esse arquivo: '+e.message); }
-  renderMercado();
+  atualizarCorpoMercado(loja,itemId);
 }
 async function confirmarImportacaoMercado(loja,itemId){
   const key=mercadoKey(loja,itemId);
@@ -6637,7 +6655,7 @@ async function confirmarImportacaoMercado(loja,itemId){
     await carregarMercadoProduto(loja,itemId);
   }catch(e){ alert('Não foi possível salvar: '+e.message); }
 }
-function cancelarImportacaoMercado(loja,itemId){ delete mercadoImportPreview[mercadoKey(loja,itemId)]; renderMercado(); }
+function cancelarImportacaoMercado(loja,itemId){ delete mercadoImportPreview[mercadoKey(loja,itemId)]; atualizarCorpoMercado(loja,itemId); }
 /* gráfico simples em SVG inline (sem lib externa, igual ao resto do Doca) - cada série é
    normalizada pro próprio máximo (0-100%), pra comparar a FORMA/sazonalidade das duas curvas
    mesmo com escalas bem diferentes (categoria inteira vs um produto só). */
@@ -6721,6 +6739,55 @@ function renderMercadoCorpo(p,key,d){
     </details>
   `;
 }
+// 21/08 (2º achado real do Felipe): expandir um produto travava o app inteiro (não dava pra
+// colapsar nem clicar em mais nada). Causa: o ontoggle do <details> chamava renderMercado()
+// inteiro, que reconstruía TODO o innerHTML da aba - inclusive o próprio <details> que estava no
+// meio do próprio evento de toggle dele. Isso deixava o DOM/eventos num estado inconsistente e
+// travava a interação. Fix: cada produto agora tem um <div id="corpo_..."> fixo, e toggle/edições
+// dentro de um card só tocam nesse div (via bindMercadoCorpo/atualizarCorpoMercado), nunca a aba
+// inteira de novo.
+function bindMercadoCorpo(corpo,p,key){
+  if(!corpo) return;
+  corpo.querySelectorAll('[data-mercadorecarregar]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadorecarregar.split('|'); carregarMercadoProduto(loja,itemId); };
+  });
+  corpo.querySelectorAll('[data-mercadoexcluirmes]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId,mes]=b.dataset.mercadoexcluirmes.split('|'); confirmAction(`Excluir os dados de ${mes} dessa categoria?`,()=>excluirMercadoMes(loja,itemId,mes)); };
+  });
+  corpo.querySelectorAll('[data-mercadoarquivo]').forEach(inp=>{
+    inp.onchange=()=>{ const [loja,itemId]=inp.dataset.mercadoarquivo.split('|'); onArquivoMercadoSelecionado(loja,itemId,inp); };
+  });
+  // 21/08 (achado real do Felipe): o <input type="file"> sozinho não estava abrindo o seletor de
+  // arquivo ao clicar (só o input cru, sem nenhum botão visível) - trocado pro mesmo padrão já
+  // usado no importador de PDF de Comprar: um botão comum dispara o clique no input escondido via
+  // JS, que é mais confiável que depender do clique direto no <input type="file"> puro.
+  corpo.querySelectorAll('[data-mercadoescolherarquivo]').forEach(b=>{
+    b.onclick=()=>{
+      const chave=b.dataset.mercadoescolherarquivo;
+      const inp=Array.from(corpo.querySelectorAll('[data-mercadoarquivo]')).find(i=>i.dataset.mercadoarquivo===chave);
+      if(inp) inp.click();
+    };
+  });
+  // mesma lógica pro link "abrir tendência": em vez de confiar só no clique nativo do <a>, abre
+  // explicitamente via JS (window.open) dentro do próprio gesto de clique - mais robusto contra
+  // qualquer coisa que possa estar interceptando o clique simples no link (relatado pelo Felipe).
+  corpo.querySelectorAll('[data-mercadoabrirtendencia]').forEach(a=>{
+    a.onclick=(ev)=>{ ev.preventDefault(); window.open(a.getAttribute('href'),'_blank','noopener'); };
+  });
+  corpo.querySelectorAll('[data-mercadoperiodo]').forEach(inp=>{
+    inp.onchange=()=>{
+      const [k,campo]=inp.dataset.mercadoperiodo.split('||');
+      const pv=mercadoImportPreview[k]; if(!pv) return;
+      if(campo==='de') pv.periodoDe=inp.value; else pv.periodoAte=inp.value;
+    };
+  });
+  corpo.querySelectorAll('[data-mercadoconfirmarimport]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadoconfirmarimport.split('|'); confirmarImportacaoMercado(loja,itemId); };
+  });
+  corpo.querySelectorAll('[data-mercadocancelarimport]').forEach(b=>{
+    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadocancelarimport.split('|'); cancelarImportacaoMercado(loja,itemId); };
+  });
+}
 function renderMercado(){
   const el=document.getElementById('tab-mercado'); if(!el) return;
   const produtosComItem=state.produtos.filter(p=>p.mlItemId).sort((a,b)=>(a.loja||'').localeCompare(b.loja||'')||(a.titulo||a.sku||'').localeCompare(b.titulo||b.sku||''));
@@ -6731,57 +6798,41 @@ function renderMercado(){
       const key=mercadoKey(p.loja,p.mlItemId);
       const aberto=mercadoAberto.has(key);
       const d=mercadoDados[key];
-      return `<details class="card" style="margin-bottom:10px" ${aberto?'open':''} data-mercadodetails="${esc(key)}">
+      const idSeguro=mercadoIdSeguro(key);
+      return `<details class="card" style="margin-bottom:10px" ${aberto?'open':''} data-mercadodetails="${esc(key)}" id="det_${idSeguro}">
         <summary style="cursor:pointer;font-weight:600">${esc(p.titulo||p.sku)} <span class="muted" style="font-weight:400">— ${esc(p.loja)} · SKU ${esc(p.sku)}</span></summary>
-        <div style="margin-top:12px">${aberto?renderMercadoCorpo(p,key,d):''}</div>
+        <div style="margin-top:12px" id="corpo_${idSeguro}">${aberto?renderMercadoCorpo(p,key,d):''}</div>
       </details>`;
     }).join(''):'<p class="empty">Nenhum produto com anúncio vinculado ainda.</p>'}
   `;
   el.querySelectorAll('[data-mercadodetails]').forEach(det=>{
     det.ontoggle=()=>{
       const key=det.dataset.mercadodetails;
-      if(det.open){ mercadoAberto.add(key); if(!mercadoDados[key]){ const [loja,itemId]=key.split('|'); carregarMercadoProduto(loja,itemId); } else renderMercado(); }
-      else{ mercadoAberto.delete(key); renderMercado(); }
+      const corpo=document.getElementById('corpo_'+mercadoIdSeguro(key));
+      if(det.open){
+        mercadoAberto.add(key);
+        const [loja,itemId]=key.split('|');
+        if(!mercadoDados[key]){
+          if(corpo) corpo.innerHTML=barraIndeterminada('Carregando dados de mercado...');
+          carregarMercadoProduto(loja,itemId);
+        } else {
+          atualizarCorpoMercado(loja,itemId);
+        }
+      } else {
+        mercadoAberto.delete(key);
+        if(corpo) corpo.innerHTML='';
+      }
     };
   });
-  el.querySelectorAll('[data-mercadoexcluirmes]').forEach(b=>{
-    b.onclick=()=>{ const [loja,itemId,mes]=b.dataset.mercadoexcluirmes.split('|'); confirmAction(`Excluir os dados de ${mes} dessa categoria?`,()=>excluirMercadoMes(loja,itemId,mes)); };
-  });
-  el.querySelectorAll('[data-mercadorecarregar]').forEach(b=>{
-    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadorecarregar.split('|'); carregarMercadoProduto(loja,itemId); };
-  });
-  el.querySelectorAll('[data-mercadoarquivo]').forEach(inp=>{
-    inp.onchange=()=>{ const [loja,itemId]=inp.dataset.mercadoarquivo.split('|'); onArquivoMercadoSelecionado(loja,itemId,inp); };
-  });
-  // 21/08 (achado real do Felipe): o <input type="file"> sozinho não estava abrindo o seletor de
-  // arquivo ao clicar (só o input cru, sem nenhum botão visível) - trocado pro mesmo padrão já
-  // usado no importador de PDF de Comprar: um botão comum dispara o clique no input escondido via
-  // JS, que é mais confiável que depender do clique direto no <input type="file"> puro.
-  el.querySelectorAll('[data-mercadoescolherarquivo]').forEach(b=>{
-    b.onclick=()=>{
-      const chave=b.dataset.mercadoescolherarquivo;
-      const inp=Array.from(el.querySelectorAll('[data-mercadoarquivo]')).find(i=>i.dataset.mercadoarquivo===chave);
-      if(inp) inp.click();
-    };
-  });
-  // mesma lógica pro link "abrir tendência": em vez de confiar só no clique nativo do <a>, abre
-  // explicitamente via JS (window.open) dentro do próprio gesto de clique - mais robusto contra
-  // qualquer coisa que possa estar interceptando o clique simples no link (relatado pelo Felipe).
-  el.querySelectorAll('[data-mercadoabrirtendencia]').forEach(a=>{
-    a.onclick=(ev)=>{ ev.preventDefault(); window.open(a.getAttribute('href'),'_blank','noopener'); };
-  });
-  el.querySelectorAll('[data-mercadoperiodo]').forEach(inp=>{
-    inp.onchange=()=>{
-      const [key,campo]=inp.dataset.mercadoperiodo.split('||');
-      const pv=mercadoImportPreview[key]; if(!pv) return;
-      if(campo==='de') pv.periodoDe=inp.value; else pv.periodoAte=inp.value;
-    };
-  });
-  el.querySelectorAll('[data-mercadoconfirmarimport]').forEach(b=>{
-    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadoconfirmarimport.split('|'); confirmarImportacaoMercado(loja,itemId); };
-  });
-  el.querySelectorAll('[data-mercadocancelarimport]').forEach(b=>{
-    b.onclick=()=>{ const [loja,itemId]=b.dataset.mercadocancelarimport.split('|'); cancelarImportacaoMercado(loja,itemId); };
+  // produtos que já começam abertos tiveram o corpo preenchido direto no template acima (pra
+  // primeira pintura ficar rápida) - precisa vincular os botões desse corpo aqui, fora do fluxo
+  // de toggle (que só roda quando o usuário clica de novo).
+  produtosComItem.forEach(p=>{
+    const key=mercadoKey(p.loja,p.mlItemId);
+    if(mercadoAberto.has(key)){
+      const corpo=document.getElementById('corpo_'+mercadoIdSeguro(key));
+      bindMercadoCorpo(corpo,p,key);
+    }
   });
 }
 function renderAmauri(){
