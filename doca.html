@@ -6515,6 +6515,14 @@ function atualizarCorpoMercado(loja,itemId){
   const key=mercadoKey(loja,itemId);
   const corpo=document.getElementById('corpo_'+mercadoIdSeguro(key));
   if(!corpo) return; // produto não está mais na tela (trocou de aba, fechou o card, etc) - nada a atualizar
+  // 21/08 (3º achado real do Felipe): a busca de "suas vendas" em segundo plano (pode levar vários
+  // segundos, principalmente depois de salvar a Sazonalidade com vários meses de uma vez) chamava
+  // isso de novo quando terminava e reescrevia o corpo inteiro - inclusive enquanto o usuário ainda
+  // estava digitando outro valor na mesma tabela, derrubando/fechando o campo sem salvar nada. Se o
+  // foco atual (campo de texto) estiver dentro desse card, pula essa atualização - tenta de novo
+  // na próxima chamada (ex: quando ele clicar em Salvar ou fechar o card), sem interromper quem
+  // está digitando.
+  if(corpo.contains(document.activeElement)&&usuarioDigitando()) return;
   const p=state.produtos.find(x=>x.loja===loja&&x.mlItemId===itemId);
   if(!p) return;
   corpo.innerHTML=renderMercadoCorpo(p,key,mercadoDados[key]);
@@ -6738,7 +6746,7 @@ function renderMercadoCorpo(p,key,d){
       </tbody></table></div>
     </details>
     `:''}
-    ${renderMercadoSazonalidade(p,key,historico)}
+    ${renderMercadoSazonalidade(p,key,historico,vendasProprias)}
     <details style="margin-top:10px" ${(preview||!historico.length)?'open':''}>
       <summary style="cursor:pointer;font-size:13px">📥 Importar relatório "Mais vendidos nas suas categorias" (.xlsx)</summary>
       <p class="hint" style="margin:8px 0">No Mercado Livre: Métricas → Análise de mercado → Tendências por categoria → escolha a categoria → botão "Baixar relatório". Depois selecione o arquivo baixado aqui.</p>
@@ -6774,22 +6782,73 @@ function sazonalidadeValor(historico,mesKey){
 // tabela pra colar esses 12+12 valores (uma vez), reaproveitando o mesmo /mercado/categoria com
 // mes em formato "YYYY-MM" que já existia antes (a busca de "suas vendas" mês a mês pra essas
 // linhas já acontece automática, igual qualquer outra linha do histórico).
-function renderMercadoSazonalidade(p,key,historico){
+// 21/08 (achado real do Felipe): a primeira versão só criava uma TABELA pra digitar os valores -
+// não desenhava o gráfico de verdade comparando as duas linhas mês a mês (a tabela virava só mais
+// linhas soltas no gráfico/tabela genérico de período, uma sequência única, sem alinhar por mês).
+// Esse gráfico é dedicado: eixo X sempre jan-dez, uma linha por ano (roxo = ano atual, cinza = ano
+// anterior, igual as cores do próprio Mercado Livre) + uma terceira linha (laranja) com as SUAS
+// vendas mês a mês do ano atual - essa parte é 100% automática, puxada da mesma API de pedidos.
+function svgMercadoSazonalidadeChart(mesesAbrev,anoAtualVals,anoAnteriorVals,suasVendasVals){
+  const w=640,h=190,padL=58,padR=10,padT=14,padB=22;
+  const stepX=(w-padL-padR)/(mesesAbrev.length-1);
+  const maxCategoria=Math.max(1,...anoAtualVals.map(v=>Number(v)||0),...anoAnteriorVals.map(v=>Number(v)||0));
+  const maxProprio=Math.max(1,...suasVendasVals.map(v=>Number(v)||0));
+  const yCat=(v)=>padT+(1-(Number(v)||0)/maxCategoria)*(h-padT-padB);
+  const yProp=(v)=>padT+(1-(Number(v)||0)/maxProprio)*(h-padT-padB);
+  const linha=(arr,fn)=>arr.map((v,i)=>(v==null?null:`${(padL+i*stepX).toFixed(1)},${fn(v).toFixed(1)}`)).filter(Boolean).join(' ');
+  const labelsHtml=mesesAbrev.map((l,i)=>`<text x="${(padL+i*stepX).toFixed(1)}" y="${h-6}" font-size="9" text-anchor="middle" fill="#999">${esc(l)}</text>`).join('');
+  const gridHtml=[0,0.5,1].map(f=>{
+    const val=maxCategoria*f, yy=yCat(val);
+    return `<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${w-padR}" y2="${yy.toFixed(1)}" stroke="#333" stroke-width="1" stroke-dasharray="2,3"/><text x="${padL-6}" y="${(yy+3).toFixed(1)}" font-size="9" text-anchor="end" fill="#777">${fmtMoney(val)}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" style="max-width:${w}px;display:block">
+    ${gridHtml}
+    <polyline points="${linha(anoAnteriorVals,yCat)}" fill="none" stroke="#999" stroke-width="2"/>
+    <polyline points="${linha(anoAtualVals,yCat)}" fill="none" stroke="#8a5cf6" stroke-width="2"/>
+    <polyline points="${linha(suasVendasVals,yProp)}" fill="none" stroke="#ffb020" stroke-width="2" stroke-dasharray="5,3"/>
+    ${labelsHtml}
+  </svg>`;
+}
+function renderMercadoSazonalidade(p,key,historico,vendasProprias){
   const anoAtual=Number(hoje().slice(0,4));
   const anoAnterior=anoAtual-1;
+  vendasProprias=vendasProprias||{};
+  const valoresAtual=[],valoresAnterior=[],valoresProprios=[];
+  MERCADO_MESES_ABREV.forEach((nome,i)=>{
+    const mesNum=String(i+1).padStart(2,'0');
+    const keyAtual=`${anoAtual}-${mesNum}`, keyAnterior=`${anoAnterior}-${mesNum}`;
+    valoresAtual.push(sazonalidadeValor(historico,keyAtual));
+    valoresAnterior.push(sazonalidadeValor(historico,keyAnterior));
+    const prop=vendasProprias[keyAtual];
+    valoresProprios.push((prop&&!prop.erro)?prop.valorBruto:null);
+  });
+  const temAlgumDado=valoresAtual.some(v=>v!=null)||valoresAnterior.some(v=>v!=null);
   return `
-    <details style="margin-top:10px">
+    <details style="margin-top:10px" ${temAlgumDado?'open':''}>
       <summary style="cursor:pointer;font-size:13px">📅 Sazonalidade mensal (${anoAtual} x ${anoAnterior}, igual o gráfico do Mercado Livre)</summary>
       <p class="hint" style="margin:8px 0">Na página de Análise de Mercado desse produto no Mercado Livre, no gráfico "Sazonalidade anual de vendas brutas", passe o mouse em cada mês (das duas linhas, ano atual e ano anterior) e cole os valores aqui. Só funciona pra categorias de produtos que essa loja já vendeu.</p>
-      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">${anoAtual} (ano atual)</th><th class="num">${anoAnterior} (ano anterior)</th></tr></thead><tbody>
+      ${temAlgumDado?`
+      <div style="margin:8px 0">
+        <div class="acoes-linha" style="margin-bottom:6px;gap:14px;flex-wrap:wrap">
+          <span class="mono" style="font-size:11px;color:#8a5cf6">▬ ${anoAtual} (ano atual, categoria)</span>
+          <span class="mono" style="font-size:11px;color:#999">▬ ${anoAnterior} (ano anterior, categoria)</span>
+          <span class="mono" style="font-size:11px;color:#ffb020">▬ suas vendas (${anoAtual})</span>
+        </div>
+        ${svgMercadoSazonalidadeChart(MERCADO_MESES_ABREV,valoresAtual,valoresAnterior,valoresProprios)}
+      </div>
+      `:''}
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">${anoAtual} (ano atual)</th><th class="num">${anoAnterior} (ano anterior)</th><th class="num">Suas vendas</th></tr></thead><tbody>
         ${MERCADO_MESES_ABREV.map((nome,i)=>{
           const mesNum=String(i+1).padStart(2,'0');
           const keyAtual=`${anoAtual}-${mesNum}`, keyAnterior=`${anoAnterior}-${mesNum}`;
-          const valAtual=sazonalidadeValor(historico,keyAtual), valAnterior=sazonalidadeValor(historico,keyAnterior);
+          const valAtual=valoresAtual[i], valAnterior=valoresAnterior[i];
+          const propObj=vendasProprias[keyAtual];
+          const propTexto=propObj?(propObj.erro?'⚠ erro':fmtMoney(propObj.valorBruto)):'<span class="muted">—</span>';
           return `<tr>
             <td class="mono">${nome}</td>
             <td class="num"><input type="text" inputmode="decimal" placeholder="0,00" style="width:110px" oninput="filtrarValorMoeda(this)" value="${valAtual!=null?String(valAtual).replace('.',','):''}" data-mercadosazon="${esc(keyAtual)}"></td>
             <td class="num"><input type="text" inputmode="decimal" placeholder="0,00" style="width:110px" oninput="filtrarValorMoeda(this)" value="${valAnterior!=null?String(valAnterior).replace('.',','):''}" data-mercadosazon="${esc(keyAnterior)}"></td>
+            <td class="num">${propTexto}</td>
           </tr>`;
         }).join('')}
       </tbody></table></div>
