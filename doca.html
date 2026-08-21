@@ -2944,6 +2944,11 @@ async function carregarPerguntas(loja){
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar perguntas (status '+r.status+').'));
     perguntasCarregadas[loja]=j.perguntas||[];
+    // dispara a sugestao de IA pra cada pergunta nova (mesmo padrao ja usado em carregarMensagens) -
+    // faltava essa chamada aqui, por isso a caixa de resposta ficava sem sugestao nenhuma (21/08)
+    const lista=perguntasCarregadas[loja];
+    await Promise.all(lista.filter(q=>q.texto&&sugestoesResposta[q.id]===undefined)
+      .map(q=>buscarSugestaoSilenciosa(q.id,'pergunta',q.texto,q.titulo)));
   }catch(e){ alert('Não foi possível buscar as perguntas: '+e.message); }
   finally{ perguntasCarregando=null; renderDashboard(); }
 }
