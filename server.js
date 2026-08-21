@@ -168,13 +168,19 @@ app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOSt
 app.post('/ml/webhook', async (req, res) => {
   res.sendStatus(200); // responde rapido - o ML cancela o webhook se demorar pra responder
   try {
-    const { topic, user_id } = req.body || {};
-    if (topic && String(topic).toLowerCase().includes('claim') && user_id) {
+    const { topic, user_id, resource } = req.body || {};
+    const topicoLower = String(topic || '').toLowerCase();
+    if (topicoLower.includes('claim') && user_id) {
       const r = await pool.query('select loja from ml_accounts where ml_user_id = $1', [String(user_id)]);
       const loja = r.rows[0] && r.rows[0].loja;
       if (loja) {
         processarReclamacoesDaLoja(loja).catch(e => console.error('[webhook claims] falha ao processar', loja, e.message));
       }
+    } else if (topicoLower.includes('message') && user_id && resource) {
+      /* mensagens pos-venda NAO sao mais buscadas sob demanda (ver comentario grande la' embaixo,
+         perto de "Mensagens pos-venda") - o unico jeito que funcionou ate' agora foi via webhook.
+         So' processa aqui, fora do sync normal. */
+      processarWebhookMensagem(String(user_id), resource).catch(e => console.error('[webhook mensagens] falha ao processar notificacao:', e.message));
     }
   } catch (e) {
     console.error('[webhook] erro ao processar notificacao:', e.message);
@@ -2883,67 +2889,103 @@ app.post('/perguntas/responder', async (req, res) => {
    Diferente de Perguntas (publicas, antes da venda), essas sao mensagens privadas trocadas
    DEPOIS da compra (duvida de uso, problema, etc). Felipe (20/08) pediu: responde MANUAL (nao
    automatico), mas com sugestao de resposta pronta pra so' clicar Responder. Mostrada logo
-   abaixo de Perguntas no Doca. */
-async function buscarMensagensPendentes(loja) {
+   abaixo de Perguntas no Doca.
+
+   IMPORTANTE (21/08) - por que isso NAO busca sob demanda como Reclamacoes:
+   testei todas as variacoes documentadas do endpoint "buscar todas as mensagens nao lidas de uma
+   vez" (/marketplace/messages/unread com role+tag+user_id, sem user_id, so' com role, sem NENHUM
+   parametro, e ate' o endpoint "classico" sem o prefixo marketplace/) - todas deram 403 "Invalid
+   caller.id" ou 404 "resource not found", em TODAS as 4 lojas, o tempo todo. Nao e' bug de
+   parametro - essa chamada especifica parece bloqueada pra essa conta/app.
+   Solucao: em vez de perguntar pro ML "quais mensagens estao pendentes" (bloqueado), o Doca
+   ESCUTA quando chega mensagem nova via webhook (topico "messages" - Felipe confirmou 21/08 que
+   ja deixou todos os topicos marcados no cadastro do app) e guarda na tabela
+   ml_mensagens_pendentes ate' o Felipe responder (dai' e' removida da lista - ver
+   /mensagens/responder). GET num recurso especifico (1 mensagem por vez) nao parece ter o mesmo
+   bloqueio da busca "tudo de uma vez" - mas isso so' fica confirmado de verdade quando uma
+   notificacao real chegar; se der erro tambem, fica registrado no log do Render
+   ("[webhook mensagens] falha ao processar notificacao").
+   LIMITACAO REAL: mensagens que chegaram ANTES desse webhook estar funcionando nao aparecem
+   sozinhas - so' as novas, a partir de agora que isso foi ligado. */
+pool.query(`create table if not exists ml_mensagens_pendentes (
+  id serial primary key,
+  loja text not null,
+  pack_id text not null,
+  buyer_id text,
+  titulo text,
+  texto text,
+  message_id text,
+  data_mensagem timestamptz,
+  criado_em timestamptz not null default now(),
+  atualizado_em timestamptz not null default now(),
+  unique(loja, pack_id)
+)`).catch(e => console.error('Falha ao garantir tabela "ml_mensagens_pendentes":', e.message));
+
+async function processarWebhookMensagem(userId, resource) {
+  const rConta = await pool.query('select loja from ml_accounts where ml_user_id = $1', [String(userId)]);
+  const loja = rConta.rows[0] && rConta.rows[0].loja;
+  if (!loja) return; // notificacao de um user_id que nao e' nenhuma das nossas 4 lojas
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const sellerId = conta.ml_user_id;
-  /* Historico de tentativas nesse endpoint (21/08), pra quem for mexer aqui de novo:
-     1) "/marketplace/messages/unread?role=seller&tag=post_sale&user_id=X" -> 403 "Invalid caller.id"
-     2) mesma coisa sem o user_id -> 403 "Invalid caller.id" de novo (nao era o user_id o problema)
-     3) endpoint classico "/messages/unread?role=seller" (sem "marketplace/") -> 404 "resource not
-        found" (parece que foi descontinuado pra contas nao inscritas no Global Selling)
-     4) essa aqui: "/marketplace/messages/unread" SEM NENHUM parametro (exatamente como o primeiro
-        exemplo "basico" da doc oficial do Global Selling, antes da secao "Use modes") - ainda nao
-        confirmado se funciona, precisa testar com dado real. Se continuar dando 403, o mais
-        provavel e' que essa conta/app nao esteja habilitada pro programa "Global Selling" da API
-        de mensagens - nesse caso o jeito seria trocar de estrategia (webhook do topico "messages"
-        em vez de buscar sob demanda, ou perguntar pro suporte do ML se a conta precisa de algum
-        cadastro extra). */
-  const j = await fetchMLDebug(`https://api.mercadolibre.com/marketplace/messages/unread`, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const packs = (j.results || []).slice(0, 25); // limite de seguranca - nao processa uma avalanche de packs de uma vez
-  // (25 packs x ~2 chamadas cada + pausa = pode levar uns 20-30s; acima disso arrisca estourar o
-  // timeout do proxy do Render/navegador e o card de Mensagens pos-venda no Doca fica "carregando"
-  // pra sempre - reduzido de 60 pra 25 por causa disso, 20/08)
-  const resultado = [];
-  for (const p of packs) {
-    // extrai so' o numero do pack de "resource" - aceita tanto "/packs/123" quanto
-    // "/packs/123/sellers/456" (formatos diferentes vistos entre os dois endpoints de unread)
-    const matchPack = String(p.resource || '').match(/\/packs\/(\d+)/);
-    const packId = matchPack ? matchPack[1] : '';
-    if (!packId) continue;
-    try {
-      // mark_as_read=false: nao consome o "nao lido" oficial do ML so' por ter mostrado no Doca -
-      // so' fica "lido" de verdade quando o Felipe manda uma resposta (ou olha direto no ML).
-      const thread = await fetchMLDebug(`https://api.mercadolibre.com/messages/packs/${packId}/sellers/${sellerId}?tag=post_sale&mark_as_read=false&limit=5&offset=0`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      const mensagens = (thread.messages || []).slice().sort((a, b) => new Date(a.message_date?.received || 0) - new Date(b.message_date?.received || 0));
-      const ultima = mensagens[mensagens.length - 1];
-      const buyerId = ultima && ultima.from && String(ultima.from.user_id) !== String(sellerId) ? ultima.from.user_id : null;
-      let titulo = null;
-      try {
-        const rOrd = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sellerId}&pack_id=${packId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-        const jOrd = await rOrd.json();
-        const pedido = (jOrd.results || [])[0];
-        const oi = pedido && pedido.order_items && pedido.order_items[0];
-        titulo = (oi && oi.item && oi.item.title) || null;
-      } catch (e) { /* segue sem titulo do produto - nao e' bloqueante */ }
-      resultado.push({
-        packId, count: p.count, buyerId,
-        ultimaMensagem: ultima ? { texto: ultima.text, data: ultima.message_date && ultima.message_date.received } : null,
-        titulo
-      });
-    } catch (e) {
-      resultado.push({ packId, count: p.count, erro: e.message });
-    }
-    await sleep(120);
+  const detalhe = await fetchMLDebug(`https://api.mercadolibre.com${resource}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+  /* formato esperado (baseado na doc classica de "Get message by ID" - PRECISA confirmar que o
+     recurso novo /marketplace/messages/{id} devolve igual): message_resources: [{id, name:"packs"},
+     {id, name:"sellers"}]. Se vier diferente na pratica, cai no "nao consegui identificar" abaixo
+     e fica logado - me manda esse log que eu ajusto o parsing rapido. */
+  let packId = null;
+  const recursos = detalhe.message_resources || [];
+  const packRes = recursos.find(r => r.name === 'packs' || r.name === 'pack');
+  if (packRes) packId = String(packRes.id);
+  if (!packId && detalhe.resource === 'orders' && detalhe.resource_id) packId = String(detalhe.resource_id);
+  if (!packId) {
+    console.error('[webhook mensagens] nao consegui identificar o pack_id na resposta do recurso', resource, ':', JSON.stringify(detalhe).slice(0, 500));
+    return;
   }
-  return resultado;
+  const fromId = detalhe.from && detalhe.from.user_id;
+  if (fromId && String(fromId) === String(sellerId)) return; // mensagem que o proprio vendedor mandou (por outro canal) - nao e' pendente de resposta
+  let titulo = null;
+  try {
+    const rOrd = await fetch(`https://api.mercadolibre.com/orders/search?seller=${sellerId}&pack_id=${packId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const jOrd = await rOrd.json();
+    const pedido = (jOrd.results || [])[0];
+    const oi = pedido && pedido.order_items && pedido.order_items[0];
+    titulo = (oi && oi.item && oi.item.title) || null;
+  } catch (e) { /* nao bloqueia - segue sem titulo */ }
+  const texto = typeof detalhe.text === 'string' ? detalhe.text : ((detalhe.text && detalhe.text.plain) || '');
+  const dataMsg = (detalhe.message_date && detalhe.message_date.received) || detalhe.date_received || detalhe.date || null;
+  await pool.query(
+    `insert into ml_mensagens_pendentes (loja, pack_id, buyer_id, titulo, texto, message_id, data_mensagem, atualizado_em)
+     values ($1,$2,$3,$4,$5,$6,$7, now())
+     on conflict (loja, pack_id) do update set
+       buyer_id = excluded.buyer_id, titulo = coalesce(excluded.titulo, ml_mensagens_pendentes.titulo),
+       texto = excluded.texto, message_id = excluded.message_id, data_mensagem = excluded.data_mensagem, atualizado_em = now()`,
+    [loja, packId, fromId ? String(fromId) : null, titulo, texto, detalhe.id || detalhe.message_id || null, dataMsg]
+  );
 }
+/* rota de diagnostico (so' LE, nao salva nada) - pra conferir o formato exato que o Mercado Livre
+   devolve pra um recurso de mensagem especifico, sem precisar esperar um webhook real chegar.
+   Ex.: /debug/mensagens/detalhe?loja=TorvStore&resource=/marketplace/messages/abc123 */
+app.get('/debug/mensagens/detalhe', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const resource = req.query.resource;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!resource) return res.status(400).json({ ok: false, erro: 'Parametro "resource" obrigatorio (ex: /marketplace/messages/ID, vem no campo "resource" da notificacao do webhook).' });
+    const accessToken = await tokenValido(loja);
+    const detalhe = await fetchMLDebug(`https://api.mercadolibre.com${resource}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    res.json({ ok: true, loja, resource, detalhe });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 app.get('/mensagens', async (req, res) => {
   try {
     const loja = req.query.loja;
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    const mensagens = await buscarMensagensPendentes(loja);
+    const r = await pool.query('select pack_id, buyer_id, titulo, texto, data_mensagem from ml_mensagens_pendentes where loja = $1 order by atualizado_em desc', [loja]);
+    const mensagens = r.rows.map(row => ({
+      packId: row.pack_id, buyerId: row.buyer_id, titulo: row.titulo,
+      ultimaMensagem: row.texto ? { texto: row.texto, data: row.data_mensagem } : null
+    }));
     res.json({ ok: true, loja, mensagens });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
@@ -2965,6 +3007,9 @@ app.post('/mensagens/responder', async (req, res) => {
     });
     const j = await r.json();
     if (!r.ok) return res.status(200).json({ ok: false, erro: j.message || 'Falha ao enviar a mensagem.', corpo: j });
+    // ja' respondida - sai da lista de pendentes (ver comentario grande la' em cima, perto de
+    // "Mensagens pos-venda", sobre por que isso e' alimentado por webhook e nao busca sob demanda)
+    await pool.query('delete from ml_mensagens_pendentes where loja = $1 and pack_id = $2', [loja, String(packId)]).catch(e => console.error('Falha ao remover mensagem respondida da lista de pendentes:', e.message));
     res.json({ ok: true, resposta: j });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
