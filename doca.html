@@ -465,7 +465,6 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
       <button data-tab="full" aria-selected="false">FULL</button>
-      <button data-tab="mercado" aria-selected="false">Análise de Mercado</button>
       <button data-tab="amauri" aria-selected="false">Amauri</button>
     </nav>
   </div>
@@ -500,7 +499,6 @@ tr.l-env{background:rgba(163,163,163,.07)}
     <div id="tab-envio" class="hidden"></div>
     <div id="tab-ruptura" class="hidden"></div>
   </section>
-  <section id="tab-mercado" class="tabpanel hidden"></section>
   <section id="tab-amauri" class="tabpanel hidden"></section>
 </main>
 <div class="modal-overlay hidden" id="modalOverlay"><div class="modal" id="modalBody"></div></div>
@@ -4173,7 +4171,7 @@ function tableColetar(list){
         <td><input type="checkbox" class="chk-coleta" data-lote="${p.id}|${l.id}" checked></td>
         <td class="mono">${esc(fmtData(l.data))}</td>
         <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
-        <td class="num">${fmtInt(l.qtd)}</td>
+        <td class="num">${fmtInt(l.qtd)}${p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(l.qtd,p.unidPorCaixa)}</div>`:''}</td>
         <td><input type="text" class="obs-input" placeholder="Nº do pedido" value="${esc(l.pedido||'')}" data-pedido="${p.id}|${l.id}"></td>
         <td><button class="btn sm acc" data-receber="${p.id}|${l.id}">Chegou no galpão</button></td>
       </tr>`).join('')}
@@ -4205,7 +4203,7 @@ function imprimirRelatorioColeta(){
     const [pid,lid]=c.dataset.lote.split('|');
     const p=prodById(pid); if(!p) return;
     const l=(p.lotes||[]).find(x=>x.id===lid); if(!l) return;
-    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,qtd:l.qtd,pedido:l.pedido,data:l.data});
+    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,qtd:l.qtd,pedido:l.pedido,data:l.data,unidPorCaixa:p.unidPorCaixa});
   });
   if(!itens.length){ alert('Nenhum lote válido selecionado.'); return; }
   const g={}; itens.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
@@ -4222,9 +4220,9 @@ function imprimirRelatorioColeta(){
     ${nomes.map(f=>{
       const lst=g[f].sort((a,b)=>(a.pedido||'').localeCompare(b.pedido||'')||a.loja.localeCompare(b.loja)||a.sku.localeCompare(b.sku));
       return `<div class="forn-h">${esc(f)} — ${lst.reduce((a,i)=>a+i.qtd,0)} un. em ${lst.length} lote(s)</div>
-      <table><thead><tr><th style="width:40px"></th><th>Pedido</th><th>Comprado em</th><th>Loja</th><th>SKU</th><th>Código</th><th>Qtd</th></tr></thead><tbody>
+      <table><thead><tr><th style="width:40px"></th><th>Pedido</th><th>Comprado em</th><th>Loja</th><th>SKU</th><th>Código</th><th>Qtd</th><th>Caixas</th></tr></thead><tbody>
       ${lst.map(i=>`<tr><td><span class="box"></span></td><td><b>${esc(i.pedido||'—')}</b></td><td>${esc(fmtData(i.data))}</td>
-        <td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td>${fmtInt(i.qtd)}</td></tr>`).join('')}
+        <td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td>${fmtInt(i.qtd)}</td><td>${i.unidPorCaixa?esc(caixasTxt(i.qtd,i.unidPorCaixa)):'—'}</td></tr>`).join('')}
       </tbody></table>`;}).join('')}
     <button class="no-print" onclick="window.print()" style="margin-top:10px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
     </body></html>`);
@@ -8572,7 +8570,7 @@ function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],
-   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['análise de mercado',renderMercado],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
+   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
