@@ -8574,25 +8574,37 @@ function renderRuptura(){
    fornecedor (a coletar), o que já está pedido (a comprar) e o que está fisicamente no galpão -
    pra saber quanto falta comprar de verdade e quanto capital isso exige. */
 let estoqueMinimoSoFaltantes=true;
+// 22/08 (achado real do Felipe): eu estava usando p.qtd.local sozinho (só a parte LIVRE do
+// galpão), mas o que já está RESERVADO pra um envio FULL programado (reservadoLocalDe) continua
+// sendo estoque seu de verdade, só que já com destino certo - não pode ficar de fora da conta.
+// Por outro lado, o número "A caminho" que aparece no Produtos (386 no exemplo do Cabo Mickey) já
+// SOMA esse reservado (o próprio Doca mostra isso: "Próximos programados não entra no Valor
+// estoque - já está contado em Reservado"), então usar local+reservado (totalNoGalpao) E TAMBÉM o
+// "A caminho" cheio contaria o reservado 2x. A conta certa: local TOTAL (livre+reservado, via
+// totalNoGalpao) + aptas no FULL + só a parte que está de fato em trânsito (mlTransferencia) -
+// sem entrar com "próximos programados" de novo.
 function estoqueTotalCombinado(p){
-  return (p.mlQtdDisponivel||0)+(p.mlTransferencia||0)+(p.qtd.comprar||0)+(p.qtd.coletar||0)+(p.qtd.local||0);
+  return (p.mlQtdDisponivel||0)+(p.mlTransferencia||0)+(p.qtd.comprar||0)+(p.qtd.coletar||0)+totalNoGalpao(p);
 }
 function linhaEstoqueMinimo(p){
   if(p.vinculadoA) return null; // estoque mora no SKU mestre, não duplica aqui
-  const minimo=estoqueMinimoEfetivo(p);
-  if(!minimo||minimo<=0) return null; // sem mínimo definido ainda (nem sugerido pelo FULL, nem manual)
+  const minimoBase=estoqueMinimoEfetivo(p);
+  if(!minimoBase||minimoBase<=0) return null; // sem mínimo definido ainda (nem sugerido pelo FULL, nem manual)
+  const minimo=minimoBase*2; // meta = 2 meses de estoque (confirmado com Felipe 22/08, era 1 mês antes)
   const atual=estoqueTotalCombinado(p);
   const comprarAMais=Math.max(0,minimo-atual);
   const semCusto=comprarAMais>0&&!(p.custo>0);
   const capital=semCusto?0:comprarAMais*(p.custo||0);
-  const detalhe=`FULL: ${fmtInt(p.mlQtdDisponivel||0)} · A caminho do FULL: ${fmtInt(p.mlTransferencia||0)} · A comprar (já em pedido): ${fmtInt(p.qtd.comprar||0)} · A coletar: ${fmtInt(p.qtd.coletar||0)} · No galpão: ${fmtInt(p.qtd.local||0)}`;
-  return {p,minimo,atual,comprarAMais,capital,semCusto,detalhe};
+  const galpaoLivre=p.qtd.local||0, galpaoReservado=reservadoLocalDe(p);
+  const vendasDia=mediaVendasDiaria(p)||0; // pra ordenar relatório por mais vendido
+  const detalhe=`FULL: ${fmtInt(p.mlQtdDisponivel||0)} · Em trânsito pro FULL: ${fmtInt(p.mlTransferencia||0)} · A comprar (já em pedido): ${fmtInt(p.qtd.comprar||0)} · A coletar: ${fmtInt(p.qtd.coletar||0)} · No galpão livre: ${fmtInt(galpaoLivre)} · No galpão reservado p/ envio: ${fmtInt(galpaoReservado)}`;
+  return {p,minimo,atual,comprarAMais,capital,semCusto,detalhe,vendasDia};
 }
 function renderEstoqueMinimo(){
   const el=document.getElementById('tab-estoqueminimo'); if(!el) return;
   const porLoja=STORES.map(loja=>{
     const todasLinhas=state.produtos.filter(p=>p.loja===loja).map(linhaEstoqueMinimo).filter(Boolean)
-      .sort((a,b)=>b.capital-a.capital||b.comprarAMais-a.comprarAMais);
+      .sort((a,b)=>b.vendasDia-a.vendasDia||b.capital-a.capital);
     const linhas=estoqueMinimoSoFaltantes?todasLinhas.filter(x=>x.comprarAMais>0):todasLinhas;
     const capitalTotalLoja=todasLinhas.reduce((s,x)=>s+x.capital,0);
     const semCustoQtd=todasLinhas.filter(x=>x.semCusto).length;
@@ -8601,12 +8613,12 @@ function renderEstoqueMinimo(){
   const capitalGeral=porLoja.reduce((s,r)=>s+r.capitalTotalLoja,0);
   el.innerHTML=`
     <h1 class="page-title">Estoque Mínimo</h1>
-    <p class="hint" style="margin:0 0 14px">Compara o estoque mínimo de cada produto (a mesma conta já usada na Previsão de reposição: média de vendas/dia × 30 dias, ou o valor manual quando ainda não há leitura do FULL) com tudo que você já tem — no FULL, a caminho do FULL, a comprar, a coletar e no galpão — e mostra quanto falta comprar e o capital necessário pra isso.</p>
+    <p class="hint" style="margin:0 0 14px">Compara a meta de 2 meses de estoque de cada produto (2× a média de vendas/dia × 30 dias, mesma base já usada na Previsão de reposição, ou o valor manual dobrado quando ainda não há leitura do FULL) com tudo que você já tem — no FULL, a caminho do FULL, a comprar, a coletar e no galpão — e mostra quanto falta comprar e o capital necessário pra isso. Ordenado por mais vendido.</p>
     <div class="card" style="margin-bottom:14px">
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer"><input type="checkbox" id="chkEstoqueMinSoFaltantes" ${estoqueMinimoSoFaltantes?'checked':''}> Mostrar só quem precisa comprar</label>
     </div>
     <div class="cards-linha" style="margin-bottom:14px">
-      <div class="card mini"><span class="rot">Capital necessário (todas as lojas)</span><b>${fmtMoney(capitalGeral)}</b><small>pra deixar 1 mês de estoque nos produtos com mínimo definido</small></div>
+      <div class="card mini"><span class="rot">Capital necessário (todas as lojas)</span><b>${fmtMoney(capitalGeral)}</b><small>pra deixar 2 meses de estoque nos produtos com mínimo definido</small></div>
     </div>
     ${porLoja.map(({loja,linhas,totalSku,capitalTotalLoja,semCustoQtd})=>`
       <div class="card">
@@ -8615,9 +8627,9 @@ function renderEstoqueMinimo(){
           <button class="btn sm gold" data-gerarrelestmin="${esc(loja)}">📤 Gerar relatório da loja</button>
         </div>
         ${!totalSku?`<p class="empty-inline">Nenhum produto com estoque mínimo definido nesta loja ainda (defina manualmente em Produtos, ou aguarde a leitura do FULL calcular sozinho).</p>`
-          :!linhas.length?`<p class="empty-inline">Todos os produtos com mínimo definido já estão cobertos para 1 mês. 🎉</p>`
+          :!linhas.length?`<p class="empty-inline">Todos os produtos com mínimo definido já estão cobertos para 2 meses. 🎉</p>`
           :`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th class="num">Mínimo (1 mês)</th><th class="num" title="FULL + a caminho + a comprar + a coletar + no galpão">Estoque atual</th><th class="num">Comprar a mais</th><th class="num">Custo un.</th><th class="num">Capital necessário</th>
+          <th>SKU</th><th class="num">Mínimo (2 meses)</th><th class="num" title="Aptas no FULL + em trânsito pro FULL + a comprar + a coletar + no galpão (livre e reservado p/ envio) — passe o mouse numa linha pra ver o detalhe">Estoque atual</th><th class="num">Comprar a mais</th><th class="num">Custo un.</th><th class="num">Capital necessário</th>
           </tr></thead><tbody>
           ${linhas.map(({p,minimo,atual,comprarAMais,capital,semCusto,detalhe})=>`<tr>
             <td class="mono">${esc(p.sku)}</td>
@@ -8641,7 +8653,7 @@ function renderEstoqueMinimo(){
    público via /relatorio e botão direto pro WhatsApp - pedido do Felipe 22/08. */
 function imprimirRelatorioEstoqueMinimo(loja){
   const linhas=state.produtos.filter(p=>p.loja===loja).map(linhaEstoqueMinimo).filter(Boolean)
-    .sort((a,b)=>b.capital-a.capital||b.comprarAMais-a.comprarAMais);
+    .sort((a,b)=>b.vendasDia-a.vendasDia||b.capital-a.capital);
   const faltantes=linhas.filter(x=>x.comprarAMais>0);
   const cobertos=linhas.filter(x=>x.comprarAMais<=0);
   const capitalTotal=linhas.reduce((s,x)=>s+x.capital,0);
@@ -8686,7 +8698,7 @@ function imprimirRelatorioEstoqueMinimo(loja){
       .share-hint{color:var(--muted);font-size:11px;margin-top:8px}
     </style></head><body>
     <h1>Estoque Mínimo — ${esc(loja)}</h1>
-    <div class="sub">Cobertura alvo: 1 mês · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <div class="sub">Cobertura alvo: 2 meses · Ordenado por mais vendido · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <div class="loja-card">
       <h2>Precisa comprar (${fmtInt(faltantes.length)})</h2>
       ${faltantes.length?`<table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th><th class="n">Comprar</th><th class="n">Custo un.</th><th class="n">Capital</th></tr></thead><tbody>
@@ -8700,7 +8712,7 @@ function imprimirRelatorioEstoqueMinimo(loja){
       </tbody></table>
     </div>`:''}
     <div class="tot-card">
-      <span>Capital necessário pra cobrir 1 mês de estoque</span>
+      <span>Capital necessário pra cobrir 2 meses de estoque</span>
       <b>${fmtMoney(capitalTotal)}</b>
     </div>
     <div class="share-box">
