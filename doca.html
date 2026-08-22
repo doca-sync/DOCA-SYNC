@@ -446,6 +446,14 @@ nav button[aria-selected=true] .nav-badge{background:rgba(0,0,0,.22)}
 .mapa-cols div b{font-weight:600;text-transform:none}
 tr.l-env{background:rgba(163,163,163,.07)}
 @media(max-width:760px){.cards-linha{grid-template-columns:repeat(2,1fr)}.det .pop{right:auto;left:0;min-width:180px}}
+/* Estoque Mínimo (aba) - cabeçalho de cada loja: título/capital de um lado, botão do outro.
+   Empilha no celular pra não cortar texto - pedido do Felipe 22/08. */
+.estmin-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.estmin-head-tit{min-width:0}
+@media(max-width:600px){
+  .estmin-head{flex-direction:column;align-items:stretch}
+  .estmin-head button{width:100%;justify-content:center}
+}
 </style>
 </head>
 <body>
@@ -3418,6 +3426,101 @@ function backendUrl(){
   if(location.protocol==='http:'||location.protocol==='https:') return location.origin;
   return '';
 }
+/* ---------- base compartilhada de TODOS os relatórios (tema escuro + responsivo celular +
+   botão de compartilhar por link/WhatsApp) - pedido do Felipe 22/08: "todos os relatórios que o
+   Doca fizer devem sair no tema escuro e ajustado pra celular". Qualquer função imprimirXxx()
+   nova deve usar essa base em vez de inventar CSS própria. */
+function relatorioDarkCss(){
+  return `
+    *{box-sizing:border-box}
+    :root{--night:#0A0418;--violet:#A3A3A3;--violet-l:#D4D4D4;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
+    html,body{margin:0}
+    body{
+      background:radial-gradient(1100px 520px at 12% -8%,rgba(150,150,153,.20),transparent 62%),
+        radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%), var(--bg);
+      font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;
+      padding:18px;color:var(--text);font-size:15px;max-width:720px;margin:0 auto;line-height:1.5;overflow-x:hidden}
+    h1{font-size:19px;margin:0 0 4px;color:var(--text)}
+    h2{font-size:14.5px;margin:14px 0 12px;padding-bottom:9px;border-bottom:1px solid var(--line);color:var(--gold);letter-spacing:.03em;text-transform:uppercase}
+    .sub{color:var(--muted);font-size:12.5px;margin-bottom:18px}
+    .assin{font-size:12px;margin:10px 0 18px;color:var(--muted)}
+    .loja-card,.card-rel{border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;background:var(--paper)}
+    .tbl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:6px}
+    table{width:100%;min-width:440px;border-collapse:collapse;font-size:12.5px}
+    th,td{border-bottom:1px solid var(--line);padding:8px 5px;text-align:left;word-break:break-word;color:var(--text)}
+    th{font-size:10.5px;text-transform:uppercase;color:var(--muted);font-weight:600;white-space:nowrap}
+    td.n,th.n{text-align:right;white-space:nowrap;font-family:'IBM Plex Mono',monospace}
+    td:first-child,th:first-child{padding-left:0}
+    td:last-child,th:last-child{padding-right:0}
+    tr:last-child td{border-bottom:none}
+    .tot-card{border:1px solid var(--violet);border-radius:14px;padding:16px;margin-top:6px;background:linear-gradient(135deg,var(--bg2),var(--paper));text-align:center}
+    .tot-card span{font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+    .tot-card b{display:block;font-size:24px;color:var(--gold);margin-top:6px}
+    .vazio{color:var(--muted);font-size:12.5px;margin:4px 0 0}
+    .aviso-custo{color:var(--danger);font-size:11.5px;margin-top:8px}
+    .rod{margin-top:20px;font-size:11.5px;color:var(--muted);border-top:1px solid var(--line);padding-top:8px}
+    .gerado{text-align:center;color:var(--muted);font-size:11px;margin-top:18px}
+    .share-box{margin-top:18px;text-align:center}
+    .btn-share{display:inline-block;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 16px;font-size:13px;cursor:pointer;text-decoration:none;margin:4px;font-family:inherit}
+    .btn-share.wa{background:#1f7a4d;border-color:#1f7a4d;color:#fff}
+    .share-link{margin-top:10px}
+    .share-link input{width:100%;max-width:420px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg2);color:var(--text);font-size:12.5px}
+    .share-actions{margin-top:8px}
+    .share-hint{color:var(--muted);font-size:11px;margin-top:8px}
+    .box{width:18px;height:18px;border:1.5px solid var(--line);display:inline-block;border-radius:4px;background:var(--bg2)}
+    @media print{.no-print{display:none}}
+    @media(max-width:480px){
+      body{padding:12px;font-size:14px}
+      h1{font-size:17px}
+      .loja-card,.card-rel{padding:12px}
+      .tot-card{padding:14px}
+      .tot-card b{font-size:21px}
+      .btn-share{width:100%;margin:4px 0;box-sizing:border-box}
+      .share-link input{max-width:100%}
+    }
+  `;
+}
+/* botão "gerar link + mandar no whatsapp" (via POST /relatorio, mesmo mecanismo do fechamento
+   de sócios) - tituloWhats vai no texto da mensagem do WhatsApp junto com o link. */
+function relatorioShareBoxHtml(){
+  return `<div class="share-box">
+    <button id="btnCompartilhar" class="btn-share">🔗 Gerar link pra compartilhar</button>
+    <div id="shareResultado"></div>
+  </div>`;
+}
+function relatorioShareScript(tituloWhats){
+  return `(function(){
+      var BACKEND=${JSON.stringify(backendUrl())};
+      var btn=document.getElementById('btnCompartilhar');
+      var out=document.getElementById('shareResultado');
+      btn.onclick=async function(){
+        btn.disabled=true; btn.textContent='Gerando link...';
+        try{
+          if(!BACKEND) throw new Error('URL do backend não configurada.');
+          var htmlCompleto='<!doctype html>'+document.documentElement.outerHTML;
+          var r=await fetch(BACKEND+'/relatorio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html:htmlCompleto})});
+          var j=await r.json();
+          if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao gerar o link.');
+          var url=BACKEND+'/relatorio/'+j.id;
+          out.innerHTML='<div class="share-link"><input type="text" readonly value="'+url+'" id="shareUrlInput"></div>'+
+            '<div class="share-actions">'+
+            '<a class="btn-share wa" href="https://wa.me/?text='+encodeURIComponent(${JSON.stringify(tituloWhats)}+': '+url)+'" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>'+
+            '<button class="btn-share" id="btnCopiarLink">📋 Copiar link</button>'+
+            '</div>'+
+            '<p class="share-hint">Link público (sem senha) — quem tiver o link consegue abrir esse relatório, válido por 30 dias.</p>';
+          document.getElementById('btnCopiarLink').onclick=function(){
+            document.getElementById('shareUrlInput').select();
+            navigator.clipboard&&navigator.clipboard.writeText(url);
+            document.getElementById('btnCopiarLink').textContent='✓ Copiado!';
+          };
+          btn.style.display='none';
+        }catch(e){
+          out.innerHTML='<p class="share-hint" style="color:var(--danger)">⚠ '+String(e.message||e)+'</p>';
+          btn.disabled=false; btn.textContent='🔗 Gerar link pra compartilhar';
+        }
+      };
+    })();`;
+}
 function statusMlLabel(s){
   const mapa={active:'Ativo',paused:'Pausado',closed:'Encerrado',under_review:'Em revisão',inactive:'Inativo',payment_required:'Aguardando pagamento'};
   return mapa[s]||(s||'—');
@@ -3791,50 +3894,49 @@ function imprimirConferenciaEstoque(){
     })).filter(d=>d.itens.length||d.vinculados.length);
   if(!dados.length){ alert('Não há estoque no galpão nem a coletar para conferir.'); return; }
   const win=window.open('','_blank');
-  if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Conferência de Estoque</title>
-    <style>
-      body{font-family:Arial,Helvetica,sans-serif;padding:26px;color:#111}
-      h1{font-size:19px;margin:0 0 4px}
-      .sub{color:#555;font-size:12px;margin-bottom:6px}
-      .assin{font-size:12px;margin:10px 0 18px;color:#333}
-      .loja-h{font-weight:bold;font-size:16px;background:#eee;padding:9px 12px;margin:26px 0 10px;border-radius:4px}
-      .loja-h:first-of-type{margin-top:14px}
-      table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:10px}
-      th,td{border:1px solid #bbb;padding:6px 8px;text-align:left}
-      th{background:#f2f2f2;font-size:11px}
-      td.n{text-align:right;font-family:monospace;font-weight:bold}
-      td.box{background:#fcfcfc;width:62px}
-      .tot{font-size:12.5px;text-align:right;font-weight:bold;margin-bottom:4px}
+  if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Conferência de Estoque</title>
+    <style>${relatorioDarkCss()}
+      .loja-h{font-weight:700;font-size:14.5px;color:var(--gold);text-transform:uppercase;letter-spacing:.02em;margin:0 0 10px}
+      td.box-cell{width:52px}
+      .tot{font-size:12px;text-align:right;color:var(--muted);margin-top:6px}
       .quebra{page-break-after:always}
-      .rod{margin-top:20px;font-size:11.5px;color:#444;border-top:1px solid #999;padding-top:8px}
-      @media print{.no-print{display:none}}
     </style></head><body>
     <h1>Conferência de Estoque</h1>
     <div class="sub">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
-    <div class="assin">Conferido por: ______________________________&nbsp;&nbsp;&nbsp;&nbsp;Data da contagem: ______ / ______ / __________</div>
+    <div class="assin">Conferido por: ______________________________<br>Data da contagem: ______ / ______ / __________</div>
     ${dados.map((d,idx)=>{
       const tg=d.itens.reduce((a,p)=>a+totalNoGalpao(p),0);
       const tc=d.itens.reduce((a,p)=>a+p.qtd.coletar,0);
-      return `<div class="loja-h">${esc(d.loja)}</div>
-      <table><thead><tr>
+      return `<div class="card-rel">
+      <div class="loja-h">${esc(d.loja)}</div>
+      <div class="tbl-scroll"><table><thead><tr>
         <th>SKU</th><th>Código</th><th>Fornecedor</th>
-        <th>No galpão<br><span style="font-weight:normal">(sistema)</span></th><th>Contado</th><th>Difer.</th>
-        <th>A coletar<br><span style="font-weight:normal">(sistema)</span></th><th>Contado</th><th>Difer.</th>
+        <th class="n">No galpão</th><th>Contado</th><th>Difer.</th>
+        <th class="n">A coletar</th><th>Contado</th><th>Difer.</th>
       </tr></thead><tbody>
       ${d.itens.map(p=>`<tr>
         <td>${esc(p.sku)}</td><td>${esc(p.codigo)}</td><td>${esc(p.fornecedor)||'—'}</td>
-        <td class="n">${fmtInt(totalNoGalpao(p))}</td><td class="box"></td><td class="box"></td>
-        <td class="n">${fmtInt(p.qtd.coletar)}</td><td class="box"></td><td class="box"></td>
+        <td class="n">${fmtInt(totalNoGalpao(p))}</td><td class="box-cell"><span class="box"></span></td><td class="box-cell"><span class="box"></span></td>
+        <td class="n">${fmtInt(p.qtd.coletar)}</td><td class="box-cell"><span class="box"></span></td><td class="box-cell"><span class="box"></span></td>
       </tr>`).join('')}
-      </tbody></table>
-      <div class="tot">${esc(d.loja)} — total no galpão: ${fmtInt(tg)} un. · total a coletar: ${fmtInt(tc)} un.</div>
-      ${d.vinculados.length?`<div class="rod" style="margin-top:6px;border-top:none;padding-top:0">${d.vinculados.map(v=>`<div>ℹ ${esc(v.p.sku)} (${esc(v.p.codigo)||'—'}) está vinculado ao estoque de <b>${esc(v.mestre.sku)}</b> — já contado na linha dele, não precisa contar separado.</div>`).join('')}</div>`:''}
+      </tbody></table></div>
+      <div class="tot">total no galpão: ${fmtInt(tg)} un. · total a coletar: ${fmtInt(tc)} un.</div>
+      ${d.vinculados.length?`<div class="rod" style="margin-top:8px">${d.vinculados.map(v=>`<div>ℹ ${esc(v.p.sku)} (${esc(v.p.codigo)||'—'}) está vinculado ao estoque de <b>${esc(v.mestre.sku)}</b> — já contado na linha dele, não precisa contar separado.</div>`).join('')}</div>`:''}
+      </div>
       ${idx<dados.length-1?'<div class="quebra"></div>':''}`;
     }).join('')}
     <div class="rod">Preencha a coluna <b>Contado</b> com a quantidade física encontrada e anote a diferença. Depois lance os ajustes no sistema em Produtos → Gerenciar → Ajuste manual de estoque.<br>
     Atenção: a coluna "No galpão" inclui o que já está etiquetado para envios FULL — conte tudo que estiver fisicamente no galpão.</div>
-    <button class="no-print" onclick="window.print()" style="margin-top:14px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
+    <div class="share-box no-print">
+      <button class="btn-share" onclick="window.print()">🖨️ Imprimir (pra contagem no papel)</button>
+    </div>
+    ${relatorioShareBoxHtml()}
+    <div class="gerado">Doca · Conferência de Estoque</div>
+    <script>${relatorioShareScript('Conferência de Estoque')}<\/script>
     </body></html>`);
   win.document.close();
 }
@@ -4125,30 +4227,40 @@ function imprimirRelatorioCompraFornecedor(){
   const g={}; itens.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
   const nomes=Object.keys(g).sort((a,b)=>a.localeCompare(b));
   const win=window.open('','_blank');
-  if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
+  if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
   const total=itens.reduce((a,i)=>a+(i.custo||0)*i.qtd,0);
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Pedido de Compra por Fornecedor</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif;padding:28px;color:#111}h1{font-size:19px;margin:0 0 4px}
-    .sub{color:#555;font-size:12px;margin-bottom:22px}table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:8px}
-    th,td{border:1px solid #ccc;padding:8px 10px;text-align:left}th{background:#f2f2f2}td.n{text-align:right}
-    .forn-h{font-weight:bold;font-size:15px;background:#eee;padding:8px 10px;margin-top:24px;border-radius:4px}
-    .sub-t{font-size:13px;text-align:right;margin:0 0 6px;font-weight:bold}
-    .tot{margin-top:24px;font-size:15px;font-weight:bold;border-top:2px solid #333;padding-top:10px;text-align:right}
-    .obs{font-style:italic;color:#444}@media print{.no-print{display:none}}</style></head><body>
-    <h1>Pedido de Compra por Fornecedor</h1><div class="sub">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pedido de Compra por Fornecedor</title>
+    <style>${relatorioDarkCss()}
+    .forn-h{font-weight:700;font-size:14.5px;color:var(--gold);text-transform:uppercase;letter-spacing:.02em;margin:0 0 4px}
+    .forn-sub{font-size:11.5px;color:var(--muted);margin-bottom:8px}
+    .sub-t{font-size:12.5px;text-align:right;margin-top:6px;color:var(--muted)}
+    .sub-t b{color:var(--text)}
+    .obs{font-style:italic;color:var(--muted)}</style></head><body>
+    <h1>Pedido de Compra por Fornecedor</h1>
+    <div class="sub">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
     ${nomes.map(f=>{
       const l=g[f].sort((a,b)=>a.loja.localeCompare(b.loja)||a.sku.localeCompare(b.sku));
       const sub=l.reduce((a,i)=>a+(i.custo||0)*i.qtd,0);
-      return `<div class="forn-h">${esc(f)} — ${l.reduce((a,i)=>a+i.qtd,0)} un. em ${l.length} pedido(s)</div>
-      <table><thead><tr><th style="width:40px"></th><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th>Qtd</th><th>Custo un.</th><th>Subtotal</th><th>Obs.</th></tr></thead><tbody>
-      ${l.map(i=>`<tr><td><span style="display:inline-block;width:18px;height:18px;border:1.5px solid #333"></span></td>
+      return `<div class="card-rel">
+      <div class="forn-h">${esc(f)}</div>
+      <div class="forn-sub">${l.reduce((a,i)=>a+i.qtd,0)} un. em ${l.length} pedido(s)</div>
+      <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Qtd</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
+      ${l.map(i=>`<tr>
         <td>${esc(fmtData(i.data))}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td class="n">${fmtInt(i.qtd)}</td>
         <td class="n">${i.custo>0?fmtMoney(i.custo):'—'}</td><td class="n">${i.custo>0?fmtMoney(i.custo*i.qtd):'—'}</td>
         <td class="obs">${esc(i.obs||'')}</td></tr>`).join('')}
-      </tbody></table><div class="sub-t">Subtotal ${esc(f)}: ${fmtMoney(sub)}</div>`;
+      </tbody></table></div><div class="sub-t">Subtotal ${esc(f)}: <b>${fmtMoney(sub)}</b></div></div>`;
     }).join('')}
-    <div class="tot">Total geral: ${fmtMoney(total)}</div>
-    <button class="no-print" onclick="window.print()" style="margin-top:14px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
+    <div class="tot-card"><span>Total geral</span><b>${fmtMoney(total)}</b></div>
+    <div class="share-box no-print">
+      <button class="btn-share" onclick="window.print()">🖨️ Imprimir</button>
+    </div>
+    ${relatorioShareBoxHtml()}
+    <div class="gerado">Doca · Pedido de Compra</div>
+    <script>${relatorioShareScript('Pedido de Compra por Fornecedor')}<\/script>
     </body></html>`);
   win.document.close();
 }
@@ -4183,8 +4295,8 @@ function renderColetar(){
   const el=document.getElementById('tab-coletar');
   let h=`<h1 class="page-title">Coletar</h1>
     <div class="modal-actions" style="justify-content:flex-start;margin:0 0 16px">
-      <button class="btn gold" id="btnImprimirColeta">🖨 Imprimir relatório de coleta</button></div>
-    <p class="hint" style="margin:0 0 16px">Cada compra aparece como um lote separado, mesmo sendo do mesmo SKU — assim o que chegou hoje pode ser buscado sem se misturar com o que você comprou depois. Agrupado por fornecedor, com os lotes do mesmo pedido de compra juntos. Anote o nº do pedido do fornecedor quando o lote estiver pronto para coleta. Desmarque o que o motorista não precisa buscar hoje antes de imprimir.</p>`;
+      <button class="btn gold" id="btnImprimirColeta">📤 Gerar relatório de coleta</button></div>
+    <p class="hint" style="margin:0 0 16px">Cada compra aparece como um lote separado, mesmo sendo do mesmo SKU — assim o que chegou hoje pode ser buscado sem se misturar com o que você comprou depois. Agrupado por fornecedor, com os lotes do mesmo pedido de compra juntos. Anote o nº do pedido do fornecedor quando o lote estiver pronto para coleta. Desmarque o que o motorista não precisa buscar hoje antes de gerar o relatório.</p>`;
   STORES.forEach(loja=>{
     const l=state.produtos.filter(p=>p.loja===loja&&(p.lotes||[]).length>0).sort((a,b)=>a.sku.localeCompare(b.sku));
     h+=`<h3>${esc(loja)}</h3>${tableColetar(l)}`;
@@ -4209,23 +4321,30 @@ function imprimirRelatorioColeta(){
   if(!itens.length){ alert('Nenhum lote válido selecionado.'); return; }
   const g={}; itens.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
   const nomes=Object.keys(g).sort((a,b)=>a.localeCompare(b));
+  const totalGeral=itens.reduce((a,i)=>a+i.qtd,0);
   const win=window.open('','_blank');
-  if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Relatório de Coleta</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif;padding:28px;color:#111}h1{font-size:19px;margin:0 0 4px}
-    .sub{color:#555;font-size:12px;margin-bottom:22px}table{width:100%;border-collapse:collapse;font-size:13px;margin-bottom:20px}
-    th,td{border:1px solid #ccc;padding:8px 10px;text-align:left}th{background:#f2f2f2}
-    .forn-h{font-weight:bold;font-size:15px;background:#eee;padding:8px 10px;margin-top:22px;border-radius:4px}
-    .box{width:20px;height:20px;border:1.5px solid #333;display:inline-block}@media print{.no-print{display:none}}</style></head><body>
-    <h1>Relatório de Coleta</h1><div class="sub">Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+  if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Relatório de Coleta</title>
+    <style>${relatorioDarkCss()}
+    .forn-h{font-weight:700;font-size:14.5px;color:var(--gold);text-transform:uppercase;letter-spacing:.02em;margin:0 0 4px}
+    .forn-sub{font-size:11.5px;color:var(--muted);margin-bottom:8px}</style></head><body>
+    <h1>Relatório de Coleta</h1>
+    <div class="sub">${fmtInt(itens.length)} lote(s) · ${fmtInt(totalGeral)} un. no total · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
     ${nomes.map(f=>{
       const lst=g[f].sort((a,b)=>(a.pedido||'').localeCompare(b.pedido||'')||a.loja.localeCompare(b.loja)||a.sku.localeCompare(b.sku));
-      return `<div class="forn-h">${esc(f)} — ${lst.reduce((a,i)=>a+i.qtd,0)} un. em ${lst.length} lote(s)</div>
-      <table><thead><tr><th style="width:40px"></th><th>Pedido</th><th>Comprado em</th><th>Loja</th><th>SKU</th><th>Código</th><th>Qtd</th><th>Caixas</th></tr></thead><tbody>
-      ${lst.map(i=>`<tr><td><span class="box"></span></td><td><b>${esc(i.pedido||'—')}</b></td><td>${esc(fmtData(i.data))}</td>
-        <td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td>${fmtInt(i.qtd)}</td><td>${i.unidPorCaixa?`${fmtInt(Math.ceil(i.qtd/i.unidPorCaixa))} cx`:'—'}</td></tr>`).join('')}
-      </tbody></table>`;}).join('')}
-    <button class="no-print" onclick="window.print()" style="margin-top:10px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
+      return `<div class="card-rel">
+      <div class="forn-h">${esc(f)}</div>
+      <div class="forn-sub">${fmtInt(lst.reduce((a,i)=>a+i.qtd,0))} un. em ${lst.length} lote(s)</div>
+      <div class="tbl-scroll"><table><thead><tr><th>Pedido</th><th>Comprado em</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Qtd</th><th class="n">Caixas</th></tr></thead><tbody>
+      ${lst.map(i=>`<tr><td><b>${esc(i.pedido||'—')}</b></td><td>${esc(fmtData(i.data))}</td>
+        <td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td class="n">${fmtInt(i.qtd)}</td><td class="n">${i.unidPorCaixa?`${fmtInt(Math.ceil(i.qtd/i.unidPorCaixa))} cx`:'—'}</td></tr>`).join('')}
+      </tbody></table></div></div>`;}).join('')}
+    ${relatorioShareBoxHtml()}
+    <div class="gerado">Doca · Coleta</div>
+    <script>${relatorioShareScript('Relatório de Coleta')}<\/script>
     </body></html>`);
   win.document.close();
 }
@@ -5616,33 +5735,13 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
   win.document.write(`<!doctype html><html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Fechamento — Todas as Lojas</title>
-    <style>
-      *{box-sizing:border-box}
-      :root{--night:#0A0418;--violet:#A3A3A3;--violet-l:#D4D4D4;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
-      html,body{margin:0}
-      body{
-        background:radial-gradient(1100px 520px at 12% -8%,rgba(150,150,153,.20),transparent 62%),
-          radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%), var(--bg);
-        font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;
-        padding:18px;color:var(--text);font-size:15px;max-width:720px;margin:0 auto;line-height:1.5}
-      h1{font-size:19px;margin:0 0 4px;color:var(--text)}
-      h2{font-size:14.5px;margin:0 0 12px;padding-bottom:9px;border-bottom:1px solid var(--line);color:var(--gold);letter-spacing:.03em;text-transform:uppercase}
-      .sub{color:var(--muted);font-size:12.5px;margin-bottom:18px}
-      .loja-card{border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;background:var(--paper)}
+    <style>${relatorioDarkCss()}
       .metrics{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:12px}
       .metric .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
       .metric .val{font-size:17px;font-weight:700;margin-top:3px;color:var(--ok)}
       .metric .val.neg{color:var(--danger)}
       .metric .pctv{font-size:10.5px;color:var(--muted);margin-top:1px}
-      .vazio{color:var(--muted);font-size:12.5px;margin:4px 0 0}
-      table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
-      th,td{border-bottom:1px solid var(--line);padding:8px 5px;text-align:left;word-break:break-word;color:var(--text)}
-      th{font-size:10.5px;text-transform:uppercase;color:var(--muted);font-weight:600}
-      td.n,th.n{text-align:right;white-space:nowrap}
-      tr:last-child td{border-bottom:none}
-      .tot-card{border:1px solid var(--violet);border-radius:14px;padding:16px;margin-top:6px;background:linear-gradient(135deg,var(--bg2),var(--paper))}
       .tot-card h2{border:none;margin-bottom:12px;padding:0;color:var(--violet-l)}
-      .gerado{text-align:center;color:var(--muted);font-size:11px;margin-top:18px}
       @media (min-width:560px){ .metrics{grid-template-columns:repeat(3,1fr)} }
     </style></head><body>
     <h1>Fechamento Financeiro — Todas as Lojas</h1>
@@ -5661,44 +5760,9 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Líquida (custo total)',fmtMoney(totalMargemLiquidaTotal),totalMargemLiquidaTotal<0,pctDe(totalMargemLiquidaTotal,totalFat))}
       </div>
     </div>
-    <div class="share-box">
-      <button id="btnCompartilhar" class="btn-share">🔗 Gerar link pra compartilhar</button>
-      <div id="shareResultado"></div>
-    </div>
+    ${relatorioShareBoxHtml()}
     <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
-    <script>
-      (function(){
-        var BACKEND=${JSON.stringify(backendUrl())};
-        var btn=document.getElementById('btnCompartilhar');
-        var out=document.getElementById('shareResultado');
-        btn.onclick=async function(){
-          btn.disabled=true; btn.textContent='Gerando link...';
-          try{
-            if(!BACKEND) throw new Error('URL do backend não configurada.');
-            var htmlCompleto='<!doctype html>'+document.documentElement.outerHTML;
-            var r=await fetch(BACKEND+'/relatorio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html:htmlCompleto})});
-            var j=await r.json();
-            if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao gerar o link.');
-            var url=BACKEND+'/relatorio/'+j.id;
-            out.innerHTML='<div class="share-link"><input type="text" readonly value="'+url+'" id="shareUrlInput"></div>'+
-              '<div class="share-actions">'+
-              '<a class="btn-share wa" href="https://wa.me/?text='+encodeURIComponent('Fechamento Doca: '+url)+'" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>'+
-              '<button class="btn-share" id="btnCopiarLink">📋 Copiar link</button>'+
-              '</div>'+
-              '<p class="share-hint">Link público (sem senha) — quem tiver o link consegue abrir esse relatório, válido por 30 dias.</p>';
-            document.getElementById('btnCopiarLink').onclick=function(){
-              document.getElementById('shareUrlInput').select();
-              navigator.clipboard&&navigator.clipboard.writeText(url);
-              document.getElementById('btnCopiarLink').textContent='✓ Copiado!';
-            };
-            btn.style.display='none';
-          }catch(e){
-            out.innerHTML='<p class="share-hint" style="color:var(--danger)">⚠ '+String(e.message||e)+'</p>';
-            btn.disabled=false; btn.textContent='🔗 Gerar link pra compartilhar';
-          }
-        };
-      })();
-    <\/script>
+    <script>${relatorioShareScript('Fechamento Doca')}<\/script>
     </body></html>`);
   win.document.close();
 }
@@ -6403,28 +6467,19 @@ function commitCustosAmauri(){
 function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,totalPago,pagamentos){
   if(!amauriResumoResultado||!linhas.length){ alert('Calcule o fechamento do período primeiro.'); return; }
   const win=window.open('','_blank');
-  if(!win){ alert('Não foi possível abrir a janela de impressão. Verifique o bloqueador de pop-up.'); return; }
+  if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
   const linha=(rot,val)=>`<tr><td>${rot}</td><td class="n">${fmtMoney(val)}</td></tr>`;
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Fechamento Amauri</title>
-    <style>
-      body{font-family:Arial,Helvetica,sans-serif;padding:26px;color:#111}
-      h1{font-size:19px;margin:0 0 4px}
-      h2{font-size:14px;margin:22px 0 8px}
-      .sub{color:#555;font-size:12px;margin-bottom:6px}
-      table{width:100%;border-collapse:collapse;font-size:11.5px;margin-bottom:10px}
-      th,td{border:1px solid #bbb;padding:5px 7px;text-align:left}
-      th{background:#f2f2f2;font-size:10.5px}
-      td.n{text-align:right;font-family:monospace}
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fechamento Amauri</title>
+    <style>${relatorioDarkCss()}
       .totais{width:auto;min-width:320px}
-      .totais td.n{font-weight:bold}
-      .rod{margin-top:20px;font-size:11.5px;color:#444;border-top:1px solid #999;padding-top:8px}
-      .assin{font-size:12px;margin:26px 0 0;color:#333}
-      @media print{.no-print{display:none}}
-    </style></head><body>
+      .totais td.n{font-weight:700;color:var(--gold)}</style></head><body>
     <h1>Fechamento Amauri — TorvStore</h1>
     <div class="sub">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <h2>Por produto</h2>
-    <table><thead><tr>
+    <div class="tbl-scroll"><table><thead><tr>
       <th>SKU</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo produto</th><th class="n">Coleta</th><th class="n">Embalagem</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Margem líquida</th><th class="n">Reembolso</th><th class="n">Repasse total</th>
     </tr></thead><tbody>
       ${linhas.map(l=>`<tr>
@@ -6434,24 +6489,29 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
         <td class="n">${fmtMoney(l.etiquetaTotal)}</td><td class="n">${fmtMoney(l.adsTotal)}</td><td class="n">${fmtMoney(l.impostoCalc)}</td>
         <td class="n">${fmtMoney(l.margemLiquida)}</td><td class="n">${fmtMoney(l.reembolsoAmauri)}</td><td class="n"><b>${fmtMoney(l.repasseTotal)}</b></td>
       </tr>`).join('')}
-    </tbody></table>
+    </tbody></table></div>
     <h2>Totais do período</h2>
-    <table class="totais"><tbody>
+    <div class="tbl-scroll"><table class="totais"><tbody>
       ${linha('Margem líquida total (soma dos produtos)',totalMargem)}
       ${linha('Reembolso total (custos que o Amauri pagou)',totalReembolso)}
       ${linha('Repasse total devido ao Amauri no período',totalRepasse)}
-    </tbody></table>
+    </tbody></table></div>
     <h2>Pagamentos já feitos ao Amauri</h2>
-    ${pagamentos.length?`<table><thead><tr><th>Descrição</th><th>Data</th><th class="n">Valor</th></tr></thead><tbody>
+    ${pagamentos.length?`<div class="tbl-scroll"><table><thead><tr><th>Descrição</th><th>Data</th><th class="n">Valor</th></tr></thead><tbody>
       ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'—'}</td><td>${fmtData(x.data)}</td><td class="n">${fmtMoney(x.valor)}</td></tr>`).join('')}
-    </tbody></table>`:'<p class="sub">Nenhum pagamento registrado ainda.</p>'}
-    <table class="totais"><tbody>
+    </tbody></table></div>`:'<p class="sub">Nenhum pagamento registrado ainda.</p>'}
+    <div class="tbl-scroll"><table class="totais"><tbody>
       ${linha('Total já pago',totalPago)}
       ${linha('Saldo a pagar (repasse do período − já pago)',totalRepasse-totalPago)}
-    </tbody></table>
-    <div class="assin">Conferido por: ______________________________&nbsp;&nbsp;&nbsp;&nbsp;Data: ______ / ______ / __________</div>
+    </tbody></table></div>
+    <div class="assin">Conferido por: ______________________________<br>Data: ______ / ______ / __________</div>
     <div class="rod">Tarifa ML e Frete ML são descontados automático, direto da API do Mercado Livre. Os demais custos e o percentual de repasse são os configurados na aba Amauri no momento do cálculo.</div>
-    <button class="no-print" onclick="window.print()" style="margin-top:14px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
+    <div class="share-box no-print">
+      <button class="btn-share" onclick="window.print()">🖨️ Imprimir</button>
+    </div>
+    ${relatorioShareBoxHtml()}
+    <div class="gerado">Doca · Fechamento Amauri</div>
+    <script>${relatorioShareScript('Fechamento Amauri')}<\/script>
     </body></html>`);
   win.document.close();
 }
@@ -8662,8 +8722,11 @@ function renderEstoqueMinimo(){
     </div>
     ${porLoja.map(({loja,ca,aguardandoCurvaA,linhas,totalSku,capitalTotalLoja,semCustoQtd})=>`
       <div class="card">
-        <div class="acoes-linha" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-          <h3 style="margin:0">${esc(loja)} ${!aguardandoCurvaA?`<span class="muted" style="font-weight:normal">— capital necessário: ${fmtMoney(capitalTotalLoja)}</span>`:''}</h3>
+        <div class="estmin-head">
+          <div class="estmin-head-tit">
+            <h3 style="margin:0">${esc(loja)}</h3>
+            ${!aguardandoCurvaA?`<div class="muted" style="font-size:12.5px;margin-top:2px">Capital necessário: <b style="color:var(--text)">${fmtMoney(capitalTotalLoja)}</b></div>`:''}
+          </div>
           ${!aguardandoCurvaA?`<button class="btn sm gold" data-gerarrelestmin="${esc(loja)}">📤 Gerar relatório da loja</button>`:''}
         </div>
         ${ca.status==='erro'&&aguardandoCurvaA?`<p class="empty-inline" style="color:#e66">⚠ Erro ao calcular Curva A: ${esc(ca.erro)} — <a href="#" data-retrycurvaa="${esc(loja)}">tentar de novo</a></p>`
@@ -8714,94 +8777,28 @@ function imprimirRelatorioEstoqueMinimo(loja){
   win.document.write(`<!doctype html><html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Estoque Mínimo${estoqueMinimoSoCurvaA?' (Curva A)':''} — ${esc(loja)}</title>
-    <style>
-      *{box-sizing:border-box}
-      :root{--night:#0A0418;--violet:#A3A3A3;--violet-l:#D4D4D4;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
-      html,body{margin:0}
-      body{
-        background:radial-gradient(1100px 520px at 12% -8%,rgba(150,150,153,.20),transparent 62%),
-          radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%), var(--bg);
-        font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;
-        padding:18px;color:var(--text);font-size:15px;max-width:720px;margin:0 auto;line-height:1.5}
-      h1{font-size:19px;margin:0 0 4px;color:var(--text)}
-      h2{font-size:14.5px;margin:0 0 12px;padding-bottom:9px;border-bottom:1px solid var(--line);color:var(--gold);letter-spacing:.03em;text-transform:uppercase}
-      .sub{color:var(--muted);font-size:12.5px;margin-bottom:18px}
-      .loja-card{border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;background:var(--paper)}
-      table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
-      th,td{border-bottom:1px solid var(--line);padding:8px 5px;text-align:left;word-break:break-word;color:var(--text)}
-      th{font-size:10.5px;text-transform:uppercase;color:var(--muted);font-weight:600}
-      td.n,th.n{text-align:right;white-space:nowrap}
-      tr:last-child td{border-bottom:none}
-      .tot-card{border:1px solid var(--violet);border-radius:14px;padding:16px;margin-top:6px;background:linear-gradient(135deg,var(--bg2),var(--paper));text-align:center}
-      .tot-card span{font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
-      .tot-card b{display:block;font-size:24px;color:var(--gold);margin-top:6px}
-      .vazio{color:var(--muted);font-size:12.5px;margin:4px 0 0}
-      .aviso-custo{color:var(--danger);font-size:11.5px;margin-top:8px}
-      .gerado{text-align:center;color:var(--muted);font-size:11px;margin-top:18px}
-      .share-box{margin-top:18px;text-align:center}
-      .btn-share{display:inline-block;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 16px;font-size:13px;cursor:pointer;text-decoration:none;margin:4px}
-      .btn-share.wa{background:#1f7a4d;border-color:#1f7a4d;color:#fff}
-      .share-link{margin-top:10px}
-      .share-link input{width:100%;max-width:420px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg2);color:var(--text);font-size:12.5px}
-      .share-actions{margin-top:8px}
-      .share-hint{color:var(--muted);font-size:11px;margin-top:8px}
-    </style></head><body>
+    <style>${relatorioDarkCss()}</style></head><body>
     <h1>Estoque Mínimo${estoqueMinimoSoCurvaA?' (Curva A)':''} — ${esc(loja)}</h1>
     <div class="sub">Cobertura alvo: 2 meses${estoqueMinimoSoCurvaA?' · Só Curva A (70% do faturamento)':''} · Ordenado por mais vendido · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <div class="loja-card">
       <h2>Precisa comprar (${fmtInt(faltantes.length)})</h2>
-      ${faltantes.length?`<table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th><th class="n">Comprar</th><th class="n">Custo un.</th><th class="n">Capital</th></tr></thead><tbody>
+      ${faltantes.length?`<div class="tbl-scroll"><table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th><th class="n">Comprar</th><th class="n">Custo un.</th><th class="n">Capital</th></tr></thead><tbody>
         ${faltantes.map(linhaHtml).join('')}
-      </tbody></table>${semCustoQtd?`<p class="aviso-custo">⚠ ${semCustoQtd} produto(s) sem custo cadastrado — capital desses não entra no total abaixo.</p>`:''}`:`<p class="vazio">Nenhum produto com mínimo definido está em falta agora. 🎉</p>`}
+      </tbody></table></div>${semCustoQtd?`<p class="aviso-custo">⚠ ${semCustoQtd} produto(s) sem custo cadastrado — capital desses não entra no total abaixo.</p>`:''}`:`<p class="vazio">Nenhum produto com mínimo definido está em falta agora. 🎉</p>`}
     </div>
     ${cobertos.length?`<div class="loja-card">
       <h2>Já coberto (${fmtInt(cobertos.length)})</h2>
-      <table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th></tr></thead><tbody>
+      <div class="tbl-scroll"><table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th></tr></thead><tbody>
         ${cobertos.map(x=>`<tr><td>${esc(x.p.sku)}</td><td class="n">${fmtInt(x.minimo)}</td><td class="n">${fmtInt(x.atual)}</td></tr>`).join('')}
-      </tbody></table>
+      </tbody></table></div>
     </div>`:''}
     <div class="tot-card">
       <span>Capital necessário pra cobrir 2 meses de estoque</span>
       <b>${fmtMoney(capitalTotal)}</b>
     </div>
-    <div class="share-box">
-      <button id="btnCompartilhar" class="btn-share">🔗 Gerar link pra compartilhar</button>
-      <div id="shareResultado"></div>
-    </div>
+    ${relatorioShareBoxHtml()}
     <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
-    <script>
-      (function(){
-        var BACKEND=${JSON.stringify(backendUrl())};
-        var btn=document.getElementById('btnCompartilhar');
-        var out=document.getElementById('shareResultado');
-        btn.onclick=async function(){
-          btn.disabled=true; btn.textContent='Gerando link...';
-          try{
-            if(!BACKEND) throw new Error('URL do backend não configurada.');
-            var htmlCompleto='<!doctype html>'+document.documentElement.outerHTML;
-            var r=await fetch(BACKEND+'/relatorio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html:htmlCompleto})});
-            var j=await r.json();
-            if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao gerar o link.');
-            var url=BACKEND+'/relatorio/'+j.id;
-            out.innerHTML='<div class="share-link"><input type="text" readonly value="'+url+'" id="shareUrlInput"></div>'+
-              '<div class="share-actions">'+
-              '<a class="btn-share wa" href="https://wa.me/?text='+encodeURIComponent('Estoque Mínimo — '+${JSON.stringify(loja)}+': '+url)+'" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>'+
-              '<button class="btn-share" id="btnCopiarLink">📋 Copiar link</button>'+
-              '</div>'+
-              '<p class="share-hint">Link público (sem senha) — quem tiver o link consegue abrir esse relatório, válido por 30 dias.</p>';
-            document.getElementById('btnCopiarLink').onclick=function(){
-              document.getElementById('shareUrlInput').select();
-              navigator.clipboard&&navigator.clipboard.writeText(url);
-              document.getElementById('btnCopiarLink').textContent='✓ Copiado!';
-            };
-            btn.style.display='none';
-          }catch(e){
-            out.innerHTML='<p class="share-hint" style="color:var(--danger)">⚠ '+String(e.message||e)+'</p>';
-            btn.disabled=false; btn.textContent='🔗 Gerar link pra compartilhar';
-          }
-        };
-      })();
-    <\/script>
+    <script>${relatorioShareScript('Estoque Mínimo — '+loja)}<\/script>
     </body></html>`);
   win.document.close();
 }
