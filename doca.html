@@ -4171,7 +4171,7 @@ function tableColetar(list){
         <td><input type="checkbox" class="chk-coleta" data-lote="${p.id}|${l.id}" checked></td>
         <td class="mono">${esc(fmtData(l.data))}</td>
         <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
-        <td class="num">${fmtInt(l.qtd)}${p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(l.qtd,p.unidPorCaixa)}</div>`:''}</td>
+        <td class="num">${fmtInt(l.qtd)}${p.unidPorCaixa?` - ${fmtInt(Math.ceil(l.qtd/p.unidPorCaixa))} cx`:''}</td>
         <td><input type="text" class="obs-input" placeholder="Nº do pedido" value="${esc(l.pedido||'')}" data-pedido="${p.id}|${l.id}"></td>
         <td><button class="btn sm acc" data-receber="${p.id}|${l.id}">Chegou no galpão</button></td>
       </tr>`).join('')}
@@ -4222,7 +4222,7 @@ function imprimirRelatorioColeta(){
       return `<div class="forn-h">${esc(f)} — ${lst.reduce((a,i)=>a+i.qtd,0)} un. em ${lst.length} lote(s)</div>
       <table><thead><tr><th style="width:40px"></th><th>Pedido</th><th>Comprado em</th><th>Loja</th><th>SKU</th><th>Código</th><th>Qtd</th><th>Caixas</th></tr></thead><tbody>
       ${lst.map(i=>`<tr><td><span class="box"></span></td><td><b>${esc(i.pedido||'—')}</b></td><td>${esc(fmtData(i.data))}</td>
-        <td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td>${fmtInt(i.qtd)}</td><td>${i.unidPorCaixa?esc(caixasTxt(i.qtd,i.unidPorCaixa)):'—'}</td></tr>`).join('')}
+        <td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td>${fmtInt(i.qtd)}</td><td>${i.unidPorCaixa?`${fmtInt(Math.ceil(i.qtd/i.unidPorCaixa))} cx`:'—'}</td></tr>`).join('')}
       </tbody></table>`;}).join('')}
     <button class="no-print" onclick="window.print()" style="margin-top:10px;padding:10px 18px;font-size:14px;cursor:pointer">Imprimir</button>
     </body></html>`);
