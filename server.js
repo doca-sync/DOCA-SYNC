@@ -2063,6 +2063,61 @@ app.get('/debug/full/estoque', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* 21/08 (pedido real do Felipe): "ver TODA informacao disponivel na API e um relatorio das
+   possibilidades" - chama de uma vez varios dos principais recursos do Mercado Livre relacionados
+   a UM produto (item cru, descricao, visitas, vendedor/conta, categoria + atributos dela, e um
+   pedido+envio recente pra amostra) e devolve o JSON CRU de cada um, sem filtrar nenhum campo. Cada
+   secao roda isolada (uma falhando nao derruba as outras) pra dar pra ver o maximo possivel numa
+   chamada so. */
+async function tentarChamadaMl(fn) {
+  try { return { ok: true, dados: await fn() }; }
+  catch (e) { return { ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }; }
+}
+app.get('/debug/relatorio-api-completo', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const sku = req.query.sku;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!sku) return res.status(400).json({ ok: false, erro: 'Parametro "sku" obrigatorio.' });
+    const rProd = await pool.query('select ml_item_id, sku, titulo from ml_produtos where loja = $1 and lower(sku) = lower($2)', [loja, sku]);
+    if (!rProd.rows.length) return res.status(404).json({ ok: false, erro: `Nenhum produto com sku "${sku}" encontrado na loja ${loja} (ver /data?loja=...).` });
+    const { ml_item_id } = rProd.rows[0];
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const sellerId = conta.ml_user_id;
+    const auth = { headers: { Authorization: `Bearer ${accessToken}` } };
+
+    const item = await tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/items/${ml_item_id}`, auth));
+    const categoriaId = item.ok ? item.dados.category_id : null;
+
+    const [descricao, visitas, vendedor, categoria, atributosCategoria, pedidoBusca] = await Promise.all([
+      tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/items/${ml_item_id}/description`, auth)),
+      tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/items/${ml_item_id}/visits/time_window?last=30&unit=day`, auth)),
+      tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/users/${sellerId}`, auth)),
+      categoriaId ? tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/categories/${categoriaId}`, auth)) : Promise.resolve({ ok: false, erro: 'item sem category_id' }),
+      categoriaId ? tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/categories/${categoriaId}/attributes`, auth)) : Promise.resolve({ ok: false, erro: 'item sem category_id' }),
+      tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/orders/search?seller=${sellerId}&sort=date_desc&limit=1`, auth))
+    ]);
+
+    let pedidoDetalhe = { ok: false, erro: 'nenhum pedido encontrado pra essa loja' };
+    let envioDetalhe = { ok: false, erro: 'sem pedido/envio pra buscar' };
+    if (pedidoBusca.ok && pedidoBusca.dados.results && pedidoBusca.dados.results[0]) {
+      const pedidoId = pedidoBusca.dados.results[0].id;
+      pedidoDetalhe = await tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/orders/${pedidoId}`, auth));
+      const shippingId = pedidoDetalhe.ok && pedidoDetalhe.dados.shipping && pedidoDetalhe.dados.shipping.id;
+      if (shippingId) envioDetalhe = await tentarChamadaMl(() => fetchMLDebug(`https://api.mercadolibre.com/shipments/${shippingId}`, auth));
+    }
+
+    res.status(200).json({
+      ok: true, loja, sku, ml_item_id, seller_id: sellerId,
+      item, descricao, visitas, vendedor, categoria, atributos_categoria: atributosCategoria,
+      pedido_busca: pedidoBusca, pedido_detalhe: pedidoDetalhe, envio_detalhe: envioDetalhe
+    });
+  } catch (e) {
+    console.error('Erro no /debug/relatorio-api-completo:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 /* ---------- Mercado Ads (Product Ads) ---------- */
 const ADS_METRICAS = [
   'clicks', 'prints', 'ctr', 'cost', 'cpc', 'acos', 'organic_units_quantity', 'organic_units_amount',
