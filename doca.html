@@ -3860,7 +3860,6 @@ function openProdutoModal(id,lojaPadrao){
       <label>Custo unitário (R$)<input id="fCusto" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${p&&p.custo?String(p.custo).replace('.',','):''}"></label>
       <label>Unidades por caixa<input id="fUnidCaixa" type="number" min="1" step="1" placeholder="Ex: 12" value="${p&&p.unidPorCaixa?p.unidPorCaixa:''}"></label>
     </div>
-    ${sug!=null?`<p class="hint" style="margin-top:-8px">Estoque mínimo automático pelas vendas do FULL: <b>${fmtInt(sug)} un.</b> (média diária ponderada 7/15/30d × 30 dias de cobertura${vinculadosDeP.length?', somando '+vinculadosDeP.map(v=>esc(v.sku)).join(' + '):''}).</p>`:''}
     ${!editing?`<div class="form-grid">
       <label>Quantidade inicial<input id="fQtdInicial" type="number" min="0" value="0"></label>
       <label>Status inicial<select id="fStatusInicial"><option value="comprar">Comprar</option><option value="coletar">Coletar</option><option value="local">Local</option></select></label>
@@ -8574,6 +8573,7 @@ function renderRuptura(){
    fornecedor (a coletar), o que já está pedido (a comprar) e o que está fisicamente no galpão -
    pra saber quanto falta comprar de verdade e quanto capital isso exige. */
 let estoqueMinimoSoFaltantes=true;
+let estoqueMinimoSoCurvaA=true; // filtro Curva A (70% do faturamento) - toggle, pedido do Felipe 22/08
 // 22/08 (achado real do Felipe): eu estava usando p.qtd.local sozinho (só a parte LIVRE do
 // galpão), mas o que já está RESERVADO pra um envio FULL programado (reservadoLocalDe) continua
 // sendo estoque seu de verdade, só que já com destino certo - não pode ficar de fora da conta.
@@ -8600,34 +8600,76 @@ function linhaEstoqueMinimo(p){
   const detalhe=`FULL: ${fmtInt(p.mlQtdDisponivel||0)} · Em trânsito pro FULL: ${fmtInt(p.mlTransferencia||0)} · A comprar (já em pedido): ${fmtInt(p.qtd.comprar||0)} · A coletar: ${fmtInt(p.qtd.coletar||0)} · No galpão livre: ${fmtInt(galpaoLivre)} · No galpão reservado p/ envio: ${fmtInt(galpaoReservado)}`;
   return {p,minimo,atual,comprarAMais,capital,semCusto,detalhe,vendasDia};
 }
+/* Curva A (Pareto 70% do faturamento) por loja - pedido do Felipe 22/08: a aba Estoque Mínimo
+   só faz sentido pros produtos que realmente sustentam o faturamento, não pro catálogo inteiro.
+   Busca o faturamento do mês corrente por produto (mesmo job usado em Finanças/Amauri/Ads —
+   /financas/resumo-job, roda em background), ordena por faturamento desc e pega os produtos até
+   a soma acumulada bater 70% do faturamento total. Guarda o resultado em cache por loja
+   (estoqueMinimoCurvaA) pra não ficar rebuscando a cada render. */
+let estoqueMinimoCurvaA={}; // { [loja]: {status:'carregando'|'pronto'|'erro', skuIds:Set<itemId>, erro, progresso, calculadoEm} }
+async function carregarCurvaAEstoqueMinimo(loja){
+  estoqueMinimoCurvaA[loja]={status:'carregando',skuIds:new Set(),erro:null,progresso:null,calculadoEm:null};
+  renderEstoqueMinimo();
+  try{
+    const resumo=await fetchResumoJob(loja,'mes_corrente','','',(p)=>{
+      if(estoqueMinimoCurvaA[loja]) estoqueMinimoCurvaA[loja].progresso=p;
+      renderEstoqueMinimo();
+    });
+    const itens=(resumo.itensVendidos||[]).filter(it=>(it.valor||0)>0).slice().sort((a,b)=>b.valor-a.valor);
+    const totalFat=itens.reduce((s,it)=>s+(it.valor||0),0);
+    const skuIds=new Set();
+    let acumulado=0;
+    for(const it of itens){
+      acumulado+=it.valor||0;
+      skuIds.add(it.itemId);
+      if(totalFat>0&&acumulado/totalFat>=0.7) break;
+    }
+    estoqueMinimoCurvaA[loja]={status:'pronto',skuIds,erro:null,progresso:null,calculadoEm:new Date()};
+  }catch(e){
+    estoqueMinimoCurvaA[loja]={status:'erro',skuIds:new Set(),erro:e.message,progresso:null,calculadoEm:null};
+  }
+  renderEstoqueMinimo();
+}
 function renderEstoqueMinimo(){
   const el=document.getElementById('tab-estoqueminimo'); if(!el) return;
+  STORES.forEach(loja=>{
+    if(!estoqueMinimoCurvaA[loja]){
+      estoqueMinimoCurvaA[loja]={status:'carregando',skuIds:new Set(),erro:null,progresso:null,calculadoEm:null};
+      setTimeout(()=>carregarCurvaAEstoqueMinimo(loja),0);
+    }
+  });
   const porLoja=STORES.map(loja=>{
-    const todasLinhas=state.produtos.filter(p=>p.loja===loja).map(linhaEstoqueMinimo).filter(Boolean)
-      .sort((a,b)=>b.vendasDia-a.vendasDia||b.capital-a.capital);
+    const ca=estoqueMinimoCurvaA[loja]||{status:'carregando',skuIds:new Set(),progresso:null};
+    const aguardandoCurvaA=estoqueMinimoSoCurvaA&&ca.status!=='pronto';
+    const todasLinhas=aguardandoCurvaA?[]
+      :state.produtos.filter(p=>p.loja===loja&&(!estoqueMinimoSoCurvaA||ca.skuIds.has(p.mlItemId))).map(linhaEstoqueMinimo).filter(Boolean)
+        .sort((a,b)=>b.vendasDia-a.vendasDia||b.capital-a.capital);
     const linhas=estoqueMinimoSoFaltantes?todasLinhas.filter(x=>x.comprarAMais>0):todasLinhas;
     const capitalTotalLoja=todasLinhas.reduce((s,x)=>s+x.capital,0);
     const semCustoQtd=todasLinhas.filter(x=>x.semCusto).length;
-    return {loja,linhas,totalSku:todasLinhas.length,capitalTotalLoja,semCustoQtd};
+    return {loja,ca,aguardandoCurvaA,linhas,totalSku:todasLinhas.length,capitalTotalLoja,semCustoQtd};
   });
   const capitalGeral=porLoja.reduce((s,r)=>s+r.capitalTotalLoja,0);
   el.innerHTML=`
     <h1 class="page-title">Estoque Mínimo</h1>
     <p class="hint" style="margin:0 0 14px">Compara a meta de 2 meses de estoque de cada produto (2× a média de vendas/dia × 30 dias, mesma base já usada na Previsão de reposição, ou o valor manual dobrado quando ainda não há leitura do FULL) com tudo que você já tem — no FULL, a caminho do FULL, a comprar, a coletar e no galpão — e mostra quanto falta comprar e o capital necessário pra isso. Ordenado por mais vendido.</p>
-    <div class="card" style="margin-bottom:14px">
+    <div class="card" style="margin-bottom:14px;display:flex;flex-direction:column;gap:8px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer"><input type="checkbox" id="chkEstoqueMinSoCurvaA" ${estoqueMinimoSoCurvaA?'checked':''}> Mostrar só Curva A (produtos que somam 70% do faturamento do mês corrente)</label>
       <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer"><input type="checkbox" id="chkEstoqueMinSoFaltantes" ${estoqueMinimoSoFaltantes?'checked':''}> Mostrar só quem precisa comprar</label>
     </div>
     <div class="cards-linha" style="margin-bottom:14px">
-      <div class="card mini"><span class="rot">Capital necessário (todas as lojas)</span><b>${fmtMoney(capitalGeral)}</b><small>pra deixar 2 meses de estoque nos produtos com mínimo definido</small></div>
+      <div class="card mini"><span class="rot">Capital necessário (todas as lojas)</span><b>${fmtMoney(capitalGeral)}</b><small>pra deixar 2 meses de estoque nos produtos${estoqueMinimoSoCurvaA?' Curva A':' com mínimo definido'}</small></div>
     </div>
-    ${porLoja.map(({loja,linhas,totalSku,capitalTotalLoja,semCustoQtd})=>`
+    ${porLoja.map(({loja,ca,aguardandoCurvaA,linhas,totalSku,capitalTotalLoja,semCustoQtd})=>`
       <div class="card">
         <div class="acoes-linha" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-          <h3 style="margin:0">${esc(loja)} <span class="muted" style="font-weight:normal">— capital necessário: ${fmtMoney(capitalTotalLoja)}</span></h3>
-          <button class="btn sm gold" data-gerarrelestmin="${esc(loja)}">📤 Gerar relatório da loja</button>
+          <h3 style="margin:0">${esc(loja)} ${!aguardandoCurvaA?`<span class="muted" style="font-weight:normal">— capital necessário: ${fmtMoney(capitalTotalLoja)}</span>`:''}</h3>
+          ${!aguardandoCurvaA?`<button class="btn sm gold" data-gerarrelestmin="${esc(loja)}">📤 Gerar relatório da loja</button>`:''}
         </div>
-        ${!totalSku?`<p class="empty-inline">Nenhum produto com estoque mínimo definido nesta loja ainda (defina manualmente em Produtos, ou aguarde a leitura do FULL calcular sozinho).</p>`
-          :!linhas.length?`<p class="empty-inline">Todos os produtos com mínimo definido já estão cobertos para 2 meses. 🎉</p>`
+        ${ca.status==='erro'&&aguardandoCurvaA?`<p class="empty-inline" style="color:#e66">⚠ Erro ao calcular Curva A: ${esc(ca.erro)} — <a href="#" data-retrycurvaa="${esc(loja)}">tentar de novo</a></p>`
+          :aguardandoCurvaA?`<p class="empty-inline">Calculando Curva A do mês corrente...${ca.progresso?` (${ca.progresso.feito||0}/${ca.progresso.total||'?'} ${esc(ca.progresso.etapa||'')})`:''}</p>`
+          :!totalSku?`<p class="empty-inline">Nenhum produto${estoqueMinimoSoCurvaA?' Curva A':''} desta loja tem estoque mínimo definido ainda (defina manualmente em Produtos, ou aguarde a leitura do FULL calcular sozinho).</p>`
+          :!linhas.length?`<p class="empty-inline">Todos os produtos${estoqueMinimoSoCurvaA?' Curva A':''} com mínimo definido já estão cobertos para 2 meses. 🎉</p>`
           :`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
           <th>SKU</th><th class="num">Mínimo (2 meses)</th><th class="num" title="Aptas no FULL + em trânsito pro FULL + a comprar + a coletar + no galpão (livre e reservado p/ envio) — passe o mouse numa linha pra ver o detalhe">Estoque atual</th><th class="num">Comprar a mais</th><th class="num">Custo un.</th><th class="num">Capital necessário</th>
           </tr></thead><tbody>
@@ -8645,14 +8687,21 @@ function renderEstoqueMinimo(){
   `;
   const chk=document.getElementById('chkEstoqueMinSoFaltantes');
   if(chk) chk.onchange=()=>{ estoqueMinimoSoFaltantes=chk.checked; renderEstoqueMinimo(); };
+  const chkCurvaA=document.getElementById('chkEstoqueMinSoCurvaA');
+  if(chkCurvaA) chkCurvaA.onchange=()=>{ estoqueMinimoSoCurvaA=chkCurvaA.checked; renderEstoqueMinimo(); };
   el.querySelectorAll('[data-gerarrelestmin]').forEach(b=>{
     b.onclick=()=>imprimirRelatorioEstoqueMinimo(b.dataset.gerarrelestmin);
+  });
+  el.querySelectorAll('[data-retrycurvaa]').forEach(a=>{
+    a.onclick=(ev)=>{ ev.preventDefault(); delete estoqueMinimoCurvaA[a.dataset.retrycurvaa]; renderEstoqueMinimo(); };
   });
 }
 /* relatório compartilhável por loja - tema escuro (igual o fechamento de sócios), com link
    público via /relatorio e botão direto pro WhatsApp - pedido do Felipe 22/08. */
 function imprimirRelatorioEstoqueMinimo(loja){
-  const linhas=state.produtos.filter(p=>p.loja===loja).map(linhaEstoqueMinimo).filter(Boolean)
+  const ca=estoqueMinimoCurvaA[loja];
+  if(estoqueMinimoSoCurvaA&&(!ca||ca.status!=='pronto')){ alert('Ainda calculando a Curva A dessa loja, espera terminar (ou tenta de novo se deu erro) antes de gerar o relatório.'); return; }
+  const linhas=state.produtos.filter(p=>p.loja===loja&&(!estoqueMinimoSoCurvaA||ca.skuIds.has(p.mlItemId))).map(linhaEstoqueMinimo).filter(Boolean)
     .sort((a,b)=>b.vendasDia-a.vendasDia||b.capital-a.capital);
   const faltantes=linhas.filter(x=>x.comprarAMais>0);
   const cobertos=linhas.filter(x=>x.comprarAMais<=0);
@@ -8664,7 +8713,7 @@ function imprimirRelatorioEstoqueMinimo(loja){
   win.document.open();
   win.document.write(`<!doctype html><html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Estoque Mínimo — ${esc(loja)}</title>
+    <title>Estoque Mínimo${estoqueMinimoSoCurvaA?' (Curva A)':''} — ${esc(loja)}</title>
     <style>
       *{box-sizing:border-box}
       :root{--night:#0A0418;--violet:#A3A3A3;--violet-l:#D4D4D4;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
@@ -8697,8 +8746,8 @@ function imprimirRelatorioEstoqueMinimo(loja){
       .share-actions{margin-top:8px}
       .share-hint{color:var(--muted);font-size:11px;margin-top:8px}
     </style></head><body>
-    <h1>Estoque Mínimo — ${esc(loja)}</h1>
-    <div class="sub">Cobertura alvo: 2 meses · Ordenado por mais vendido · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <h1>Estoque Mínimo${estoqueMinimoSoCurvaA?' (Curva A)':''} — ${esc(loja)}</h1>
+    <div class="sub">Cobertura alvo: 2 meses${estoqueMinimoSoCurvaA?' · Só Curva A (70% do faturamento)':''} · Ordenado por mais vendido · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <div class="loja-card">
       <h2>Precisa comprar (${fmtInt(faltantes.length)})</h2>
       ${faltantes.length?`<table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th><th class="n">Comprar</th><th class="n">Custo un.</th><th class="n">Capital</th></tr></thead><tbody>
