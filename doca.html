@@ -465,6 +465,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
       <button data-tab="full" aria-selected="false">FULL</button>
+      <button data-tab="estoqueminimo" aria-selected="false">Estoque Mínimo</button>
       <button data-tab="amauri" aria-selected="false">Amauri</button>
     </nav>
   </div>
@@ -499,6 +500,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
     <div id="tab-envio" class="hidden"></div>
     <div id="tab-ruptura" class="hidden"></div>
   </section>
+  <section id="tab-estoqueminimo" class="tabpanel hidden"></section>
   <section id="tab-amauri" class="tabpanel hidden"></section>
 </main>
 <div class="modal-overlay hidden" id="modalOverlay"><div class="modal" id="modalBody"></div></div>
@@ -4165,7 +4167,7 @@ function tableColetar(list){
     const l=g[f].sort((a,b)=>(a.l.pedido||'').localeCompare(b.l.pedido||'')||(a.l.data||'').localeCompare(b.l.data||'')||a.p.sku.localeCompare(b.p.sku));
     return `<h4 style="margin-top:16px">${esc(f)} <span class="muted" style="font-weight:normal">— ${fmtInt(l.reduce((a,x)=>a+x.l.qtd,0))} un. em ${l.length} lote(s)</span></h4>
     <div class="table-wrap" style="margin-bottom:18px"><table class="tbl-produtos"><thead><tr>
-      <th style="width:36px">Coletar?</th><th>Comprado em</th><th>SKU</th><th>Código</th><th>Qtd do lote</th><th>Pedido do fornecedor</th><th></th>
+      <th style="width:36px">Coletar?</th><th>Comprado em</th><th>SKU</th><th>Código</th><th class="num">Qtd do lote</th><th>Pedido do fornecedor</th><th></th>
     </tr></thead><tbody>
       ${l.map(({p,l})=>`<tr>
         <td><input type="checkbox" class="chk-coleta" data-lote="${p.id}|${l.id}" checked></td>
@@ -8565,12 +8567,189 @@ function renderRuptura(){
   const btnVerPausados2=document.getElementById('btnVerPausados2');
   if(btnVerPausados2) btnVerPausados2.onclick=abrirPausadosModal;
 }
+/* ---------- Estoque Mínimo (pedido do Felipe 22/08) ----------
+   Compara o estoque mínimo já calculado pelo sistema (mesma conta da Previsão de reposição: média
+   de vendas/dia x 30 dias de cobertura, com fallback pro valor manual) com TUDO que já é dono hoje
+   - não só o que já chegou no FULL, mas também o que está a caminho, o que já foi comprado do
+   fornecedor (a coletar), o que já está pedido (a comprar) e o que está fisicamente no galpão -
+   pra saber quanto falta comprar de verdade e quanto capital isso exige. */
+let estoqueMinimoSoFaltantes=true;
+function estoqueTotalCombinado(p){
+  return (p.mlQtdDisponivel||0)+(p.mlTransferencia||0)+(p.qtd.comprar||0)+(p.qtd.coletar||0)+(p.qtd.local||0);
+}
+function linhaEstoqueMinimo(p){
+  if(p.vinculadoA) return null; // estoque mora no SKU mestre, não duplica aqui
+  const minimo=estoqueMinimoEfetivo(p);
+  if(!minimo||minimo<=0) return null; // sem mínimo definido ainda (nem sugerido pelo FULL, nem manual)
+  const atual=estoqueTotalCombinado(p);
+  const comprarAMais=Math.max(0,minimo-atual);
+  const semCusto=comprarAMais>0&&!(p.custo>0);
+  const capital=semCusto?0:comprarAMais*(p.custo||0);
+  const detalhe=`FULL: ${fmtInt(p.mlQtdDisponivel||0)} · A caminho do FULL: ${fmtInt(p.mlTransferencia||0)} · A comprar (já em pedido): ${fmtInt(p.qtd.comprar||0)} · A coletar: ${fmtInt(p.qtd.coletar||0)} · No galpão: ${fmtInt(p.qtd.local||0)}`;
+  return {p,minimo,atual,comprarAMais,capital,semCusto,detalhe};
+}
+function renderEstoqueMinimo(){
+  const el=document.getElementById('tab-estoqueminimo'); if(!el) return;
+  const porLoja=STORES.map(loja=>{
+    const todasLinhas=state.produtos.filter(p=>p.loja===loja).map(linhaEstoqueMinimo).filter(Boolean)
+      .sort((a,b)=>b.capital-a.capital||b.comprarAMais-a.comprarAMais);
+    const linhas=estoqueMinimoSoFaltantes?todasLinhas.filter(x=>x.comprarAMais>0):todasLinhas;
+    const capitalTotalLoja=todasLinhas.reduce((s,x)=>s+x.capital,0);
+    const semCustoQtd=todasLinhas.filter(x=>x.semCusto).length;
+    return {loja,linhas,totalSku:todasLinhas.length,capitalTotalLoja,semCustoQtd};
+  });
+  const capitalGeral=porLoja.reduce((s,r)=>s+r.capitalTotalLoja,0);
+  el.innerHTML=`
+    <h1 class="page-title">Estoque Mínimo</h1>
+    <p class="hint" style="margin:0 0 14px">Compara o estoque mínimo de cada produto (a mesma conta já usada na Previsão de reposição: média de vendas/dia × 30 dias, ou o valor manual quando ainda não há leitura do FULL) com tudo que você já tem — no FULL, a caminho do FULL, a comprar, a coletar e no galpão — e mostra quanto falta comprar e o capital necessário pra isso.</p>
+    <div class="card" style="margin-bottom:14px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer"><input type="checkbox" id="chkEstoqueMinSoFaltantes" ${estoqueMinimoSoFaltantes?'checked':''}> Mostrar só quem precisa comprar</label>
+    </div>
+    <div class="cards-linha" style="margin-bottom:14px">
+      <div class="card mini"><span class="rot">Capital necessário (todas as lojas)</span><b>${fmtMoney(capitalGeral)}</b><small>pra deixar 1 mês de estoque nos produtos com mínimo definido</small></div>
+    </div>
+    ${porLoja.map(({loja,linhas,totalSku,capitalTotalLoja,semCustoQtd})=>`
+      <div class="card">
+        <div class="acoes-linha" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0">${esc(loja)} <span class="muted" style="font-weight:normal">— capital necessário: ${fmtMoney(capitalTotalLoja)}</span></h3>
+          <button class="btn sm gold" data-gerarrelestmin="${esc(loja)}">📤 Gerar relatório da loja</button>
+        </div>
+        ${!totalSku?`<p class="empty-inline">Nenhum produto com estoque mínimo definido nesta loja ainda (defina manualmente em Produtos, ou aguarde a leitura do FULL calcular sozinho).</p>`
+          :!linhas.length?`<p class="empty-inline">Todos os produtos com mínimo definido já estão cobertos para 1 mês. 🎉</p>`
+          :`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
+          <th>SKU</th><th class="num">Mínimo (1 mês)</th><th class="num" title="FULL + a caminho + a comprar + a coletar + no galpão">Estoque atual</th><th class="num">Comprar a mais</th><th class="num">Custo un.</th><th class="num">Capital necessário</th>
+          </tr></thead><tbody>
+          ${linhas.map(({p,minimo,atual,comprarAMais,capital,semCusto,detalhe})=>`<tr>
+            <td class="mono">${esc(p.sku)}</td>
+            <td class="num">${fmtInt(minimo)}</td>
+            <td class="num" title="${esc(detalhe)}">${fmtInt(atual)}</td>
+            <td class="num">${comprarAMais>0?`<b>${fmtInt(comprarAMais)}</b>`:'<span class="muted">coberto</span>'}</td>
+            <td class="num">${p.custo?fmtMoney(p.custo):'<span class="muted">sem custo</span>'}</td>
+            <td class="num">${semCusto?'<span style="color:var(--danger,#e66)">sem custo</span>':(capital>0?fmtMoney(capital):'—')}</td>
+          </tr>`).join('')}
+          </tbody></table></div>`}
+        ${semCustoQtd?`<p class="hint" style="color:#e66;margin-top:8px">⚠ ${semCustoQtd} produto(s) sem custo cadastrado — o capital necessário desses não entra na soma. Cadastre o custo em Produtos pra ficar exato.</p>`:''}
+      </div>`).join('')}
+  `;
+  const chk=document.getElementById('chkEstoqueMinSoFaltantes');
+  if(chk) chk.onchange=()=>{ estoqueMinimoSoFaltantes=chk.checked; renderEstoqueMinimo(); };
+  el.querySelectorAll('[data-gerarrelestmin]').forEach(b=>{
+    b.onclick=()=>imprimirRelatorioEstoqueMinimo(b.dataset.gerarrelestmin);
+  });
+}
+/* relatório compartilhável por loja - tema escuro (igual o fechamento de sócios), com link
+   público via /relatorio e botão direto pro WhatsApp - pedido do Felipe 22/08. */
+function imprimirRelatorioEstoqueMinimo(loja){
+  const linhas=state.produtos.filter(p=>p.loja===loja).map(linhaEstoqueMinimo).filter(Boolean)
+    .sort((a,b)=>b.capital-a.capital||b.comprarAMais-a.comprarAMais);
+  const faltantes=linhas.filter(x=>x.comprarAMais>0);
+  const cobertos=linhas.filter(x=>x.comprarAMais<=0);
+  const capitalTotal=linhas.reduce((s,x)=>s+x.capital,0);
+  const semCustoQtd=linhas.filter(x=>x.semCusto).length;
+  const win=window.open('','_blank');
+  if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
+  const linhaHtml=x=>`<tr><td>${esc(x.p.sku)}</td><td class="n">${fmtInt(x.minimo)}</td><td class="n">${fmtInt(x.atual)}</td><td class="n"><b>${fmtInt(x.comprarAMais)}</b></td><td class="n">${x.p.custo?fmtMoney(x.p.custo):'—'}</td><td class="n">${x.semCusto?'sem custo':fmtMoney(x.capital)}</td></tr>`;
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Estoque Mínimo — ${esc(loja)}</title>
+    <style>
+      *{box-sizing:border-box}
+      :root{--night:#0A0418;--violet:#A3A3A3;--violet-l:#D4D4D4;--gold:#FFC53D;--paper:#170D31;--bg:#0C0620;--bg2:#241547;--text:#EFEBF9;--muted:#9A90BC;--line:#2E1F55;--ok:#34D399;--danger:#FB7185}
+      html,body{margin:0}
+      body{
+        background:radial-gradient(1100px 520px at 12% -8%,rgba(150,150,153,.20),transparent 62%),
+          radial-gradient(900px 440px at 92% 2%,rgba(255,197,61,.06),transparent 60%), var(--bg);
+        font-family:-apple-system,BlinkMacSystemFont,'Plus Jakarta Sans',Arial,Helvetica,sans-serif;
+        padding:18px;color:var(--text);font-size:15px;max-width:720px;margin:0 auto;line-height:1.5}
+      h1{font-size:19px;margin:0 0 4px;color:var(--text)}
+      h2{font-size:14.5px;margin:0 0 12px;padding-bottom:9px;border-bottom:1px solid var(--line);color:var(--gold);letter-spacing:.03em;text-transform:uppercase}
+      .sub{color:var(--muted);font-size:12.5px;margin-bottom:18px}
+      .loja-card{border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;background:var(--paper)}
+      table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+      th,td{border-bottom:1px solid var(--line);padding:8px 5px;text-align:left;word-break:break-word;color:var(--text)}
+      th{font-size:10.5px;text-transform:uppercase;color:var(--muted);font-weight:600}
+      td.n,th.n{text-align:right;white-space:nowrap}
+      tr:last-child td{border-bottom:none}
+      .tot-card{border:1px solid var(--violet);border-radius:14px;padding:16px;margin-top:6px;background:linear-gradient(135deg,var(--bg2),var(--paper));text-align:center}
+      .tot-card span{font-size:12.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+      .tot-card b{display:block;font-size:24px;color:var(--gold);margin-top:6px}
+      .vazio{color:var(--muted);font-size:12.5px;margin:4px 0 0}
+      .aviso-custo{color:var(--danger);font-size:11.5px;margin-top:8px}
+      .gerado{text-align:center;color:var(--muted);font-size:11px;margin-top:18px}
+      .share-box{margin-top:18px;text-align:center}
+      .btn-share{display:inline-block;background:var(--bg2);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:10px 16px;font-size:13px;cursor:pointer;text-decoration:none;margin:4px}
+      .btn-share.wa{background:#1f7a4d;border-color:#1f7a4d;color:#fff}
+      .share-link{margin-top:10px}
+      .share-link input{width:100%;max-width:420px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg2);color:var(--text);font-size:12.5px}
+      .share-actions{margin-top:8px}
+      .share-hint{color:var(--muted);font-size:11px;margin-top:8px}
+    </style></head><body>
+    <h1>Estoque Mínimo — ${esc(loja)}</h1>
+    <div class="sub">Cobertura alvo: 1 mês · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <div class="loja-card">
+      <h2>Precisa comprar (${fmtInt(faltantes.length)})</h2>
+      ${faltantes.length?`<table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th><th class="n">Comprar</th><th class="n">Custo un.</th><th class="n">Capital</th></tr></thead><tbody>
+        ${faltantes.map(linhaHtml).join('')}
+      </tbody></table>${semCustoQtd?`<p class="aviso-custo">⚠ ${semCustoQtd} produto(s) sem custo cadastrado — capital desses não entra no total abaixo.</p>`:''}`:`<p class="vazio">Nenhum produto com mínimo definido está em falta agora. 🎉</p>`}
+    </div>
+    ${cobertos.length?`<div class="loja-card">
+      <h2>Já coberto (${fmtInt(cobertos.length)})</h2>
+      <table><thead><tr><th>SKU</th><th class="n">Mínimo</th><th class="n">Atual</th></tr></thead><tbody>
+        ${cobertos.map(x=>`<tr><td>${esc(x.p.sku)}</td><td class="n">${fmtInt(x.minimo)}</td><td class="n">${fmtInt(x.atual)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>`:''}
+    <div class="tot-card">
+      <span>Capital necessário pra cobrir 1 mês de estoque</span>
+      <b>${fmtMoney(capitalTotal)}</b>
+    </div>
+    <div class="share-box">
+      <button id="btnCompartilhar" class="btn-share">🔗 Gerar link pra compartilhar</button>
+      <div id="shareResultado"></div>
+    </div>
+    <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
+    <script>
+      (function(){
+        var BACKEND=${JSON.stringify(backendUrl())};
+        var btn=document.getElementById('btnCompartilhar');
+        var out=document.getElementById('shareResultado');
+        btn.onclick=async function(){
+          btn.disabled=true; btn.textContent='Gerando link...';
+          try{
+            if(!BACKEND) throw new Error('URL do backend não configurada.');
+            var htmlCompleto='<!doctype html>'+document.documentElement.outerHTML;
+            var r=await fetch(BACKEND+'/relatorio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html:htmlCompleto})});
+            var j=await r.json();
+            if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao gerar o link.');
+            var url=BACKEND+'/relatorio/'+j.id;
+            out.innerHTML='<div class="share-link"><input type="text" readonly value="'+url+'" id="shareUrlInput"></div>'+
+              '<div class="share-actions">'+
+              '<a class="btn-share wa" href="https://wa.me/?text='+encodeURIComponent('Estoque Mínimo — '+${JSON.stringify(loja)}+': '+url)+'" target="_blank" rel="noopener">📲 Enviar no WhatsApp</a>'+
+              '<button class="btn-share" id="btnCopiarLink">📋 Copiar link</button>'+
+              '</div>'+
+              '<p class="share-hint">Link público (sem senha) — quem tiver o link consegue abrir esse relatório, válido por 30 dias.</p>';
+            document.getElementById('btnCopiarLink').onclick=function(){
+              document.getElementById('shareUrlInput').select();
+              navigator.clipboard&&navigator.clipboard.writeText(url);
+              document.getElementById('btnCopiarLink').textContent='✓ Copiado!';
+            };
+            btn.style.display='none';
+          }catch(e){
+            out.innerHTML='<p class="share-hint" style="color:var(--danger)">⚠ '+String(e.message||e)+'</p>';
+            btn.disabled=false; btn.textContent='🔗 Gerar link pra compartilhar';
+          }
+        };
+      })();
+    <\/script>
+    </body></html>`);
+  win.document.close();
+}
 /* ---------- render ---------- */
 function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],
-   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
+   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
