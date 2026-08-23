@@ -5490,13 +5490,16 @@ let auditoriaLoja=STORES[0];
 let auditoriaDe='', auditoriaAte='';
 let auditoriaJobId=null, auditoriaStatus=null, auditoriaProgresso=null, auditoriaResultado=null, auditoriaErro=null;
 let auditoriaPollTimer=null;
-/* anexos de conciliacao (CSV "por venda"/settlement e "por liberacao de dinheiro"/reserve_release
-   do Mercado Pago) - pedido do Felipe 23/08: sobe o relatorio mensal na propria aba Auditoria pra
-   guardar de referencia (e comparar depois com o que a Auditoria calcula sozinha). */
+/* anexos de conciliacao (Relatorio de Conciliacao do Mercado Livre - "por venda" e "por
+   liberacao de dinheiro", .xlsx baixado em Vendas > Relatorios > Conciliacao) - pedido do
+   Felipe 23/08: sobe o relatorio mensal na propria aba Auditoria pra guardar de referencia.
+   v2 (23/08): o primeiro que eu tinha feito era pro CSV bruto do Mercado Pago (settlement/
+   reserve-release), mas o Felipe mostrou que o relatorio de verdade que ele usa e' esse outro,
+   direto do Mercado Livre, em xlsx e com SKU por linha - reli o parsing todo pra esse formato. */
 let auditoriaAnexoMes=mesAtualStr(); // 'AAAA-MM' - mes de referencia do relatorio a subir/ver
 let auditoriaAnexos={}; // { 'loja|mes': {status:'carregando'|'pronto'|'erro', lista:[...], erro} }
-let auditoriaAnexoEnviando=null; // 'settlement' | 'reserve_release' | null - qual upload esta rodando agora
-const ROTULO_TIPO_ANEXO={settlement:'Por venda',reserve_release:'Por liberação de dinheiro'};
+let auditoriaAnexoEnviando=null; // 'venda' | 'liberacao' | null - qual upload esta rodando agora
+const ROTULO_TIPO_ANEXO={venda:'Por venda',liberacao:'Por liberação de dinheiro'};
 function chaveAnexosAuditoria(loja,mes){ return loja+'|'+mes; }
 async function carregarAnexosAuditoria(loja,mes){
   const chave=chaveAnexosAuditoria(loja,mes);
@@ -5514,18 +5517,72 @@ async function carregarAnexosAuditoria(loja,mes){
   }
   renderFinancas();
 }
+/* le o xlsx do Relatorio de Conciliacao no navegador (SheetJS, ja carregado no doca.html) - o
+   arquivo tem 3 linhas de cabecalho antes dos dados (1: descrição solta, 2: agrupamento das
+   colunas por seção tipo "Tarifas cobradas"/"Envio", 3: nome real de cada coluna) - usa a 3ª como
+   cabecalho de verdade. Faz no navegador (não no backend) porque campos como "Detalhes de
+   tarifas" têm ";" e quebra de linha dentro do valor, o que quebraria um CSV simples. */
+async function lerLinhasRelatorioConciliacao(file){
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const sheet=wb.Sheets[wb.SheetNames[0]];
+  const brutas=XLSX.utils.sheet_to_json(sheet,{header:1,raw:true,defval:''});
+  const header=(brutas[2]||[]).map(h=>String(h||'').trim());
+  if(!header.includes('SKU')) throw new Error('Não reconheci as colunas desse arquivo — confira se é o Relatório de Conciliação (por venda / por liberação) baixado do Mercado Livre em Vendas → Relatórios → Conciliação.');
+  return brutas.slice(3).filter(l=>l&&l.some(v=>v!==''&&v!=null)).map(l=>{
+    const obj={};
+    header.forEach((h,i)=>{ if(h) obj[h]=l[i]; });
+    return obj;
+  });
+}
+function dataBrParaMes(s){
+  const m=/^(\d{2})\/(\d{2})\/(\d{4})/.exec(String(s||'').trim());
+  return m?`${m[3]}-${m[2]}`:null;
+}
+function numeroCel(v){ return typeof v==='number'?v:(parseFloat(String(v||'').replace(',','.'))||0); }
+function resumirConciliacaoVenda(linhas,mes){
+  const doMes=linhas.filter(l=>dataBrParaMes(l['Data da operação'])===mes);
+  const porTipo={}; let bruto=0,liquido=0;
+  doMes.forEach(l=>{
+    const t=l['Tipo de operação']||'?';
+    if(!porTipo[t]) porTipo[t]={qtd:0,bruto:0,liquido:0};
+    const b=numeroCel(l['Valor bruto (=)']), n=numeroCel(l['Valor líquido após tarifas']);
+    porTipo[t].qtd++; porTipo[t].bruto+=b; porTipo[t].liquido+=n;
+    bruto+=b; liquido+=n;
+  });
+  Object.values(porTipo).forEach(x=>{ x.bruto=Math.round(x.bruto*100)/100; x.liquido=Math.round(x.liquido*100)/100; });
+  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100};
+}
+function resumirConciliacaoLiberacao(linhas,mes){
+  const doMes=linhas.filter(l=>dataBrParaMes(l['Data da liberação'])===mes);
+  const porTipo={}; let liquido=0;
+  doMes.forEach(l=>{
+    const t=l['Tipo de operação']||'?';
+    if(!porTipo[t]) porTipo[t]={qtd:0,liquido:0};
+    const n=numeroCel(l['Valor líquido após tarifas']);
+    porTipo[t].qtd++; porTipo[t].liquido+=n;
+    liquido+=n;
+  });
+  Object.values(porTipo).forEach(x=>{ x.liquido=Math.round(x.liquido*100)/100; });
+  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,liquido:Math.round(liquido*100)/100};
+}
 async function enviarAnexoAuditoria(tipo,file){
   if(!file) return;
   auditoriaAnexoEnviando=tipo; renderFinancas();
   try{
+    if(!/\.xlsx$/i.test(file.name||'')) throw new Error('Suba o arquivo .xlsx baixado direto em Vendas → Relatórios → Conciliação, no Mercado Livre.');
+    const linhas=await lerLinhasRelatorioConciliacao(file);
+    const colChave=tipo==='venda'?'Data da operação':'Data da liberação';
+    if(!linhas.length||!(colChave in linhas[0])) throw new Error(`Esse arquivo não parece ser o relatório "${ROTULO_TIPO_ANEXO[tipo]}" — confira se escolheu o botão certo.`);
+    const resumo=tipo==='venda'?resumirConciliacaoVenda(linhas,auditoriaAnexoMes):resumirConciliacaoLiberacao(linhas,auditoriaAnexoMes);
+    if(!resumo.linhasNoMes) throw new Error(`O arquivo não tem nenhuma linha de ${auditoriaAnexoMes} — confira se o mês selecionado bate com o período do relatório baixado.`);
     const base=backendUrl();
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-    const conteudo=await file.text();
     const r=await fetch(`${base}/auditoria/anexo`,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({loja:auditoriaLoja,mes:auditoriaAnexoMes,tipo,nomeArquivo:file.name,conteudo})});
+      body:JSON.stringify({loja:auditoriaLoja,mes:auditoriaAnexoMes,tipo,nomeArquivo:file.name,resumo})});
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao anexar (status '+r.status+').'));
-    toast('Relatório anexado — '+fmtInt(j.resumo.linhasNoMes)+' linha(s) de '+auditoriaAnexoMes+'.');
+    toast('Relatório anexado — '+fmtInt(resumo.linhasNoMes)+' linha(s) de '+auditoriaAnexoMes+'.');
     carregarAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes);
   }catch(e){ alert('Não foi possível anexar: '+e.message); }
   finally{ auditoriaAnexoEnviando=null; renderFinancas(); }
@@ -5614,15 +5671,15 @@ function renderAuditoriaMes(){
       `:''}
     </div>
     <div class="card" style="margin-top:14px">
-      <h3 style="margin-top:0">📎 Relatórios do Mercado Pago (conciliação)</h3>
-      <p class="hint" style="margin:0 0 10px">Anexe aqui os relatórios que você baixa manualmente no Mercado Pago — <b>Por venda</b> (settlement) e <b>Por liberação de dinheiro</b> (reserve-release). Fica guardado por loja/mês pra consulta e conferência, sem mexer no cálculo da Auditoria acima.</p>
+      <h3 style="margin-top:0">📎 Relatório de Conciliação (Mercado Livre)</h3>
+      <p class="hint" style="margin:0 0 10px">Anexe aqui os relatórios .xlsx que você baixa em <b>Vendas → Relatórios → Conciliação</b> no Mercado Livre — <b>Por venda</b> e <b>Por liberação de dinheiro</b>, no período do mês escolhido abaixo. Fica guardado por loja/mês pra consulta e conferência, sem mexer no cálculo da Auditoria acima.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr">
         <label>Loja<select id="audAnexoLoja">${optsLojas(auditoriaLoja)}</select></label>
         <label>Mês do relatório<input type="month" id="audAnexoMes" value="${esc(auditoriaAnexoMes)}"></label>
       </div>
       <div class="acoes-linha" style="margin-top:10px;flex-wrap:wrap;gap:10px">
-        <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='settlement'?'Enviando...':'📤 Por venda (settlement)'}<input type="file" accept=".csv" id="audAnexoSettlement" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
-        <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='reserve_release'?'Enviando...':'📤 Por liberação de dinheiro'}<input type="file" accept=".csv" id="audAnexoReserve" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
+        <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='venda'?'Enviando...':'📤 Por venda'}<input type="file" accept=".xlsx" id="audAnexoVenda" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
+        <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='liberacao'?'Enviando...':'📤 Por liberação de dinheiro'}<input type="file" accept=".xlsx" id="audAnexoLiberacao" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
       </div>
       ${renderListaAnexosAuditoria()}
     </div>
@@ -5640,19 +5697,18 @@ function renderListaAnexosAuditoria(){
   </tr></thead><tbody>
   ${st.lista.map(a=>{
     const r=a.resumo||{};
-    let resumoTxt='';
-    if(a.tipo==='settlement'){
-      const s=(r.porTipo&&r.porTipo.SETTLEMENT)||{qtd:0,bruto:0,liquido:0};
-      resumoTxt=`${fmtInt(s.qtd)} venda(s) · bruto ${fmtMoney(s.bruto)} · líquido ${fmtMoney(s.liquido)}${r.naoLiberadas?` · ${fmtInt(r.naoLiberadas)} ainda não liberada(s)`:''}`;
-    }else if(a.tipo==='reserve_release'){
-      resumoTxt=`crédito ${fmtMoney(r.credito||0)} · débito ${fmtMoney(r.debito||0)}${r.saldoFinal!=null?` · saldo final ${fmtMoney(r.saldoFinal)}`:''}`;
+    let resumoTxt=`${fmtInt(r.linhasNoMes||0)} linha(s)`;
+    if(a.tipo==='venda'){
+      resumoTxt+=` · bruto ${fmtMoney(r.bruto||0)} · líquido ${fmtMoney(r.liquido||0)}`;
+    }else if(a.tipo==='liberacao'){
+      resumoTxt+=` · líquido liberado ${fmtMoney(r.liquido||0)}`;
     }
     return `<tr>
       <td>${esc(ROTULO_TIPO_ANEXO[a.tipo]||a.tipo)}</td>
       <td class="mono" style="font-size:11px">${esc(a.nome_arquivo||'—')}</td>
       <td style="font-size:12px">${resumoTxt}</td>
       <td style="font-size:11px" class="muted">${new Date(a.criado_em).toLocaleString('pt-BR')}</td>
-      <td class="acoes-linha" style="gap:4px"><button class="btn sm" data-baixaranexo="${a.id}" title="Baixar">⬇</button><button class="btn sm danger-outline" data-excluiranexo="${a.id}" title="Excluir">🗑</button></td>
+      <td class="acoes-linha" style="gap:4px">${a.tem_arquivo?`<button class="btn sm" data-baixaranexo="${a.id}" title="Baixar">⬇</button>`:''}<button class="btn sm danger-outline" data-excluiranexo="${a.id}" title="Excluir">🗑</button></td>
     </tr>`;
   }).join('')}
   </tbody></table></div>`;
@@ -6326,10 +6382,10 @@ function renderFinancas(){
   if(audAnexoLoja) audAnexoLoja.onchange=e=>{ auditoriaLoja=e.target.value; renderFinancas(); };
   const audAnexoMes=document.getElementById('audAnexoMes');
   if(audAnexoMes) audAnexoMes.onchange=e=>{ if(e.target.value){ auditoriaAnexoMes=e.target.value; renderFinancas(); } };
-  const audAnexoSettlement=document.getElementById('audAnexoSettlement');
-  if(audAnexoSettlement) audAnexoSettlement.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('settlement',f); e.target.value=''; };
-  const audAnexoReserve=document.getElementById('audAnexoReserve');
-  if(audAnexoReserve) audAnexoReserve.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('reserve_release',f); e.target.value=''; };
+  const audAnexoVenda=document.getElementById('audAnexoVenda');
+  if(audAnexoVenda) audAnexoVenda.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('venda',f); e.target.value=''; };
+  const audAnexoLiberacao=document.getElementById('audAnexoLiberacao');
+  if(audAnexoLiberacao) audAnexoLiberacao.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('liberacao',f); e.target.value=''; };
   document.querySelectorAll('[data-baixaranexo]').forEach(b=>{ b.onclick=()=>baixarAnexoAuditoria(b.dataset.baixaranexo); });
   document.querySelectorAll('[data-excluiranexo]').forEach(b=>{ b.onclick=()=>excluirAnexoAuditoria(b.dataset.excluiranexo); });
   const btnSocData=document.getElementById('socData');
