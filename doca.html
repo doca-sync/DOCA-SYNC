@@ -5501,6 +5501,27 @@ let auditoriaAnexos={}; // { 'loja|mes': {status:'carregando'|'pronto'|'erro', l
 let auditoriaAnexoEnviando=null; // 'venda' | 'liberacao' | null - qual upload esta rodando agora
 const ROTULO_TIPO_ANEXO={venda:'Por venda',liberacao:'Por liberação de dinheiro'};
 function chaveAnexosAuditoria(loja,mes){ return loja+'|'+mes; }
+/* comparação 3 vias (pedido do Felipe 23/08): Resumo Financeiro (cálculo rápido/assumido) x
+   Auditoria (conferido pedido a pedido no MP) x Conciliação (relatório oficial do ML) - pra ver
+   se o Resumo Financeiro do dia a dia está "calibrado". Busca o Resumo Financeiro de novo aqui,
+   no MESMO período da Auditoria (que já rodou), pra ficar comparável de verdade. */
+let auditoriaCompChave=null;
+let auditoriaCompResumo=null; // {status:'carregando'|'pronto'|'erro', resumo, erro, progresso}
+async function carregarResumoComparacaoAuditoria(loja,de,ate){
+  const chave=`${loja}|${de}|${ate}`;
+  auditoriaCompChave=chave;
+  auditoriaCompResumo={status:'carregando',resumo:null,erro:null,progresso:null};
+  renderFinancas();
+  try{
+    const resumo=await fetchResumoJob(loja,'personalizado',de,ate,(p)=>{
+      if(auditoriaCompChave===chave){ auditoriaCompResumo={status:'carregando',resumo:null,erro:null,progresso:p}; renderFinancas(); }
+    });
+    if(auditoriaCompChave===chave) auditoriaCompResumo={status:'pronto',resumo,erro:null,progresso:null};
+  }catch(e){
+    if(auditoriaCompChave===chave) auditoriaCompResumo={status:'erro',resumo:null,erro:e.message,progresso:null};
+  }
+  if(auditoriaCompChave===chave) renderFinancas();
+}
 async function carregarAnexosAuditoria(loja,mes){
   const chave=chaveAnexosAuditoria(loja,mes);
   auditoriaAnexos[chave]={status:'carregando',lista:[],erro:null};
@@ -5542,16 +5563,28 @@ function dataBrParaMes(s){
 function numeroCel(v){ return typeof v==='number'?v:(parseFloat(String(v||'').replace(',','.'))||0); }
 function resumirConciliacaoVenda(linhas,mes){
   const doMes=linhas.filter(l=>dataBrParaMes(l['Data da operação'])===mes);
-  const porTipo={}; let bruto=0,liquido=0;
+  const porTipo={}; let bruto=0,liquido=0,tarifa=0,freteVendedor=0;
   doMes.forEach(l=>{
     const t=l['Tipo de operação']||'?';
     if(!porTipo[t]) porTipo[t]={qtd:0,bruto:0,liquido:0};
     const b=numeroCel(l['Valor bruto (=)']), n=numeroCel(l['Valor líquido após tarifas']);
     porTipo[t].qtd++; porTipo[t].bruto+=b; porTipo[t].liquido+=n;
     bruto+=b; liquido+=n;
+    /* tarifa e frete só existem de fato pra linhas de "Venda" - somadas à parte, pra dar pra
+       comparar direto com res.tarifa_real/res.frete_real da Auditoria e resumo.tarifas/
+       resumo.frete.vendedor do Resumo Financeiro (pedido do Felipe 23/08: comparação 3 vias) */
+    if(t==='Venda'){
+      tarifa+=numeroCel(l['Valor total de tarifas (desconto já aplicado)'])+numeroCel(l['Valor total de tarifas pós-pagas']);
+      freteVendedor+=numeroCel(l['Envio pago pelo vendedor']);
+    }
   });
   Object.values(porTipo).forEach(x=>{ x.bruto=Math.round(x.bruto*100)/100; x.liquido=Math.round(x.liquido*100)/100; });
-  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100};
+  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100};
+}
+function ultimoDiaMes(mes){
+  const [y,m]=String(mes||'').split('-').map(Number);
+  if(!y||!m) return '';
+  return `${mes}-${String(new Date(y,m,0).getDate()).padStart(2,'0')}`;
 }
 function resumirConciliacaoLiberacao(linhas,mes){
   const doMes=linhas.filter(l=>dataBrParaMes(l['Data da liberação'])===mes);
@@ -5682,6 +5715,42 @@ function renderAuditoriaMes(){
         <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='liberacao'?'Enviando...':'📤 Por liberação de dinheiro'}<input type="file" accept=".xlsx" id="audAnexoLiberacao" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
       </div>
       ${renderListaAnexosAuditoria()}
+    </div>
+    ${renderComparacaoAuditoria(res)}
+  `;
+}
+function renderComparacaoAuditoria(res){
+  if(!res) return '';
+  const chaveAtual=`${auditoriaLoja}|${auditoriaDe}|${auditoriaAte}`;
+  if(auditoriaCompChave!==chaveAtual) setTimeout(()=>carregarResumoComparacaoAuditoria(auditoriaLoja,auditoriaDe,auditoriaAte),0);
+  const compR=(auditoriaCompChave===chaveAtual)?auditoriaCompResumo:null;
+  const chaveAnexo=chaveAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes);
+  const stAnexo=auditoriaAnexos[chaveAnexo];
+  const anexoVenda=(stAnexo&&stAnexo.status==='pronto')?stAnexo.lista.find(a=>a.tipo==='venda'):null;
+  const rConc=anexoVenda?(anexoVenda.resumo||{}):null;
+  const mesFechado=auditoriaDe===(auditoriaAnexoMes+'-01')&&auditoriaAte===ultimoDiaMes(auditoriaAnexoMes);
+  const linha=(label,vResumo,vAud,vConc)=>`<tr><td>${esc(label)}</td>
+    <td class="num">${vResumo==null?'<span class="muted">—</span>':fmtMoney(vResumo)}</td>
+    <td class="num">${vAud==null?'<span class="muted">—</span>':fmtMoney(vAud)}</td>
+    <td class="num">${vConc==null?'<span class="muted">—</span>':fmtMoney(vConc)}</td>
+  </tr>`;
+  return `
+    <div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">⚖️ Resumo Financeiro × Auditoria × Conciliação</h3>
+      <p class="hint" style="margin:0 0 10px">Compara os 3 pra ver se o Resumo Financeiro (cálculo rápido do dia a dia) está calibrado — mesma loja/período da Auditoria acima (${fmtData(auditoriaDe)} a ${fmtData(auditoriaAte)}). A coluna Conciliação só aparece se você anexou o relatório "Por venda" de <b>${esc(auditoriaAnexoMes)}</b> acima${mesFechado?'':', e só bate certo se esse mês for exatamente o período escolhido pra Auditoria'}.</p>
+      ${!mesFechado&&anexoVenda?`<p class="hint" style="color:#e6a23c;margin:0 0 10px">⚠ O mês do anexo (${esc(auditoriaAnexoMes)}) não é igual ao período da Auditoria — a coluna Conciliação abaixo não é comparável direito com as outras duas nesse caso.</p>`:''}
+      ${!compR||compR.status==='carregando'?barraIndeterminada('Calculando o Resumo Financeiro do mesmo período...'):
+        compR.status==='erro'?`<p class="hint" style="color:#e66">⚠ Erro ao calcular o Resumo Financeiro: ${esc(compR.erro)}</p>`:
+        `<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+          <th>Métrica</th><th class="num">Resumo Financeiro</th><th class="num">Auditoria</th><th class="num">Conciliação (ML)</th>
+        </tr></thead><tbody>
+          ${linha('Faturamento / Bruto',compR.resumo.faturamento,res.faturamento,rConc?rConc.bruto:null)}
+          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.tarifa!=null?rConc.tarifa:null)}
+          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.freteVendedor!=null?rConc.freteVendedor:null)}
+        </tbody></table></div>
+        ${rConc&&rConc.tarifa==null?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes dessa comparação existir — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra também comparar tarifa e frete.</p>`:''}
+        <p class="hint" style="margin-top:10px">Resumo Financeiro é o cálculo rápido/assumido do dia a dia; Auditoria confere pedido a pedido no Mercado Pago; Conciliação é o relatório oficial do Mercado Livre. Se os 3 estiverem próximos, o Resumo Financeiro está calibrado — diferença grande é sinal pra olhar as Anomalias acima.</p>`
+      }
     </div>
   `;
 }
