@@ -530,36 +530,32 @@ if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudf
 const STORES=["TorvStore","Dor Block","Orbix Brasil","TorvShop"];
 /* estrutura societária de cada loja (pedido do Felipe 23/08, pra Retiradas/Reembolso e Fluxo de
    Caixa) - % de participação de cada sócio por loja. Orbix Brasil é a única com o Paulo (33,33%
-   cada); as outras 3 são só Felipe/Thiago 50/50. PAPEL_CAIXA_LOJA descreve a política de caixa
-   de cada uma (revisado 23/08): 'operacao' = a TorvStore banca as despesas "Geral (todas)"
-   cadastradas em Despesas (inclusive contador de cada loja, se cadastrado sem loja marcada) antes
-   de mais nada - e o que SOBRA depois disso, por enquanto, também vira retirada de Felipe/Thiago
-   (complementa salário; pode virar reserva/reinvestimento no futuro se o Felipe mudar de ideia);
-   'distribui' = 100% do lucro do mês é retirada, sem reserva; 'reserva' = não retira nada, só
-   acumula/reinveste (TorvShop - pode realocar pra TorvStore, Dor Block ou reinvestir nela mesma,
-   conforme a necessidade). GRUPOS_CAIXA agrupa lojas que têm EXATAMENTE os mesmos sócios, então dá
-   pra realocar caixa entre elas sem desequilibrar ninguém - a Orbix nunca entra em grupo com as
-   outras 3 por causa do Paulo. */
+   cada); as outras 3 são só Felipe/Thiago 50/50. PAPEL_CAIXA_LOJA descreve a política de caixa de
+   cada uma (revisado 23/08, 2a vez - Felipe: "cada loja tem a sua despesa", não existe mais
+   despesa "Geral" compartilhada - cada loja paga só a despesa dela mesma): 'distribui' = 100% da
+   margem líquida do mês da própria loja é distribuível como retirada; 'reserva' = não retira
+   nada, só acumula/reinveste (TorvShop - pode realocar pra TorvStore, Dor Block ou reinvestir
+   nela mesma, conforme a necessidade). O fechamento final de cada sócio (Felipe/Thiago/Paulo) soma
+   a cota de TODAS as lojas 'distribui' que ele participa e só then subtrai as retiradas/reembolsos
+   dele nelas - não é mais um ajuste isolado por loja (ver calcularFechamentoTodasLojas).
+   GRUPOS_CAIXA agrupa lojas que têm EXATAMENTE os mesmos sócios, então dá pra realocar caixa entre
+   elas sem desequilibrar ninguém - a Orbix nunca entra em grupo com as outras 3 por causa do
+   Paulo. */
 const OWNERSHIP_LOJA={
   'TorvStore':{felipe:50,thiago:50},
   'Dor Block':{felipe:50,thiago:50},
   'Orbix Brasil':{felipe:100/3,thiago:100/3,paulo:100/3},
   'TorvShop':{felipe:50,thiago:50}
 };
-const PAPEL_CAIXA_LOJA={'TorvStore':'operacao','Dor Block':'distribui','Orbix Brasil':'distribui','TorvShop':'reserva'};
+const PAPEL_CAIXA_LOJA={'TorvStore':'distribui','Dor Block':'distribui','Orbix Brasil':'distribui','TorvShop':'reserva'};
 const GRUPOS_CAIXA=[['TorvStore','Dor Block','TorvShop'],['Orbix Brasil']];
 const NOME_SOCIO={felipe:'Felipe',thiago:'Thiago',paulo:'Paulo'};
 function sociosDaLoja(loja){ return Object.keys(OWNERSHIP_LOJA[loja]||{felipe:50,thiago:50}); }
-/* base distribuível como retirada, por loja (pedido do Felipe 23/08, revisado): na TorvStore, que
-   banca as despesas "Geral" (sem loja marcada) de todo o grupo, só o que SOBRA depois de cobrir
-   essa operação é que vira retirada de Felipe/Thiago - nas outras (Dor Block, Orbix), 100% da
-   margem líquida da própria loja é distribuída direto. "Por enquanto" a sobra da TorvStore vira
-   retirada normal pra complementar salário - Felipe já avisou que pode mudar essa regra no futuro. */
-function baseDistribuivelLoja(loja,margemLiquida,mes){
-  if(PAPEL_CAIXA_LOJA[loja]==='operacao'){
-    const geralMes=despesasArr().filter(d=>!d.loja&&(d.dataPagamento||'').slice(0,7)===mes).reduce((s,d)=>s+(Number(d.valor)||0),0);
-    return {base:margemLiquida-geralMes,geralMes};
-  }
+/* base distribuível como retirada = a própria margem líquida da loja (cada loja já desconta só a
+   despesa dela mesma dentro da margem líquida - ver despesasPeriodoLoja/calcularMargensResumo,
+   não existe mais despesa "Geral" compartilhada). Mantido como {base,geralMes} por compatibilidade
+   com quem já desestrutura essa forma - geralMes fica sempre 0 agora. */
+function baseDistribuivelLoja(loja,margemLiquida){
   return {base:margemLiquida,geralMes:0};
 }
 const LOCAIS_COLETA=["Felipe","Thiago"];
@@ -1342,7 +1338,10 @@ function usuarioDigitando(){
   const a=document.activeElement;
   if(!a) return false;
   const tag=(a.tagName||'').toUpperCase();
-  return tag==='INPUT'||tag==='TEXTAREA'||a.isContentEditable;
+  /* inclui SELECT (pedido do Felipe 23/08): sem isso, um save em segundo plano no meio do clique
+     pra abrir/escolher uma opção de um <select> (ex: filtro de loja) recriava o elemento via
+     renderAll() e fechava o dropdown antes do usuário conseguir escolher. */
+  return tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT'||a.isContentEditable;
 }
 /* além de "está digitando", dá uma folga de alguns segundos depois de QUALQUER clique/edição
    local (concluir tarefa, marcar subtarefa etc.) - o clique já salva sozinho, só evita que o
@@ -3996,9 +3995,14 @@ function openProdutoModal(id,lojaPadrao){
   const sug=editing?estoqueMinimoSugerido(p):null;
   const mestreVinc=editing&&p.vinculadoA?prodById(p.vinculadoA):null;
   const vinculadosDeP=editing?membrosVinculados(p):[];
-  /* candidatos pra vincular: mesma loja, não é o próprio, e não está por sua vez vinculado a
-     outro (mantém a cadeia com só 1 nível — o mestre nunca é vinculado de ninguém). */
-  const candidatosVinculo=editing?state.produtos.filter(x=>x.id!==id&&x.loja===p.loja&&!x.vinculadoA):[];
+  /* candidatos pra vincular: qualquer loja (pedido do Felipe 23/08 - tem SKU que compartilha
+     estoque físico com outra loja, não só dentro da mesma), não é o próprio, e não está por sua
+     vez vinculado a outro (mantém a cadeia com só 1 nível — o mestre nunca é vinculado de
+     ninguém). O mecanismo já era agnóstico de loja por baixo (vinculadoA guarda só o id do
+     produto, e todo cálculo de estoque/reposição resolve o mestre via prodById independente de
+     loja) - só faltava a lista do formulário deixar escolher fora da loja atual. Mostra a loja
+     de cada candidato pra não confundir quando o mesmo SKU existe em mais de uma loja. */
+  const candidatosVinculo=editing?state.produtos.filter(x=>x.id!==id&&!x.vinculadoA).sort((a,b)=>a.sku.localeCompare(b.sku)):[];
   const ehKit=editing?componentesDe(p).length>0:false;
   body.innerHTML=`
     <h3>${editing?'Gerenciar SKU':'Novo SKU'}</h3>
@@ -4031,9 +4035,9 @@ function openProdutoModal(id,lojaPadrao){
           <p class="hint" style="margin-top:0">Use isso quando este SKU for o <b>mesmo produto físico</b> de outro anúncio (ex: 1 anúncio de catálogo + 1 normal) — as vendas dos dois somam pra decidir quanto comprar, e o estoque/compra passam a ser controlados só no SKU mestre escolhido.</p>
           ${vinculadosDeP.length?`<p class="hint">Este é o <b>SKU mestre</b> de: ${vinculadosDeP.map(v=>esc(v.sku)).join(', ')}.</p>`:''}
           ${candidatosVinculo.length?`<div class="envio-full-row">
-            <select id="fVincularA"><option value="">Vincular ao estoque de...</option>${candidatosVinculo.map(c=>`<option value="${c.id}">${esc(c.sku)}</option>`).join('')}</select>
+            <select id="fVincularA"><option value="">Vincular ao estoque de...</option>${candidatosVinculo.map(c=>`<option value="${c.id}">${esc(c.sku)} (${esc(c.loja)})</option>`).join('')}</select>
             <button class="btn" id="btnVincular">Vincular</button>
-          </div>`:`<p class="hint muted">Não há outro SKU nessa loja disponível pra vincular.</p>`}
+          </div>`:`<p class="hint muted">Não há outro SKU disponível pra vincular.</p>`}
         `}
         </div>
       </details>
@@ -5263,7 +5267,7 @@ function abrirEditarDespesaModal(id){
       <label>Descrição<input id="feDescricao" type="text" value="${esc(d.descricao)}"></label>
       <label>Valor (R$)<input id="feValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${d.valor?String(d.valor).replace('.',','):''}"></label>
       <label>Data de pagamento<input id="feData" type="date" value="${esc(d.dataPagamento)}"></label>
-      <label>Loja<select id="feLoja"><option value="" ${d.loja?'':'selected'}>Geral (todas)</option>${optsLojas(d.loja)}</select></label>
+      <label>Loja<select id="feLoja">${optsLojas(d.loja||STORES[0])}</select></label>
     </div>
     <div class="acoes-linha" style="margin-top:10px">
       <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="feRecorrente" style="width:auto" ${d.recorrente?'checked':''}> Despesa recorrente (repete todo mês)</label>
@@ -5276,7 +5280,7 @@ function abrirEditarDespesaModal(id){
       descricao:document.getElementById('feDescricao').value.trim(),
       valor:parseMoeda(document.getElementById('feValor').value),
       dataPagamento:document.getElementById('feData').value,
-      loja:document.getElementById('feLoja').value||null,
+      loja:document.getElementById('feLoja').value,
       recorrente:document.getElementById('feRecorrente').checked,
     });
     if(!r.ok){ alert(r.msg); return; }
@@ -5405,11 +5409,10 @@ function mesLabel(m){
   return `${nomes[Number(mm)-1]||mm}/${a}`;
 }
 let financasFiltroMes=hoje().slice(0,7);
-let financasFiltroLoja=STORES[0]; // nome de uma loja (uma de cada vez, sem agrupar "todas") | '__geral__' (despesas sem loja específica, ex: aluguel do galpão)
+let financasFiltroLoja=STORES[0]; // nome de uma loja (uma de cada vez, sem agrupar "todas") - toda despesa pertence a uma loja específica, não existe mais despesa "Geral" compartilhada
 let financasPuxandoFatura=null;
 let financasExpandido={}; // id da despesa -> true enquanto mostra o detalhamento (ex: fatura do ML por categoria)
 function despesaBateFiltroLoja(d){
-  if(financasFiltroLoja==='__geral__') return !d.loja;
   return d.loja===financasFiltroLoja;
 }
 /* ================= Retiradas e Reembolsos (TorvStore): fechamento equilibrado entre sócios =====
@@ -5895,23 +5898,22 @@ function renderListaAnexosAuditoria(){
    sozinho: saldo disponível + agenda de liberações do Mercado Pago (mp_financeiro, sincronizado
    a cada 20min - ver sincronizarFinanceiroPeriodico) menos as despesas cadastradas ainda não
    pagas (a fatura do ML já entra aí, origem 'ml_fatura'). Não é previsão de vendas futuras, só o
-   que já está garantido/comprometido de entrar e sair. Regra de negócio definida pelo Felipe: a
-   TorvStore banca as despesas "Geral" (sem loja marcada) antes de mais nada, por isso só ela usa
-   incluirGeral=true. GRUPOS_CAIXA junta lojas com os MESMOS sócios (Felipe+Thiago), pra dar pra
-   ver o caixa somado - a Orbix nunca entra nesse grupo por causa do Paulo. */
-function despesasPendentesParaProjecao(lojas,incluirGeral){
-  return despesasArr().filter(d=>!d.pago&&(lojas.includes(d.loja)||(incluirGeral&&!d.loja)));
+   que já está garantido/comprometido de entrar e sair. Cada loja só entra com a própria despesa
+   (não existe mais despesa "Geral" compartilhada - revisado 23/08). GRUPOS_CAIXA junta lojas com
+   os MESMOS sócios (Felipe+Thiago), pra dar pra ver o caixa somado - a Orbix nunca entra nesse
+   grupo por causa do Paulo. */
+function despesasPendentesParaProjecao(lojas){
+  return despesasArr().filter(d=>!d.pago&&lojas.includes(d.loja));
 }
 function projecaoCaixaBase(lojas,dias){
   const hojeStr=hoje();
   let saldoInicial=0;
   const semSync=[];
   lojas.forEach(loja=>{ const f=finLoja(loja); saldoInicial+=f.mercadoPago||0; if(!f.mpAtualizadoEm) semSync.push(loja); });
-  const incluirGeral=lojas.some(l=>PAPEL_CAIXA_LOJA[l]==='operacao');
   const entradas={};
   lojas.forEach(loja=>{ (finLoja(loja).agendaLiberacoes||[]).forEach(x=>{ if(x.data>=hojeStr) entradas[x.data]=(entradas[x.data]||0)+x.valor; }); });
   const saidas={};
-  despesasPendentesParaProjecao(lojas,incluirGeral).forEach(d=>{
+  despesasPendentesParaProjecao(lojas).forEach(d=>{
     let data=d.dataPagamento||hojeStr; if(data<hojeStr) data=hojeStr;
     saidas[data]=(saidas[data]||0)+(Number(d.valor)||0);
   });
@@ -5965,6 +5967,14 @@ let fluxoCaixaLucro={}; // loja -> {status:'carregando'|'pronto'|'erro',mes,marg
    porque só ele tem o detalhe por SKU (pra calcular CMV), que nem Auditoria nem Conciliação têm. */
 async function fetchResumoParaFechamento(loja,de,ate,onProgress){
   const resumo=await fetchResumoJob(loja,'personalizado',de,ate,onProgress);
+  return aplicarPrioridadeFechamento(resumo,loja,de,ate);
+}
+/* aplica os overrides de Auditoria/Conciliação em cima de um resumo JÁ BUSCADO (ver comentário
+   acima de fetchResumoParaFechamento pra ordem de prioridade) - separado da busca em si pra dar
+   pra reaproveitar um resumo que já veio de fetchResumoJob (ex: calcularFechamentoTodasLojas, que
+   já busca o resumo com o período flexível tipo "Hoje"/"Mês corrente" e só precisa aplicar os
+   overrides em cima, sem buscar tudo de novo). */
+async function aplicarPrioridadeFechamento(resumo,loja,de,ate){
   resumo._usouAuditoria=false; resumo._usouConciliacao=false;
   const base=backendUrl();
   try{
@@ -6038,21 +6048,10 @@ function renderSugestaoRetiradaSocios(loja,mes,base){
 }
 function renderInterpretacaoLoja(loja,papel,st){
   const badgeAuditoria=st.rotuloFonte?` <span class="badge okv" title="Usa dado confirmado (Conciliação do Mercado Livre e/ou Auditoria) em vez do estimado do dia a dia, onde já tiver disponível pra esse período">${esc(st.rotuloFonte)}</span>`:'';
-  if(papel==='operacao'){
-    const {base:sobra,geralMes}=baseDistribuivelLoja(loja,st.margemLiquida,st.mes);
-    const margemPct=st.faturamento?st.margemLiquida/st.faturamento:0;
-    let extra='';
-    if(sobra<0&&margemPct>0) extra=` Pra fechar só com faturamento a mais, faltaria vender ~${fmtMoney(-sobra/margemPct)} a mais nesse ritmo de margem.`;
-    else if(sobra<0) extra=' A margem do período está zero ou negativa, então não dá pra estimar quanto faltaria faturar — olhe o Resumo Financeiro pra entender o que está pesando.';
-    return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>${badgeAuditoria}. Despesas "Geral" do mês (a que ${esc(loja)} banca pra todo o grupo, inclusive o contador de cada loja se cadastrado sem loja marcada): <b>${fmtMoney(geralMes)}</b>.</p>
-      <p style="font-size:15px" class="${sobra>=0?'okv':'pend'}"><b>${sobra>=0?'Sobra':'Falta'} ${fmtMoney(Math.abs(sobra))}</b> pra cobrir a operação do grupo esse mês.${extra}</p>
-      ${sobra>=0?`<p class="hint" style="margin-bottom:8px">Por enquanto (pode mudar depois), esse excedente é dividido em retirada entre Felipe e Thiago pra complementar salário — a sugestão de hoje (já descontando o que já foi retirado/reembolsado no mês) é:</p>${renderSugestaoRetiradaSocios(loja,st.mes,sobra)}<p class="hint" style="margin-top:8px">Lance a retirada de fato na aba Retiradas e Reembolso. Nunca pra Orbix, que tem o Paulo de sócio.</p>`:''}
-      <button class="btn sm" data-fcluc="${esc(loja)}" style="margin-top:6px">🔄 Recalcular</button>`;
-  }
   if(papel==='distribui'){
     return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>${badgeAuditoria}. Como 100% do lucro dessa loja é retirada, a sugestão de retirada de hoje pra cada sócio (já descontando o que já foi retirado/reembolsado no mês) é:</p>
       ${renderSugestaoRetiradaSocios(loja,st.mes,st.margemLiquida)}
-      <p class="hint" style="margin-top:8px">Lance a retirada de fato na aba Retiradas e Reembolso.</p>
+      <p class="hint" style="margin-top:8px">Lance a retirada de fato na aba Retiradas e Reembolso. O valor final de pagar/devolver por sócio soma a cota dele em todas as lojas que participa (ver "Calcular fechamento de todas as lojas" no Resumo Financeiro) — isso aqui é só uma estimativa do dia a dia, só desta loja.</p>
       <button class="btn sm" data-fcluc="${esc(loja)}" style="margin-top:6px">🔄 Recalcular</button>`;
   }
   return `<p>${esc(loja)} não faz retirada — todo o lucro fica de caixa/reinvestimento. Gerou <b>${fmtMoney(st.margemLiquida)}</b> de lucro líquido em ${esc(mesLabel(st.mes))} até agora, além do saldo já acumulado de <b>${fmtMoney(finLoja(loja).mercadoPago||0)}</b> disponível hoje.</p>
@@ -6071,7 +6070,7 @@ function renderCardOperacaoLoja(loja){
   }else{
     corpo=renderInterpretacaoLoja(loja,papel,st);
   }
-  const titulo={operacao:'🏭 '+loja+' — banca a operação, reparte a sobra',distribui:'💰 '+loja+' — retirada sugerida',reserva:'🏦 '+loja+' — reserva/reinvestimento'}[papel];
+  const titulo={distribui:'💰 '+loja+' — retirada sugerida',reserva:'🏦 '+loja+' — reserva/reinvestimento'}[papel];
   return `<div class="card" style="margin-top:14px"><h3 style="margin-top:0">${esc(titulo)}</h3>${corpo}</div>`;
 }
 function renderFluxoCaixa(){
@@ -6131,14 +6130,39 @@ async function calcularFechamentoTodasLojas(){
     const resultados=[];
     for(let i=0;i<STORES.length;i++){
       const loja=STORES[i];
-      const resumo=await fetchResumoJob(loja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{
+      let resumo=await fetchResumoJob(loja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{
         financasFechTodasProgresso={feito:i,total:STORES.length,etapa:`${loja}: ${p&&p.etapa?p.etapa:''} (${p?p.feito:0}%)`};
         renderFinancas();
         // progresso geral = lojas já concluídas + fração da loja atual (0-100% dela), pedido do
         // Felipe 20/08: barra de progresso em tempo real por cima do vídeo de loading
         atualizarOverlayProgresso(((i+(p&&p.feito?p.feito/100:0))/STORES.length)*100);
       });
-      resultados.push({loja,resumo,m:calcularMargensResumo(resumo,loja)});
+      // usa dado confirmado (Conciliação/Auditoria) em vez do estimado, sempre que já tiver pro
+      // mesmo período exato resolvido pelo backend (ver aplicarPrioridadeFechamento) - reaproveita
+      // o resumo já buscado acima, sem precisar buscar tudo de novo.
+      resumo=await aplicarPrioridadeFechamento(resumo,loja,resumo.periodo.de,resumo.periodo.ate);
+      const m=calcularMargensResumo(resumo,loja);
+      // fechamento de sócios da mesma loja/período, junto no mesmo relatório (pedido do Felipe
+      // 23/08: "na teoria é o mesmo relatório") - TorvShop (papel 'reserva') não retira, fica só
+      // com a margem líquida como referência.
+      let porSocio=null,baseSocios=null,geralMesSocios=0;
+      const mesSocios=resumo.periodo.de.slice(0,7);
+      if(PAPEL_CAIXA_LOJA[loja]!=='reserva'){
+        const bd=baseDistribuivelLoja(loja,m.margemLiquida,mesSocios);
+        baseSocios=bd.base; geralMesSocios=bd.geralMes;
+        const socios=sociosDaLoja(loja);
+        const ownership=OWNERSHIP_LOJA[loja]||{};
+        porSocio=socios.map(s=>{
+          const lista=movimentosSocioMes(loja,s,mesSocios);
+          const retirou=totalPorTipo(lista,'retirada');
+          const reembolso=totalPorTipo(lista,'reembolso');
+          const pct=ownership[s]||0;
+          const cota=baseSocios*(pct/100);
+          const ajuste=cota-retirou+reembolso;
+          return {socio:s,pct,cota,retirou,reembolso,ajuste};
+        });
+      }
+      resultados.push({loja,resumo,m,porSocio,baseSocios,geralMesSocios});
       financasFechTodasProgresso={feito:i+1,total:STORES.length,etapa:`${loja} concluída`};
       renderFinancas();
       atualizarOverlayProgresso(((i+1)/STORES.length)*100);
@@ -6253,8 +6277,16 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     const diasSel=diasNoPeriodoResumo(r.resumo.periodo.de,r.resumo.periodo.ate);
     const faturaMlRateada=(r.m.faturaMlAtual/diasNoMesAtual())*diasSel;
     const margemLiquidaRateada=r.m.margem-r.m.custosPeriodo-faturaMlRateada;
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0};
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo)};
   });
+  // total consolidado por sócio, somando a cota (e subtraindo retirada/reembolso) de TODAS as
+  // lojas que ele participa - pedido do Felipe 23/08: "trate como separado e depois subtraia de
+  // felipe e thiago respectivo" - não é mais um ajuste isolado por loja.
+  const totalPorSocio={};
+  porLoja.forEach(r=>{ (r.porSocio||[]).forEach(p=>{ totalPorSocio[p.socio]=(totalPorSocio[p.socio]||0)+p.ajuste; }); });
+  const linhaAjusteTxt=ajuste=>ajuste>0.004
+    ?`<span style="color:var(--ok)">Pagamento de <b>${fmtMoney(ajuste)}</b></span>`
+    :(ajuste<-0.004?`<span style="color:var(--danger)">Devolve <b>${fmtMoney(-ajuste)}</b></span>`:'<span class="vazio">Já equilibrado</span>');
   const totalPedidos=porLoja.reduce((s,r)=>s+r.pedidos,0);
   const totalUnidades=porLoja.reduce((s,r)=>s+r.unidades,0);
   const totalFat=porLoja.reduce((s,r)=>s+r.faturamento,0);
@@ -6283,6 +6315,12 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
       </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
+      ${r.porSocio?`<h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sócios${r.fonte?` · ${esc(r.fonte)}`:''}</h3>
+        <table><thead><tr><th>Sócio</th><th class="n">Cota</th><th class="n">Retirou</th><th class="n">Reembolso</th></tr></thead><tbody>
+          ${r.porSocio.map(p=>`<tr><td>${NOME_SOCIO[p.socio]} (${p.pct.toFixed(p.pct%1?2:0)}%)</td><td class="n">${fmtMoney(p.cota)}</td><td class="n">${fmtMoney(p.retirou)}</td><td class="n">${fmtMoney(p.reembolso)}</td></tr>`).join('')}
+        </tbody></table>
+        <p class="vazio" style="margin-top:6px">Ajuste de pagar/devolver é consolidado no total por sócio, no fim do relatório (soma todas as lojas).</p>`
+      :`<p class="vazio" style="margin-top:10px">Loja de reserva/reinvestimento — sem retirada de sócio.</p>`}
     </div>`;
   win.document.open();
   win.document.write(`<!doctype html><html><head><meta charset="utf-8">
@@ -6312,6 +6350,10 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Líquida (rateada)',fmtMoney(totalMargemLiquidaRateada),totalMargemLiquidaRateada<0,pctDe(totalMargemLiquidaRateada,totalFat))}
         ${metrica('Margem Líquida (custo total)',fmtMoney(totalMargemLiquidaTotal),totalMargemLiquidaTotal<0,pctDe(totalMargemLiquidaTotal,totalFat))}
       </div>
+    </div>
+    <div class="tot-card">
+      <h2>Total a receber/devolver por sócio (todas as lojas)</h2>
+      ${Object.keys(totalPorSocio).map(s=>`<div style="margin:6px 0">${NOME_SOCIO[s]||s}: ${linhaAjusteTxt(totalPorSocio[s])}</div>`).join('')}
     </div>
     ${relatorioShareBoxHtml()}
     <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
@@ -6496,11 +6538,12 @@ let sociosFechamentoCarregando=false;
 let sociosFechamentoErro=null;
 let sociosFechamentoProgresso=null; // {feito,total,etapa}
 let sociosFechamentoLoja=null; // qual loja o sociosFechamento em cache pertence (pra invalidar ao trocar)
-/* Retiradas e Reembolso funciona em quem tem retirada de sócio de fato: Dor Block e Orbix Brasil
-   (100% do lucro) e TAMBÉM a TorvStore, mas só sobre o que sobra depois de cobrir a operação do
-   grupo (ver baseDistribuivelLoja) - regra do Felipe 23/08, "por enquanto" a sobra da TorvStore
-   também vira retirada pra complementar salário. Só a TorvShop fica de fora (não retira, só
-   acumula/reinveste - ver Fluxo de Caixa). */
+/* Retiradas e Reembolso funciona em qualquer loja 'distribui' (TorvStore, Dor Block, Orbix) - cada
+   lançamento marca de qual loja saiu o dinheiro (útil pro Fluxo de Caixa saber de onde tirar). O
+   valor final de pagar/devolver por sócio, porém, não é mais calculado isolado por loja: soma a
+   cota do sócio em TODAS as lojas que ele participa e só then subtrai as retiradas/reembolsos dele
+   nelas (ver calcularFechamentoTodasLojas) - pedido do Felipe 23/08, revisado 2a vez. TorvShop não
+   retira nada (fica de fora). */
 const LOJAS_RETIRADA=STORES.filter(l=>PAPEL_CAIXA_LOJA[l]!=='reserva');
 let sociosLojaAtual=LOJAS_RETIRADA[0]||STORES[0]; // loja selecionada na aba Retiradas e Reembolso
 async function calcularFechamentoSocios(){
@@ -6577,7 +6620,7 @@ function renderSociosCard(){
           <select id="scMesSel">${mesesDisponiveisSoc.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${esc(mesLabel(m))}</option>`).join('')}</select>
         </label>
       </div>
-      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima, e pode trocar pelo seletor acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. No fechamento${PAPEL_CAIXA_LOJA[loja]==='operacao'?', a TorvStore banca primeiro as despesas "Geral" da operação do grupo e só o que sobra é que':', a margem líquida do mês'} é dividido conforme a % de participação de cada um nessa loja, e o reembolso é abatido a favor de quem pagou.</p>
+      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima, e pode trocar pelo seletor acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. Marque de qual loja saiu o dinheiro (útil pro Fluxo de Caixa) — o valor final de pagar/devolver por sócio soma a cota dele em todas as lojas que participa, não é calculado isolado por loja (ver "Calcular fechamento de todas as lojas" no Resumo Financeiro).</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select id="socQuem">${socios.map(s=>`<option value="${s}">${NOME_SOCIO[s]}</option>`).join('')}</select></label>
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
@@ -6589,7 +6632,8 @@ function renderSociosCard(){
       <div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr);gap:14px;margin-top:14px">
         ${socios.map(s=>`<div><b style="font-size:12.5px">${NOME_SOCIO[s]} — retirou ${fmtMoney(retiradaPorSocio[s])}${reembolsoPorSocio[s]?` · reembolso ${fmtMoney(reembolsoPorSocio[s])}`:''}</b>${listaSocio(s,listasPorSocio[s])}</div>`).join('')}
       </div>
-      <button class="btn" id="btnFecharSocios" style="margin-top:12px" ${sociosFechamentoCarregando?'disabled':''}>${sociosFechamentoCarregando?'Calculando...':'📊 Calcular fechamento de '+esc(mesLabel(mes))}</button>
+      <p class="hint" style="margin-top:12px">O valor final de pagar/devolver de cada sócio (somando todas as lojas) sai no botão "📋 Calcular fechamento de todas as lojas", lá em cima em Resumo Financeiro.</p>
+      <button class="btn" id="btnFecharSocios" style="margin-top:6px" ${sociosFechamentoCarregando?'disabled':''}>${sociosFechamentoCarregando?'Calculando...':'📊 Calcular fechamento de '+esc(mesLabel(mes))}</button>
       ${fechamentoHtml}
     </div>`;
 }
@@ -6655,7 +6699,7 @@ function renderFinancas(){
         <label>Descrição<input id="fnDescricao" type="text" placeholder="Ex: Aluguel do galpão"></label>
         <label>Valor (R$)<input id="fnValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
         <label>Data de pagamento${botaoData('fnData',novaDespesaData||hoje(),{style:''})}</label>
-        <label>Loja<select id="fnLoja"><option value="">Geral (todas)</option>${optsLojas(null)}</select></label>
+        <label>Loja<select id="fnLoja">${optsLojas(financasFiltroLoja)}</select></label>
       </div>
       <div class="acoes-linha" style="margin-top:10px">
         <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="fnRecorrente" style="width:auto"> Despesa recorrente (repete todo mês)</label>
@@ -6671,7 +6715,6 @@ function renderFinancas(){
     <div class="toolbar-produtos">
       <select id="fnFiltroLoja">
         ${STORES.map(l=>`<option value="${esc(l)}" ${financasFiltroLoja===l?'selected':''}>${esc(l)}</option>`).join('')}
-        <option value="__geral__" ${financasFiltroLoja==='__geral__'?'selected':''}>Geral (sem loja)</option>
       </select>
       <select id="fnFiltroMes">${meses.map(m=>`<option value="${m}" ${m===financasFiltroMes?'selected':''}>${mesLabel(m)}</option>`).join('')}</select>
       <span class="cont muted" style="font-size:12.5px">${doMes.length} despesa(s) no mês</span>
@@ -6689,7 +6732,7 @@ function renderFinancas(){
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
         <td>${fmtData(d.dataPagamento)}</td>
-        <td>${d.recorrente?'<span class="badge okv">🔁 Mensal</span>':'<span class="muted">—</span>'}</td>
+        <td>${d.recorrente?'<span class="badge okv">🔁 Recorrente</span>':'<span class="muted">—</span>'}</td>
         <td style="text-align:center"><input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}></td>
         <td><button class="btn sm" data-fneditar="${d.id}">Editar</button> <button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
       </tr>`;
@@ -6711,7 +6754,7 @@ function renderFinancas(){
         <div><span class="muted" style="font-size:11px">PENDENTE</span><br><b style="font-size:18px" class="pend">${fmtMoney(totalPendente)}</b></div>
       </div>
     </div>
-    <h3>Histórico por mês — ${financasFiltroLoja==='__geral__'?'Geral (sem loja)':esc(financasFiltroLoja)}</h3>
+    <h3>Histórico por mês — ${esc(financasFiltroLoja)}</h3>
     ${historico.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Mês</th><th class="num">Total de despesas</th></tr></thead><tbody>
       ${historico.map(m=>`<tr><td>${mesLabel(m)}</td><td class="num">${fmtMoney(porMes[m])}</td></tr>`).join('')}
     </tbody></table></div>`:`<p class="empty-inline">Sem histórico ainda.</p>`}
@@ -6728,7 +6771,7 @@ function renderFinancas(){
     const descricao=document.getElementById('fnDescricao').value.trim();
     const valor=parseMoeda(document.getElementById('fnValor').value);
     const dataPagamento=novaDespesaData||hoje();
-    const loja=document.getElementById('fnLoja').value||null;
+    const loja=document.getElementById('fnLoja').value;
     const recorrente=document.getElementById('fnRecorrente').checked;
     if(!descricao){ alert('Informe uma descrição.'); return; }
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
