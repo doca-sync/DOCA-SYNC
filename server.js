@@ -986,12 +986,13 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
     const auditaveis = pedidos.filter(p => p.status !== 'invalid'); // tudo que entra no fechamento
     job.progresso = { feito: 0, total: auditaveis.length };
     let faturamento = 0, cancelamentosValor = 0;
-    let tarifaAssumida = 0, tarifaReal = 0, freteViaShipments = 0;
+    let tarifaAssumida = 0, tarifaReal = 0, freteReal = 0;
     let pedidosPendentesRepasse = 0, valorPendenteRepasse = 0;
+    let repasseEsperadoTotal = 0, repasseLiberadoTotal = 0;
+    let pedidosRepasseDivergente = 0, valorRepasseDivergente = 0;
     const anomalias = [];
     const agora = Date.now();
     const pagamentosContados = new Set();
-    const shipmentsContados = new Set();
     let pedidosMesmoCarrinho = 0;
     for (const p of auditaveis) {
       const cancelado = p.status === 'cancelled';
@@ -1000,13 +1001,6 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       let saleFeeDoPedido = 0;
       for (const oi of (p.order_items || [])) saleFeeDoPedido += (Number(oi.sale_fee) || 0) * (oi.quantity || 1);
       tarifaAssumida += saleFeeDoPedido;
-      if (p.shipping && p.shipping.id && !shipmentsContados.has(p.shipping.id)) {
-        shipmentsContados.add(p.shipping.id);
-        try {
-          const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${p.shipping.id}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
-          freteViaShipments += (j.senders || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
-        } catch (e) { /* ignora falha pontual - mesmo comportamento tolerante do dia a dia */ }
-      }
       const pgAprovado = (p.payments || []).find(pg => pg.status === 'approved' || pg.status === 'refunded' || pg.status === 'partially_refunded') || (p.payments || [])[0];
       if (!pgAprovado || !pgAprovado.id) {
         anomalias.push({ pedido_id: p.id, motivo: 'Sem pagamento associado pra conferir', total: totalPedido });
@@ -1022,22 +1016,46 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       try {
         const r = await mpFetch(loja, `/v1/payments/${pgAprovado.id}`, { method: 'GET' });
         const jp = await r.json();
+        /* CHECK 1 - "cobrou certo": tarifa e frete, os dois direto do charges_details do pagamento
+           (a cobranca real que saiu da conta, nao uma estimativa) - pedido do Felipe 23/08: antes
+           o frete vinha de uma API separada (/shipments/{id}/costs, so' uma referencia) em vez da
+           cobranca de verdade; agora os dois usam a MESMA fonte e o mesmo padrao de confianca. */
         const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
         const temComissaoReal = cobrancas.some(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee');
         const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
+        const valorFreteReal = cobrancas.filter(c => c.type === 'shipping').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
         tarifaReal += valorComissaoReal;
+        freteReal += valorFreteReal;
         if (cancelado && !temComissaoReal && saleFeeDoPedido > 0.009) {
           anomalias.push({ pedido_id: p.id, motivo: 'Pedido cancelado: comissao NAO foi cobrada de verdade (devolvida) - o calculo do dia a dia estava contando indevidamente', total: totalPedido, sale_fee_assumido: round2(saleFeeDoPedido) });
         } else if (!cancelado && Math.abs(valorComissaoReal - saleFeeDoPedido) > 1) {
           anomalias.push({ pedido_id: p.id, motivo: 'Comissao cobrada de verdade veio diferente do sale_fee declarado no pedido (diferenca > R$1 - pode ser cupom, financiamento etc)', total: totalPedido, sale_fee_assumido: round2(saleFeeDoPedido), sale_fee_real: round2(valorComissaoReal) });
         }
+        /* CHECK 2 - "repassou certo": pega TODAS as cobrancas reais (nao so' tarifa/frete - inclui
+           cupom, financiamento etc se tiver) e confere se o que sobrou bate com o que o Mercado
+           Pago diz que efetivamente recebeu (net_received_amount) e se ja foi liberado - pedido do
+           Felipe 23/08: "o que precisa auditar e' se repassou certo". So' roda pra pedido nao
+           cancelado (cancelado nao tem repasse de venda esperado). */
         if (!cancelado) {
-          const dataAprovacao = pgAprovado.date_approved ? new Date(pgAprovado.date_approved).getTime() : null;
-          const diasDesde = dataAprovacao ? (agora - dataAprovacao) / 86400000 : null;
+          const custoTotalReal = cobrancas.reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
+          const repasseEsperado = totalPedido - custoTotalReal;
+          const repasseReal = (jp.transaction_details && Number(jp.transaction_details.net_received_amount)) || 0;
+          repasseEsperadoTotal += repasseEsperado;
           const statusRepasse = jp.money_release_status;
-          if (diasDesde != null && diasDesde > DIAS_LIMITE_REPASSE && statusRepasse && statusRepasse !== 'released') {
-            pedidosPendentesRepasse++; valorPendenteRepasse += totalPedido;
-            anomalias.push({ pedido_id: p.id, motivo: `Vendeu e foi cobrado ha ${Math.round(diasDesde)} dias mas o dinheiro AINDA NAO foi liberado pro vendedor (status: ${statusRepasse})`, total: totalPedido });
+          const liberado = statusRepasse === 'released';
+          if (liberado) {
+            repasseLiberadoTotal += repasseReal;
+            if (Math.abs(repasseReal - repasseEsperado) > 1) {
+              pedidosRepasseDivergente++; valorRepasseDivergente += Math.abs(repasseReal - repasseEsperado);
+              anomalias.push({ pedido_id: p.id, motivo: 'Repasse liberado veio diferente do esperado (total menos as cobrancas reais) - diferenca > R$1', total: totalPedido, repasse_esperado: round2(repasseEsperado), repasse_real: round2(repasseReal) });
+            }
+          } else {
+            const dataAprovacao = pgAprovado.date_approved ? new Date(pgAprovado.date_approved).getTime() : null;
+            const diasDesde = dataAprovacao ? (agora - dataAprovacao) / 86400000 : null;
+            if (diasDesde != null && diasDesde > DIAS_LIMITE_REPASSE) {
+              pedidosPendentesRepasse++; valorPendenteRepasse += repasseEsperado;
+              anomalias.push({ pedido_id: p.id, motivo: `Vendeu e foi cobrado ha ${Math.round(diasDesde)} dias mas o dinheiro AINDA NAO foi liberado pro vendedor (status: ${statusRepasse})`, total: totalPedido, repasse_esperado: round2(repasseEsperado) });
+            }
           }
         }
       } catch (e) {
@@ -1055,7 +1073,11 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       tarifa_assumida: round2(tarifaAssumida),
       tarifa_real: round2(tarifaReal),
       diferenca_tarifa: round2(tarifaAssumida - tarifaReal),
-      frete_real: round2(freteViaShipments),
+      frete_real: round2(freteReal),
+      repasse_esperado: round2(repasseEsperadoTotal),
+      repasse_liberado: round2(repasseLiberadoTotal),
+      pedidos_repasse_divergente: pedidosRepasseDivergente,
+      valor_repasse_divergente: round2(valorRepasseDivergente),
       pedidos_pendentes_repasse: pedidosPendentesRepasse,
       valor_pendente_repasse: round2(valorPendenteRepasse),
       anomalias,
