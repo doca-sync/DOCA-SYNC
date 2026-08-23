@@ -60,12 +60,28 @@ pool.query(`create table if not exists relatorios (
   html text not null,
   criado_em timestamptz not null default now()
 )`).catch(e => console.error('Falha ao garantir tabela "relatorios":', e.message));
+/* anexos de conciliacao da Auditoria (relatorios "por venda"/settlement e "por liberacao de
+   dinheiro"/reserve_release que o Mercado Pago disponibiliza pro vendedor baixar manualmente) -
+   pedido do Felipe 23/08: sobe o CSV mensal na aba Auditoria pra guardar como referencia e
+   comparar com o que a Auditoria ja calcula sozinha. Guarda o arquivo inteiro (conteudo) pra
+   poder baixar de novo depois, mais um resumo (jsonb) ja calculado na hora do upload, pra nao
+   precisar reprocessar o CSV inteiro toda vez que a tela abre. */
+pool.query(`create table if not exists auditoria_anexos (
+  id serial primary key,
+  loja text not null,
+  mes text not null,
+  tipo text not null,
+  nome_arquivo text,
+  conteudo text not null,
+  resumo jsonb,
+  criado_em timestamptz not null default now()
+)`).catch(e => console.error('Falha ao garantir tabela "auditoria_anexos":', e.message));
 const app = express();
 app.use(express.json({ limit: '10mb' })); // o estado inteiro do Doca (produtos, envios, historico) pode passar de 100kb (limite padrao)
 const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
 app.use(cors({
   origin: allowedOrigins.includes('*') ? true : allowedOrigins,
-  methods: ['GET', 'POST']
+  methods: ['GET', 'POST', 'DELETE']
 }));
 /* ---- login (usuario/senha) pra proteger o app hospedado e os dados na nuvem (v25) ----
    Usa autenticacao HTTP Basic - o proprio navegador sabe mostrar a tela de login sozinho
@@ -1038,6 +1054,124 @@ app.get('/auditoria/mes/status', (req, res) => {
   const job = auditoriaJobs.get(jobId);
   if (!job) return res.status(404).json({ ok: false, erro: 'Auditoria nao encontrada - pode ter expirado (o servidor guarda so a ultima leva de jobs em memoria, some se reiniciar).' });
   res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
+});
+/* ---- anexos de conciliacao (CSV "por venda"/settlement e "por liberacao de dinheiro"/
+   reserve_release, baixados manualmente no Mercado Pago pelo Felipe) - ver comentario da tabela
+   auditoria_anexos la em cima. Parser bem simples de proposito (so' split por ";") porque os dois
+   relatorios do MP vem sem aspas nem campo com ";" dentro - se um dia vier um formato diferente,
+   da pra trocar aqui sem mexer no resto. */
+function parseCsvSimples(texto) {
+  const linhas = String(texto || '').split(/\r\n|\n|\r/).filter(l => l.trim().length > 0);
+  if (!linhas.length) return [];
+  const header = linhas[0].split(';').map(h => h.trim());
+  return linhas.slice(1).map(linha => {
+    const campos = linha.split(';');
+    const obj = {};
+    header.forEach((h, i) => { obj[h] = (campos[i] || '').trim(); });
+    return obj;
+  });
+}
+/* resumo agregado (pro mes pedido, mesmo o arquivo trazendo um intervalo maior - o Mercado Pago
+   sempre manda os ultimos ~60 dias, nao so' o mes escolhido) - guardado pronto no banco pra a
+   tela nao precisar reprocessar o CSV inteiro (pode ter mais de 10 mil linhas) toda vez que abre. */
+function resumirAnexoAuditoria(tipo, mes, linhas) {
+  if (tipo === 'settlement') {
+    const doMes = linhas.filter(l => (l.TRANSACTION_DATE || '').slice(0, 7) === mes);
+    const porTipo = {};
+    for (const l of doMes) {
+      const t = l.TRANSACTION_TYPE || '?';
+      if (!porTipo[t]) porTipo[t] = { qtd: 0, bruto: 0, liquido: 0 };
+      porTipo[t].qtd++;
+      porTipo[t].bruto += Number(l.TRANSACTION_AMOUNT) || 0;
+      porTipo[t].liquido += Number(l.SETTLEMENT_NET_AMOUNT) || 0;
+    }
+    Object.values(porTipo).forEach(x => { x.bruto = round2(x.bruto); x.liquido = round2(x.liquido); });
+    return {
+      linhasNoMes: doMes.length, linhasNoArquivo: linhas.length, porTipo,
+      naoLiberadas: doMes.filter(l => l.IS_RELEASED === 'false').length
+    };
+  }
+  if (tipo === 'reserve_release') {
+    const doMes = linhas.filter(l => (l.DATE || '').slice(0, 7) === mes);
+    const porDescricao = {};
+    let credito = 0, debito = 0;
+    for (const l of doMes) {
+      const d = l.DESCRIPTION || '(sem descricao)';
+      if (!porDescricao[d]) porDescricao[d] = { qtd: 0, credito: 0, debito: 0 };
+      porDescricao[d].qtd++;
+      const c = Number(l.NET_CREDIT_AMOUNT) || 0, deb = Number(l.NET_DEBIT_AMOUNT) || 0;
+      porDescricao[d].credito += c; porDescricao[d].debito += deb;
+      credito += c; debito += deb;
+    }
+    Object.values(porDescricao).forEach(x => { x.credito = round2(x.credito); x.debito = round2(x.debito); });
+    return {
+      linhasNoMes: doMes.length, linhasNoArquivo: linhas.length,
+      credito: round2(credito), debito: round2(debito), porDescricao,
+      saldoInicial: doMes.length ? (Number(doMes[0].BALANCE_AMOUNT) || 0) : null,
+      saldoFinal: doMes.length ? (Number(doMes[doMes.length - 1].BALANCE_AMOUNT) || 0) : null
+    };
+  }
+  return {};
+}
+app.post('/auditoria/anexo', async (req, res) => {
+  try {
+    const { loja, mes, tipo, nomeArquivo, conteudo } = req.body || {};
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!/^\d{4}-\d{2}$/.test(mes || '')) return res.status(400).json({ ok: false, erro: 'Parametro "mes" invalido (use AAAA-MM).' });
+    if (!['settlement', 'reserve_release'].includes(tipo)) return res.status(400).json({ ok: false, erro: 'Parametro "tipo" invalido (use settlement ou reserve_release).' });
+    if (!conteudo || typeof conteudo !== 'string' || conteudo.length < 10) return res.status(400).json({ ok: false, erro: 'Conteudo do arquivo vazio ou invalido.' });
+    const linhas = parseCsvSimples(conteudo);
+    if (!linhas.length) return res.status(400).json({ ok: false, erro: 'Nao consegui ler nenhuma linha desse CSV - confira se e o arquivo certo (baixado direto do Mercado Pago, separado por ";").' });
+    const resumo = resumirAnexoAuditoria(tipo, mes, linhas);
+    if (!resumo.linhasNoMes) return res.status(400).json({ ok: false, erro: `O arquivo nao tem nenhuma linha de ${mes} - confira se o mes selecionado bate com o periodo do relatorio baixado.` });
+    const r = await pool.query(
+      `insert into auditoria_anexos (loja, mes, tipo, nome_arquivo, conteudo, resumo)
+       values ($1,$2,$3,$4,$5,$6) returning id, criado_em`,
+      [loja, mes, tipo, nomeArquivo || null, conteudo, resumo]
+    );
+    res.json({ ok: true, id: r.rows[0].id, criadoEm: r.rows[0].criado_em, resumo });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.get('/auditoria/anexo', async (req, res) => {
+  try {
+    const { loja, mes } = req.query;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!/^\d{4}-\d{2}$/.test(mes || '')) return res.status(400).json({ ok: false, erro: 'Parametro "mes" invalido (use AAAA-MM).' });
+    const r = await pool.query(
+      `select id, tipo, nome_arquivo, resumo, criado_em from auditoria_anexos
+       where loja = $1 and mes = $2 order by criado_em desc`,
+      [loja, mes]
+    );
+    res.json({ ok: true, anexos: r.rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.get('/auditoria/anexo/baixar', async (req, res) => {
+  try {
+    const id = req.query.id;
+    if (!id) return res.status(400).json({ ok: false, erro: 'Parametro "id" obrigatorio.' });
+    const r = await pool.query('select nome_arquivo, conteudo from auditoria_anexos where id = $1', [id]);
+    if (!r.rows.length) return res.status(404).json({ ok: false, erro: 'Anexo nao encontrado.' });
+    const nome = (r.rows[0].nome_arquivo || `anexo-${id}.csv`).replace(/"/g, '');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${nome}"`);
+    res.send(r.rows[0].conteudo);
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.delete('/auditoria/anexo', async (req, res) => {
+  try {
+    const id = req.query.id;
+    if (!id) return res.status(400).json({ ok: false, erro: 'Parametro "id" obrigatorio.' });
+    await pool.query('delete from auditoria_anexos where id = $1', [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
 });
 /* rota de diagnostico - busca UM pedido especifico direto na API (GET /orders/{id}), pra
    auditar pedido que aparece no painel "Vendas" do ML mas nao aparece no /orders/search.

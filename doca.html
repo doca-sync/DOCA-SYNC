@@ -5490,6 +5490,62 @@ let auditoriaLoja=STORES[0];
 let auditoriaDe='', auditoriaAte='';
 let auditoriaJobId=null, auditoriaStatus=null, auditoriaProgresso=null, auditoriaResultado=null, auditoriaErro=null;
 let auditoriaPollTimer=null;
+/* anexos de conciliacao (CSV "por venda"/settlement e "por liberacao de dinheiro"/reserve_release
+   do Mercado Pago) - pedido do Felipe 23/08: sobe o relatorio mensal na propria aba Auditoria pra
+   guardar de referencia (e comparar depois com o que a Auditoria calcula sozinha). */
+let auditoriaAnexoMes=mesAtualStr(); // 'AAAA-MM' - mes de referencia do relatorio a subir/ver
+let auditoriaAnexos={}; // { 'loja|mes': {status:'carregando'|'pronto'|'erro', lista:[...], erro} }
+let auditoriaAnexoEnviando=null; // 'settlement' | 'reserve_release' | null - qual upload esta rodando agora
+const ROTULO_TIPO_ANEXO={settlement:'Por venda',reserve_release:'Por liberação de dinheiro'};
+function chaveAnexosAuditoria(loja,mes){ return loja+'|'+mes; }
+async function carregarAnexosAuditoria(loja,mes){
+  const chave=chaveAnexosAuditoria(loja,mes);
+  auditoriaAnexos[chave]={status:'carregando',lista:[],erro:null};
+  renderFinancas();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/auditoria/anexo?loja=${encodeURIComponent(loja)}&mes=${encodeURIComponent(mes)}`);
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar anexos (status '+r.status+').'));
+    auditoriaAnexos[chave]={status:'pronto',lista:j.anexos||[],erro:null};
+  }catch(e){
+    auditoriaAnexos[chave]={status:'erro',lista:[],erro:e.message};
+  }
+  renderFinancas();
+}
+async function enviarAnexoAuditoria(tipo,file){
+  if(!file) return;
+  auditoriaAnexoEnviando=tipo; renderFinancas();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const conteudo=await file.text();
+    const r=await fetch(`${base}/auditoria/anexo`,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({loja:auditoriaLoja,mes:auditoriaAnexoMes,tipo,nomeArquivo:file.name,conteudo})});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao anexar (status '+r.status+').'));
+    toast('Relatório anexado — '+fmtInt(j.resumo.linhasNoMes)+' linha(s) de '+auditoriaAnexoMes+'.');
+    carregarAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes);
+  }catch(e){ alert('Não foi possível anexar: '+e.message); }
+  finally{ auditoriaAnexoEnviando=null; renderFinancas(); }
+}
+async function excluirAnexoAuditoria(id){
+  if(!confirm('Excluir esse anexo?')) return;
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro.');
+    const r=await fetch(`${base}/auditoria/anexo?id=${encodeURIComponent(id)}`,{method:'DELETE'});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao excluir (status '+r.status+').'));
+    carregarAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes);
+  }catch(e){ alert('Não foi possível excluir: '+e.message); }
+}
+function baixarAnexoAuditoria(id){
+  const base=backendUrl();
+  if(!base){ alert('Configure a URL do backend primeiro.'); return; }
+  window.open(`${base}/auditoria/anexo/baixar?id=${encodeURIComponent(id)}`,'_blank');
+}
 async function iniciarAuditoriaMes(){
   auditoriaErro=null; auditoriaResultado=null; auditoriaStatus=null; auditoriaProgresso=null;
   if(!auditoriaDe||!auditoriaAte){ auditoriaErro='Informe as duas datas do período.'; renderFinancas(); return; }
@@ -5557,7 +5613,49 @@ function renderAuditoriaMes(){
       </tbody></table></div>`:`<p class="empty-inline">Nenhuma anomalia encontrada nesse período.</p>`}
       `:''}
     </div>
+    <div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">📎 Relatórios do Mercado Pago (conciliação)</h3>
+      <p class="hint" style="margin:0 0 10px">Anexe aqui os relatórios que você baixa manualmente no Mercado Pago — <b>Por venda</b> (settlement) e <b>Por liberação de dinheiro</b> (reserve-release). Fica guardado por loja/mês pra consulta e conferência, sem mexer no cálculo da Auditoria acima.</p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr">
+        <label>Loja<select id="audAnexoLoja">${optsLojas(auditoriaLoja)}</select></label>
+        <label>Mês do relatório<input type="month" id="audAnexoMes" value="${esc(auditoriaAnexoMes)}"></label>
+      </div>
+      <div class="acoes-linha" style="margin-top:10px;flex-wrap:wrap;gap:10px">
+        <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='settlement'?'Enviando...':'📤 Por venda (settlement)'}<input type="file" accept=".csv" id="audAnexoSettlement" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
+        <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='reserve_release'?'Enviando...':'📤 Por liberação de dinheiro'}<input type="file" accept=".csv" id="audAnexoReserve" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
+      </div>
+      ${renderListaAnexosAuditoria()}
+    </div>
   `;
+}
+function renderListaAnexosAuditoria(){
+  const chave=chaveAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes);
+  const st=auditoriaAnexos[chave];
+  if(!st) setTimeout(()=>carregarAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes),0);
+  if(!st||st.status==='carregando') return `<p class="hint" style="margin-top:10px">Carregando anexos...</p>`;
+  if(st.status==='erro') return `<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(st.erro)}</p>`;
+  if(!st.lista.length) return `<p class="empty-inline" style="margin-top:10px">Nenhum relatório anexado pra ${esc(auditoriaLoja)} em ${esc(auditoriaAnexoMes)} ainda.</p>`;
+  return `<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
+    <th>Tipo</th><th>Arquivo</th><th>Resumo</th><th>Enviado em</th><th></th>
+  </tr></thead><tbody>
+  ${st.lista.map(a=>{
+    const r=a.resumo||{};
+    let resumoTxt='';
+    if(a.tipo==='settlement'){
+      const s=(r.porTipo&&r.porTipo.SETTLEMENT)||{qtd:0,bruto:0,liquido:0};
+      resumoTxt=`${fmtInt(s.qtd)} venda(s) · bruto ${fmtMoney(s.bruto)} · líquido ${fmtMoney(s.liquido)}${r.naoLiberadas?` · ${fmtInt(r.naoLiberadas)} ainda não liberada(s)`:''}`;
+    }else if(a.tipo==='reserve_release'){
+      resumoTxt=`crédito ${fmtMoney(r.credito||0)} · débito ${fmtMoney(r.debito||0)}${r.saldoFinal!=null?` · saldo final ${fmtMoney(r.saldoFinal)}`:''}`;
+    }
+    return `<tr>
+      <td>${esc(ROTULO_TIPO_ANEXO[a.tipo]||a.tipo)}</td>
+      <td class="mono" style="font-size:11px">${esc(a.nome_arquivo||'—')}</td>
+      <td style="font-size:12px">${resumoTxt}</td>
+      <td style="font-size:11px" class="muted">${new Date(a.criado_em).toLocaleString('pt-BR')}</td>
+      <td class="acoes-linha" style="gap:4px"><button class="btn sm" data-baixaranexo="${a.id}" title="Baixar">⬇</button><button class="btn sm danger-outline" data-excluiranexo="${a.id}" title="Excluir">🗑</button></td>
+    </tr>`;
+  }).join('')}
+  </tbody></table></div>`;
 }
 /* fechamento de todas as lojas de uma vez, no MESMO periodo escolhido no Resumo Financeiro acima -
    busca /financas/resumo loja por loja (com uma pequena pausa entre elas pra nao estourar limite
@@ -6224,6 +6322,16 @@ function renderFinancas(){
   });
   const audIniciar=document.getElementById('audIniciar');
   if(audIniciar) audIniciar.onclick=iniciarAuditoriaMes;
+  const audAnexoLoja=document.getElementById('audAnexoLoja');
+  if(audAnexoLoja) audAnexoLoja.onchange=e=>{ auditoriaLoja=e.target.value; renderFinancas(); };
+  const audAnexoMes=document.getElementById('audAnexoMes');
+  if(audAnexoMes) audAnexoMes.onchange=e=>{ if(e.target.value){ auditoriaAnexoMes=e.target.value; renderFinancas(); } };
+  const audAnexoSettlement=document.getElementById('audAnexoSettlement');
+  if(audAnexoSettlement) audAnexoSettlement.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('settlement',f); e.target.value=''; };
+  const audAnexoReserve=document.getElementById('audAnexoReserve');
+  if(audAnexoReserve) audAnexoReserve.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('reserve_release',f); e.target.value=''; };
+  document.querySelectorAll('[data-baixaranexo]').forEach(b=>{ b.onclick=()=>baixarAnexoAuditoria(b.dataset.baixaranexo); });
+  document.querySelectorAll('[data-excluiranexo]').forEach(b=>{ b.onclick=()=>excluirAnexoAuditoria(b.dataset.excluiranexo); });
   const btnSocData=document.getElementById('socData');
   if(btnSocData) btnSocData.onclick=()=>abrirSeletorData(novoSocioData||hoje(),(iso)=>{ novoSocioData=iso; renderFinancas(); });
   const btnAddSocio=document.getElementById('btnAddSocio');
