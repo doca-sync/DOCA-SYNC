@@ -5628,7 +5628,7 @@ function dataBrParaMes(s){
 function numeroCel(v){ return typeof v==='number'?v:(parseFloat(String(v||'').replace(',','.'))||0); }
 function resumirConciliacaoVenda(linhas,mes){
   const doMes=linhas.filter(l=>dataBrParaMes(l['Data da operação'])===mes);
-  const porTipo={}; let bruto=0,liquido=0,tarifa=0,freteVendedor=0;
+  const porTipo={}; let bruto=0,liquido=0,tarifaColuna=0,freteVendedor=0;
   doMes.forEach(l=>{
     const t=l['Tipo de operação']||'?';
     if(!porTipo[t]) porTipo[t]={qtd:0,bruto:0,liquido:0};
@@ -5637,14 +5637,27 @@ function resumirConciliacaoVenda(linhas,mes){
     bruto+=b; liquido+=n;
     /* tarifa e frete só existem de fato pra linhas de "Venda" - somadas à parte, pra dar pra
        comparar direto com res.tarifa_real/res.frete_real da Auditoria e resumo.tarifas/
-       resumo.frete.vendedor do Resumo Financeiro (pedido do Felipe 23/08: comparação 3 vias) */
+       resumo.frete.vendedor do Resumo Financeiro (pedido do Felipe 23/08: comparação 3 vias).
+       CUIDADO (achado 24/08, investigando um número de tarifa 4x maior que o esperado): a coluna
+       "Valor total de tarifas (desconto já aplicado)" do Mercado Livre inclui TAMBÉM as linhas de
+       "Tarifa de envio extra ou intermunicipal" / "Tarifa por envio interno ao município" (frete
+       cobrado do vendedor, contabilizado pelo ML como um tipo de "tarifa") - exatamente o mesmo
+       valor que já aparece em "Envio pago pelo vendedor" nessas linhas. Somar a coluna de tarifa
+       inteira contava o frete DUAS vezes (uma como tarifa, outra como frete). Por isso subtrai
+       freteVendedor do total da coluna de tarifa pra sobrar só a comissão de venda de verdade -
+       validado contra a Auditoria de julho/2026 da TorvStore (bateu em ~R$40 de diferença). */
     if(t==='Venda'){
-      tarifa+=numeroCel(l['Valor total de tarifas (desconto já aplicado)'])+numeroCel(l['Valor total de tarifas pós-pagas']);
+      tarifaColuna+=numeroCel(l['Valor total de tarifas (desconto já aplicado)'])+numeroCel(l['Valor total de tarifas pós-pagas']);
       freteVendedor+=numeroCel(l['Envio pago pelo vendedor']);
     }
   });
+  const tarifa=tarifaColuna-freteVendedor;
   Object.values(porTipo).forEach(x=>{ x.bruto=Math.round(x.bruto*100)/100; x.liquido=Math.round(x.liquido*100)/100; });
-  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100};
+  /* versaoCalculo: sobe toda vez que a fórmula de tarifa/frete muda de verdade (não só ajuste de
+     texto), pra dar pra avisar "esse anexo é de antes desse cálculo, suba de novo" mesmo quando o
+     campo já existe mas com o valor calculado do jeito antigo/errado (ex: v1 não separava a
+     tarifa de envio da comissão de venda, dava um número de tarifa ~4x maior que o real). */
+  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100,versaoCalculo:2};
 }
 function ultimoDiaMes(mes){
   const [y,m]=String(mes||'').split('-').map(Number);
@@ -5821,10 +5834,10 @@ function renderComparacaoAuditoria(res){
           <th>Métrica</th><th class="num">Resumo Financeiro</th><th class="num">Auditoria</th><th class="num">Conciliação (ML)</th>
         </tr></thead><tbody>
           ${linha('Faturamento / Bruto',compR.resumo.faturamento,res.faturamento,rConc?rConc.bruto:null)}
-          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.tarifa!=null?rConc.tarifa:null)}
-          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.freteVendedor!=null?rConc.freteVendedor:null)}
+          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.versaoCalculo===2?rConc.tarifa:null)}
+          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.versaoCalculo===2?rConc.freteVendedor:null)}
         </tbody></table></div>
-        ${rConc&&rConc.tarifa==null?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes dessa comparação existir — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra também comparar tarifa e frete.</p>`:''}
+        ${rConc&&rConc.versaoCalculo!==2?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes desse cálculo de tarifa/frete existir (ou foi calculado com uma versão antiga que tinha um bug de dupla contagem do frete) — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra corrigir.</p>`:''}
         ${rConc&&rConc.bruto!=null&&Math.abs(rConc.bruto-res.faturamento)>res.faturamento*0.01?`<p class="hint" style="margin-top:8px">O "Bruto" da Conciliação normalmente fica acima do Faturamento do Resumo/Auditoria de propósito — o Mercado Livre soma ali outras coisas que passam pela venda (frete pago pelo comprador, taxa de parcelamento etc.), não só o valor do produto. Não espere essa linha bater 100%, só as de Tarifa e Frete.</p>`:''}
         <p class="hint" style="margin-top:10px">Resumo Financeiro é o cálculo rápido/assumido do dia a dia; Auditoria confere pedido a pedido no Mercado Pago; Conciliação é o relatório oficial do Mercado Livre. Se os 3 estiverem próximos, o Resumo Financeiro está calibrado — diferença grande é sinal pra olhar as Anomalias acima.</p>`
       }
@@ -5922,15 +5935,66 @@ let fluxoCaixaSimAlvo='grupo:0';
 let fluxoCaixaSimValor='';
 let fluxoCaixaSimResultado=null; // null | 'sem-cobertura' | {data,saldoNaqueleDia}
 let fluxoCaixaLucro={}; // loja -> {status:'carregando'|'pronto'|'erro',mes,margemLiquida,faturamento,progresso,erro}
+/* usa dado CONFIRMADO no lugar da tarifa/frete/faturamento ASSUMIDOS do Resumo Financeiro, sempre
+   que já tiver algo mais preciso pro MESMO período exato (pedido do Felipe 23/08, revisado depois
+   dele perguntar "por que Auditoria e não Conciliação"): ordem de prioridade, do mais confiável
+   pro menos - Conciliação (relatório oficial do Mercado Livre, sem nenhum cálculo do Doca no meio)
+   > Auditoria (Doca confere pedido a pedido direto no Mercado Pago) > Resumo Financeiro (estimado
+   do dia a dia). A Conciliação só cobre tarifa/frete (o "bruto" dela é um conceito mais largo, não
+   bate com Faturamento - ver comparação 3 vias na Auditoria), e só existe se o Felipe tiver
+   anexado o relatório "Por venda" daquele mês exato; por isso o faturamento sempre vem de Auditoria
+   (se tiver) ou do Resumo Financeiro. Continua buscando o Resumo Financeiro de qualquer jeito,
+   porque só ele tem o detalhe por SKU (pra calcular CMV), que nem Auditoria nem Conciliação têm. */
+async function fetchResumoParaFechamento(loja,de,ate,onProgress){
+  const resumo=await fetchResumoJob(loja,'personalizado',de,ate,onProgress);
+  resumo._usouAuditoria=false; resumo._usouConciliacao=false;
+  const base=backendUrl();
+  try{
+    if(base){
+      const params=new URLSearchParams({loja,de,ate});
+      const r=await fetch(`${base}/auditoria/mes/salvo?${params.toString()}`);
+      const j=await r.json().catch(()=>null);
+      if(j&&j.ok&&j.encontrado&&j.resultado){
+        const a=j.resultado;
+        resumo.faturamento=a.faturamento;
+        resumo.tarifas=a.tarifa_real;
+        if(!resumo.frete) resumo.frete={};
+        resumo.frete.vendedor=a.frete_real;
+        resumo._usouAuditoria=true;
+      }
+    }
+  }catch(e){ /* falha ao checar auditoria salva - segue só com o Resumo Financeiro mesmo */ }
+  try{
+    const mesCandidato=de.slice(0,7);
+    if(base&&de===mesCandidato+'-01'&&ate===ultimoDiaMes(mesCandidato)){
+      const r=await fetch(`${base}/auditoria/anexo?loja=${encodeURIComponent(loja)}&mes=${encodeURIComponent(mesCandidato)}`);
+      const j=await r.json().catch(()=>null);
+      const anexoVenda=(j&&j.ok?(j.anexos||[]):[]).find(a=>a.tipo==='venda');
+      const rConc=anexoVenda&&anexoVenda.resumo;
+      if(rConc&&rConc.versaoCalculo===2){
+        resumo.tarifas=rConc.tarifa;
+        if(!resumo.frete) resumo.frete={};
+        resumo.frete.vendedor=rConc.freteVendedor;
+        resumo._usouConciliacao=true;
+      }
+    }
+  }catch(e){ /* falha ao checar anexo de conciliação - segue com o que já tinha (Auditoria ou estimado) */ }
+  return resumo;
+}
+function rotuloFonteFechamento(resumo){
+  if(resumo._usouConciliacao) return `🏆 tarifa/frete pela Conciliação do Mercado Livre${resumo._usouAuditoria?' · faturamento pela Auditoria':''}`;
+  if(resumo._usouAuditoria) return '🔍 confirmado pela Auditoria';
+  return '';
+}
 async function calcularLucroMesFluxoCaixa(loja){
   fluxoCaixaLucro[loja]={status:'carregando',progresso:null};
   renderFinancas();
   try{
     const mes=mesAtualStr();
     const de=mes+'-01', ate=hoje();
-    const resumo=await fetchResumoJob(loja,'personalizado',de,ate,(p)=>{ fluxoCaixaLucro[loja]={status:'carregando',progresso:p}; renderFinancas(); });
+    const resumo=await fetchResumoParaFechamento(loja,de,ate,(p)=>{ fluxoCaixaLucro[loja]={status:'carregando',progresso:p}; renderFinancas(); });
     const m=calcularMargensResumo(resumo,loja);
-    fluxoCaixaLucro[loja]={status:'pronto',mes,margemLiquida:m.margemLiquida,faturamento:resumo.faturamento||0};
+    fluxoCaixaLucro[loja]={status:'pronto',mes,margemLiquida:m.margemLiquida,faturamento:resumo.faturamento||0,rotuloFonte:rotuloFonteFechamento(resumo)};
   }catch(e){ fluxoCaixaLucro[loja]={status:'erro',erro:e.message}; }
   renderFinancas();
 }
@@ -5955,19 +6019,20 @@ function renderSugestaoRetiradaSocios(loja,mes,base){
   return `<div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr)">${linhas}</div>`;
 }
 function renderInterpretacaoLoja(loja,papel,st){
+  const badgeAuditoria=st.rotuloFonte?` <span class="badge okv" title="Usa dado confirmado (Conciliação do Mercado Livre e/ou Auditoria) em vez do estimado do dia a dia, onde já tiver disponível pra esse período">${esc(st.rotuloFonte)}</span>`:'';
   if(papel==='operacao'){
     const {base:sobra,geralMes}=baseDistribuivelLoja(loja,st.margemLiquida,st.mes);
     const margemPct=st.faturamento?st.margemLiquida/st.faturamento:0;
     let extra='';
     if(sobra<0&&margemPct>0) extra=` Pra fechar só com faturamento a mais, faltaria vender ~${fmtMoney(-sobra/margemPct)} a mais nesse ritmo de margem.`;
     else if(sobra<0) extra=' A margem do período está zero ou negativa, então não dá pra estimar quanto faltaria faturar — olhe o Resumo Financeiro pra entender o que está pesando.';
-    return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>. Despesas "Geral" do mês (a que ${esc(loja)} banca pra todo o grupo, inclusive o contador de cada loja se cadastrado sem loja marcada): <b>${fmtMoney(geralMes)}</b>.</p>
+    return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>${badgeAuditoria}. Despesas "Geral" do mês (a que ${esc(loja)} banca pra todo o grupo, inclusive o contador de cada loja se cadastrado sem loja marcada): <b>${fmtMoney(geralMes)}</b>.</p>
       <p style="font-size:15px" class="${sobra>=0?'okv':'pend'}"><b>${sobra>=0?'Sobra':'Falta'} ${fmtMoney(Math.abs(sobra))}</b> pra cobrir a operação do grupo esse mês.${extra}</p>
       ${sobra>=0?`<p class="hint" style="margin-bottom:8px">Por enquanto (pode mudar depois), esse excedente é dividido em retirada entre Felipe e Thiago pra complementar salário — a sugestão de hoje (já descontando o que já foi retirado/reembolsado no mês) é:</p>${renderSugestaoRetiradaSocios(loja,st.mes,sobra)}<p class="hint" style="margin-top:8px">Lance a retirada de fato na aba Retiradas e Reembolso. Nunca pra Orbix, que tem o Paulo de sócio.</p>`:''}
       <button class="btn sm" data-fcluc="${esc(loja)}" style="margin-top:6px">🔄 Recalcular</button>`;
   }
   if(papel==='distribui'){
-    return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>. Como 100% do lucro dessa loja é retirada, a sugestão de retirada de hoje pra cada sócio (já descontando o que já foi retirado/reembolsado no mês) é:</p>
+    return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>${badgeAuditoria}. Como 100% do lucro dessa loja é retirada, a sugestão de retirada de hoje pra cada sócio (já descontando o que já foi retirado/reembolsado no mês) é:</p>
       ${renderSugestaoRetiradaSocios(loja,st.mes,st.margemLiquida)}
       <p class="hint" style="margin-top:8px">Lance a retirada de fato na aba Retiradas e Reembolso.</p>
       <button class="btn sm" data-fcluc="${esc(loja)}" style="margin-top:6px">🔄 Recalcular</button>`;
@@ -6428,7 +6493,7 @@ async function calcularFechamentoSocios(){
     const [ano,mm]=mes.split('-').map(Number);
     const de=`${mes}-01`;
     const ate=`${mes}-${String(new Date(ano,mm,0).getDate()).padStart(2,'0')}`;
-    const resumo=await fetchResumoJob(loja,'personalizado',de,ate,(p)=>{ sociosFechamentoProgresso=p; renderFinancas(); });
+    const resumo=await fetchResumoParaFechamento(loja,de,ate,(p)=>{ sociosFechamentoProgresso=p; renderFinancas(); });
     sociosFechamento=resumo;
     sociosFechamentoMes=mes;
     sociosFechamentoLoja=loja;
@@ -6463,7 +6528,7 @@ function renderSociosCard(){
     const m=calcularMargensResumo(sociosFechamento,loja);
     const {base,geralMes}=baseDistribuivelLoja(loja,m.margemLiquida,mes);
     fechamentoHtml=`<div class="card" style="margin-top:14px">
-        <div class="muted" style="font-size:11px">FECHAMENTO DE ${esc(mesLabel(mes)).toUpperCase()} — ${geralMes?`SOBRA PRA DIVIDIR: ${fmtMoney(base)} (margem líquida ${fmtMoney(m.margemLiquida)} − despesas "Geral" da operação ${fmtMoney(geralMes)})`:`MARGEM LÍQUIDA DO MÊS: ${fmtMoney(m.margemLiquida)}`}</div>
+        <div class="muted" style="font-size:11px">FECHAMENTO DE ${esc(mesLabel(mes)).toUpperCase()} — ${geralMes?`SOBRA PRA DIVIDIR: ${fmtMoney(base)} (margem líquida ${fmtMoney(m.margemLiquida)} − despesas "Geral" da operação ${fmtMoney(geralMes)})`:`MARGEM LÍQUIDA DO MÊS: ${fmtMoney(m.margemLiquida)}`}${rotuloFonteFechamento(sociosFechamento)?` <span class="badge okv" title="Usa dado confirmado (Conciliação do Mercado Livre e/ou Auditoria) em vez do estimado do dia a dia, onde já tiver disponível pra esse período">${esc(rotuloFonteFechamento(sociosFechamento))}</span>`:''}</div>
         <div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr);margin-top:8px">
           ${socios.map(s=>{
             const pct=ownership[s]||0;
