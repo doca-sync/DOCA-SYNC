@@ -6648,7 +6648,6 @@ function renderSociosCard(){
   const mesesDisponiveisSoc=[...new Set([...mesesDespesasSoc,...mesesSociosSoc,mes])].sort().reverse();
   const tagTipo=t=>t==='reembolso'?'<span class="badge okv">Reembolso</span>':'<span class="badge">Retirada</span>';
   const gruposHtml=GRUPOS_RETIRADA.map((lojasGrupo,gi)=>{
-    const nomeGrupo=lojasGrupo.join(' + ');
     const socios=sociosDaLoja(lojasGrupo[0]);
     const listasPorSocio={}, retiradaPorSocio={}, reembolsoPorSocio={};
     socios.forEach(s=>{
@@ -6661,8 +6660,8 @@ function renderSociosCard(){
       </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
     return `
     <div class="card" style="margin-top:16px" data-gruposocio="${gi}">
-      <h3 style="margin-top:0">💸 ${esc(nomeGrupo)} — ${socios.map(s=>NOME_SOCIO[s]).join(', ')}</h3>
-      <p class="hint" style="margin:0 0 10px">${lojasGrupo.length>1?`${esc(nomeGrupo)} têm os mesmos sócios, então entram juntas numa lista só`:'Essa loja tem sócio próprio (Paulo), por isso fica separada'} — <b>Retirada</b> é o que cada sócio já tirou pra ele; <b>Reembolso</b> é o inverso.</p>
+      <h3 style="margin-top:0">💸 ${socios.map(s=>NOME_SOCIO[s]).join(', ')}</h3>
+      <p class="hint" style="margin:0 0 10px"><b>Retirada</b> é o que o sócio já tirou pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso e precisa ser devolvido.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select class="socQuem">${socios.map(s=>`<option value="${s}">${NOME_SOCIO[s]}</option>`).join('')}</select></label>
         <label>Tipo<select class="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
