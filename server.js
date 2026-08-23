@@ -84,6 +84,21 @@ pool.query(`create table if not exists auditoria_anexos (
 )`).catch(e => console.error('Falha ao garantir tabela "auditoria_anexos":', e.message));
 pool.query('alter table auditoria_anexos alter column conteudo drop not null')
   .catch(e => console.error('Falha ao tornar "conteudo" opcional em auditoria_anexos:', e.message));
+/* resultado da Auditoria Financeira Mensal, salvo por loja+periodo exato (pedido do Felipe 23/08:
+   a auditoria demora varios minutos - milhares de pedidos, uma chamada extra ao Mercado Pago por
+   pedido - entao rodar de novo toda vez que reabre o Doca era desperdicio). O job em memoria
+   (auditoriaJobs, mais abaixo) continua existindo so' pra acompanhar o progresso ENQUANTO roda;
+   assim que termina, o resultado cai aqui e fica disponivel pra sempre (ate' rodar de novo o MESMO
+   periodo, que sobrescreve). */
+pool.query(`create table if not exists auditoria_resultados (
+  id serial primary key,
+  loja text not null,
+  de text not null,
+  ate text not null,
+  resultado jsonb,
+  criado_em timestamptz not null default now(),
+  unique (loja, de, ate)
+)`).catch(e => console.error('Falha ao garantir tabela "auditoria_resultados":', e.message));
 const app = express();
 app.use(express.json({ limit: '10mb' })); // o estado inteiro do Doca (produtos, envios, historico) pode passar de 100kb (limite padrao)
 const allowedOrigins = ALLOWED_ORIGIN.split(',').map(s => s.trim()).filter(Boolean);
@@ -236,6 +251,11 @@ app.post('/ml/webhook', async (req, res) => {
    - ja o category_id de cada produto e' puxado automaticamente pela API normal (ver campo
    categoria_id em ml_produtos), e as vendas PROPRIAS de cada mes sao calculadas automaticamente
    a partir do historico de pedidos que a gente ja busca (ver /mercado/vendas-proprias). */
+/* fluxo de caixa (23/08, pedido do Felipe): a coluna MONEY_RELEASE_DATE ja vinha no relatorio
+   "Dinheiro em conta" (COLUNAS_DINHEIRO_EM_CONTA mais abaixo) mas so' o total agregado (a_receber)
+   era guardado - a data de cada liberacao pendente era jogada fora. Guarda agora agrupado por
+   data, pra dar pra projetar o saldo dia a dia (agenda_liberacoes: [{data,valor}, ...]). */
+pool.query('alter table mp_financeiro add column if not exists agenda_liberacoes jsonb').catch(e => console.error('Falha ao adicionar coluna "agenda_liberacoes":', e.message));
 pool.query('alter table ml_produtos add column if not exists categoria_id text')
   .catch(e => console.error('Falha ao adicionar coluna "categoria_id" em ml_produtos:', e.message));
 pool.query(`create table if not exists ml_mercado_categoria (
@@ -944,8 +964,10 @@ app.get('/debug/tarifa/comparar', async (req, res) => {
    Uso:
    1) POST /auditoria/mes/iniciar?loja=X&de=Y&ate=Z  -> devolve {jobId} na hora, começa a rodar
    2) GET  /auditoria/mes/status?id=JOBID            -> {status:'rodando'|'concluido'|'erro', progresso, resultado}
-   Os jobs ficam guardados em memoria (somem se o servidor reiniciar/dormir - normal no Render
-   free tier apos inatividade) - por isso é pra rodar e acompanhar na hora, não é histórico. */
+   Os jobs em memoria (auditoriaJobs) somem se o servidor reiniciar/dormir - normal no Render free
+   tier apos inatividade - mas isso so' afeta uma auditoria RODANDO NA HORA: assim que termina, o
+   resultado e' salvo na tabela auditoria_resultados (loja+periodo exato), entao reabrir o Doca
+   depois nao precisa rodar de novo - ver GET /auditoria/mes/salvo. */
 const auditoriaJobs = new Map(); // jobId -> {status, progresso:{feito,total}, resultado, erro, criadoEm}
 function gerarJobId() { return 'aud_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -1040,11 +1062,35 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
       avisos: log.avisos
     };
     job.status = 'concluido';
+    try { await salvarAuditoriaResultado(loja, de, ate, job.resultado); }
+    catch (e) { console.error('[auditoria] falha ao salvar resultado no banco:', e.message); }
   } catch (e) {
     job.status = 'erro';
     job.erro = e.message;
   }
 }
+/* guarda o resultado no banco por loja+periodo exato (pedido do Felipe 23/08: a auditoria demora
+   varios minutos entao ele nao quer ter que rodar de novo toda vez que reabre o Doca) - sobrescreve
+   se rodar de novo o MESMO periodo. O job em memoria (auditoriaJobs) continua existindo só pra
+   acompanhar o progresso ENQUANTO roda; depois de concluido, quem "vale" é essa tabela. */
+async function salvarAuditoriaResultado(loja, de, ate, resultado) {
+  await pool.query(
+    `insert into auditoria_resultados (loja, de, ate, resultado, criado_em)
+     values ($1,$2,$3,$4,now())
+     on conflict (loja, de, ate) do update set resultado = excluded.resultado, criado_em = excluded.criado_em`,
+    [loja, de, ate, JSON.stringify(resultado)]
+  );
+}
+app.get('/auditoria/mes/salvo', async (req, res) => {
+  try {
+    const loja = req.query.loja, de = req.query.de, ate = req.query.ate;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const r = await pool.query('select resultado, criado_em from auditoria_resultados where loja = $1 and de = $2 and ate = $3', [loja, de, ate]);
+    if (!r.rows.length) return res.json({ ok: true, encontrado: false });
+    res.json({ ok: true, encontrado: true, resultado: r.rows[0].resultado, criadoEm: r.rows[0].criado_em });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.post('/auditoria/mes/iniciar', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -1590,8 +1636,8 @@ async function upsertFinanceiroMp(loja, patch) {
   const linha = { ...base, ...patch, loja };
   await pool.query(
     `insert into mp_financeiro (loja, saldo_disponivel, saldo_atualizado_em, saldo_report_id, saldo_pedido_em,
-        a_receber, a_receber_atualizado_em, areceber_report_id, areceber_pedido_em)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        a_receber, a_receber_atualizado_em, areceber_report_id, areceber_pedido_em, agenda_liberacoes)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      on conflict (loja) do update set
        saldo_disponivel = excluded.saldo_disponivel,
        saldo_atualizado_em = excluded.saldo_atualizado_em,
@@ -1600,10 +1646,12 @@ async function upsertFinanceiroMp(loja, patch) {
        a_receber = excluded.a_receber,
        a_receber_atualizado_em = excluded.a_receber_atualizado_em,
        areceber_report_id = excluded.areceber_report_id,
-       areceber_pedido_em = excluded.areceber_pedido_em`,
+       areceber_pedido_em = excluded.areceber_pedido_em,
+       agenda_liberacoes = excluded.agenda_liberacoes`,
     [loja, linha.saldo_disponivel ?? null, linha.saldo_atualizado_em ?? null, linha.saldo_report_id ?? null,
      linha.saldo_pedido_em ?? null, linha.a_receber ?? null, linha.a_receber_atualizado_em ?? null,
-     linha.areceber_report_id ?? null, linha.areceber_pedido_em ?? null]
+     linha.areceber_report_id ?? null, linha.areceber_pedido_em ?? null,
+     linha.agenda_liberacoes != null ? JSON.stringify(linha.agenda_liberacoes) : null]
   );
 }
 async function passoSaldoMp(loja, row) {
@@ -1674,9 +1722,26 @@ async function passoAReceberMp(loja, row) {
             const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
             return s + (isNaN(v) ? 0 : v);
           }, 0) * 100) / 100;
+          /* agenda de liberacoes: agrupa as linhas pendentes por MONEY_RELEASE_DATE (dia em que
+             o Mercado Pago vai liberar aquele valor) - e' isso que da pra montar a projecao de
+             caixa dia a dia, em vez de so' saber o total parado. Linha sem data valida cai fora
+             da agenda (mas continua contando no total a_receber acima). */
+        const porData = {};
+          pendentes.forEach(l => {
+            const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+            if (isNaN(v)) return;
+            const dataBruta = (l.MONEY_RELEASE_DATE || '').trim();
+            const data = dataBruta ? dataBruta.slice(0, 10) : null;
+            if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
+            porData[data] = (porData[data] || 0) + v;
+          });
+          const agendaLiberacoes = Object.keys(porData).sort().map(data => ({
+            data, valor: Math.round(porData[data] * 100) / 100
+          }));
           await upsertFinanceiroMp(loja, {
             a_receber: aReceber, a_receber_atualizado_em: new Date(),
-            areceber_report_id: null, areceber_pedido_em: null
+            areceber_report_id: null, areceber_pedido_em: null,
+            agenda_liberacoes: agendaLiberacoes
           });
           return;
         }
@@ -1716,7 +1781,8 @@ app.post('/financeiro/mp/sincronizar', async (req, res) => {
       saldoDisponivel: row ? paraNumero(row.saldo_disponivel) : null,
       saldoAtualizadoEm: row ? row.saldo_atualizado_em : null,
       aReceber: row ? paraNumero(row.a_receber) : null,
-      aReceberAtualizadoEm: row ? row.a_receber_atualizado_em : null
+      aReceberAtualizadoEm: row ? row.a_receber_atualizado_em : null,
+      agendaLiberacoes: row && row.agenda_liberacoes ? row.agenda_liberacoes : []
     });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
