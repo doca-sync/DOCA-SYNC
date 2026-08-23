@@ -2996,6 +2996,45 @@ async function sincronizarImpostoAutomatico(loja){
   if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o faturamento do mês (status '+r.status+').'));
   aplicarImpostoAutomatico(loja,j.faturamento||0);
 }
+function mesAnteriorStr(mes){
+  const [ano,mm]=(mes||mesAtualStr()).split('-').map(Number);
+  const d=new Date(Date.UTC(ano,mm-2,1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+}
+/* despesa de Imposto automática (pedido do Felipe 23/08): entra sozinha em Despesas todo mês,
+   vencendo dia 20, com base no FATURAMENTO DO MÊS ANTERIOR × alíquota configurada (convenção do
+   DAS/Simples Nacional - imposto do mês M paga no dia 20 do mês M+1). Só entra como LEMBRETE de
+   pagamento (fica em Despesas e conta no Fluxo de Caixa) - não soma em despesasPeriodoLoja porque
+   o imposto já é descontado direto dentro da Margem Líquida (ver calcularMargensResumo), então
+   somar aqui de novo descontaria 2x. Casa pela loja + impostoRefMes (mês de referência do
+   faturamento usado), pra não duplicar - se já existe, só atualiza o valor (o faturamento do mês
+   de referência pode mudar um pouco se recalculado depois, ex. reembolsos processados depois). */
+async function sincronizarImpostoDespesaMes(loja){
+  const base=backendUrl();
+  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  const aliquota=finLoja(loja).aliquotaImposto||0;
+  if(!aliquota) return; // sem alíquota configurada ainda - não cria despesa de R$0 à toa
+  const refMes=mesAnteriorStr();
+  const de=`${refMes}-01`;
+  const [anoRef,mmRef]=refMes.split('-').map(Number);
+  const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
+  const r=await fetch(`${base}/financas/faturamento-mes?loja=${encodeURIComponent(loja)}&de=${de}&ate=${ate}`);
+  let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+  if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o faturamento do mês anterior (status '+r.status+').'));
+  const faturamentoBase=j.faturamento||0;
+  const valor=Math.round(faturamentoBase*(aliquota/100)*100)/100;
+  const vencimento=`${mesAtualStr()}-20`;
+  const arr=despesasArr();
+  let d=arr.find(x=>x.origem==='imposto'&&x.loja===loja&&x.impostoRefMes===refMes);
+  if(d){
+    d.valor=valor; d.dataPagamento=vencimento; d.impostoFaturamentoBase=faturamentoBase; d.impostoAliquota=aliquota;
+  }else{
+    arr.push({id:gerarId('desp'),descricao:`Imposto — ${loja} (base ${mesLabel(refMes)})`,valor,dataPagamento:vencimento,
+      pago:false,recorrente:true,loja,origem:'imposto',faturaKey:null,origemRecorrenciaId:null,
+      impostoRefMes:refMes,impostoFaturamentoBase:faturamentoBase,impostoAliquota:aliquota,criadoEm:Date.now()});
+  }
+  persist();
+}
 /* ---------- perguntas sem resposta (card na Visão Geral) ----------
    A CONTAGEM (p.mlPerguntas) já vem de graça no "Atualizar" normal de Produtos. O TEXTO de cada
    pergunta só é buscado sob demanda (quando a pessoa clica pra ver aquela loja), pra não pesar
@@ -5310,13 +5349,16 @@ function excluirDespesa(id){
 }
 /* marca pago/pendente; se for recorrente e estiver marcando como PAGO, gera a proxima ocorrência
    (mês seguinte) automaticamente, se ainda não existir - assim o histórico do mês atual fica
-   preservado e a despesa continua "viva" pro mês que vem */
+   preservado e a despesa continua "viva" pro mês que vem. Fatura ML e Imposto NÃO entram nessa
+   clonagem (mesmo sendo recorrente:true, só pra mostrar o selo) - o valor delas muda todo mês
+   (não dá pra simplesmente copiar o valor atual pro mês seguinte) e cada uma já tem sua própria
+   sincronização automática que cria a ocorrência certa (ver puxarFaturaMl/sincronizarImpostoDespesaMes). */
 function marcarDespesaPaga(id,pago){
   const arr=despesasArr();
   const d=arr.find(x=>x.id===id); if(!d) return;
   snapshot((pago?'despesa paga: ':'despesa marcada como pendente: ')+(d.descricao||''));
   d.pago=!!pago;
-  if(pago&&d.recorrente){
+  if(pago&&d.recorrente&&d.origem!=='ml_fatura'&&d.origem!=='imposto'){
     const serieId=d.origemRecorrenciaId||d.id;
     const proxData=proximoMes(d.dataPagamento);
     const jaExiste=arr.some(x=>(x.origemRecorrenciaId||x.id)===serieId&&x.dataPagamento===proxData);
@@ -5412,6 +5454,26 @@ let financasFiltroMes=hoje().slice(0,7);
 let financasFiltroLoja=STORES[0]; // nome de uma loja (uma de cada vez, sem agrupar "todas") - toda despesa pertence a uma loja específica, não existe mais despesa "Geral" compartilhada
 let financasPuxandoFatura=null;
 let financasExpandido={}; // id da despesa -> true enquanto mostra o detalhamento (ex: fatura do ML por categoria)
+let financasDetalhandoFatura={}; // id da despesa -> true enquanto busca o detalhamento sob demanda (fatura ML antiga, sem itens salvos ainda)
+/* busca o detalhamento de uma fatura ML antiga sob demanda (pedido do Felipe 23/08 - "detalhar"
+   só funcionava na fatura do mês mais recente, porque o backend só guarda itens de quem já foi
+   sincronizado enquanto era a mais atual) - usa a key já salva na despesa (faturaKey) pra buscar
+   direto, sem depender da listagem de períodos (que só traz o mais recente). */
+async function puxarItensFaturaMl(despesaId){
+  const d=despesasArr().find(x=>x.id===despesaId); if(!d||!d.faturaKey) return;
+  const base=backendUrl();
+  if(!base){ toast('⚠ Configure a URL do backend primeiro (em Produtos → Atualizar).'); return; }
+  financasDetalhandoFatura[despesaId]=true; renderFinancas();
+  try{
+    const r=await fetch(`${base}/financas/fatura-ml/detalhar?loja=${encodeURIComponent(d.loja)}&key=${encodeURIComponent(d.faturaKey)}`);
+    const j=await r.json().catch(()=>null);
+    if(!r.ok||!j||!j.ok) throw new Error((j&&j.erro)||'Falha ao buscar o detalhamento.');
+    d.itens=j.itens||[]; d.itensAviso=j.itensAviso||null;
+    financasExpandido[despesaId]=true;
+    persist();
+  }catch(e){ toast('⚠ '+e.message); }
+  finally{ delete financasDetalhandoFatura[despesaId]; renderFinancas(); }
+}
 function despesaBateFiltroLoja(d){
   return d.loja===financasFiltroLoja;
 }
@@ -5494,6 +5556,15 @@ function abrirEditarSocioModal(loja,socio,id){
 }
 function movimentosSocioMes(loja,socio,mes){
   return sociosLoja(loja)[socio].filter(x=>(x.data||'').slice(0,7)===mes).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
+}
+/* mesma coisa que movimentosSocioMes, mas somando várias lojas do mesmo grupo de sócios (ver
+   GRUPOS_RETIRADA) - cada lançamento não guarda a loja internamente (fica implícita no "balde"
+   state.socios[loja][socio]), então aqui a gente marca ela na hora de juntar, só pra exibição
+   (mostrar de qual loja saiu o dinheiro) e pra saber em qual balde editar/remover depois. */
+function movimentosSocioMesGrupo(lojasGrupo,socio,mes){
+  let todos=[];
+  lojasGrupo.forEach(lj=>{ movimentosSocioMes(lj,socio,mes).forEach(x=>todos.push({...x,loja:lj})); });
+  return todos.sort((a,b)=>(a.data||'').localeCompare(b.data||''));
 }
 function totalPorTipo(lista,tipo){
   return lista.filter(x=>x.tipo===tipo).reduce((s,x)=>s+(Number(x.valor)||0),0);
@@ -6372,11 +6443,13 @@ function calcularCmvResumo(resumo){
   });
   return {cmv,unidSemCusto};
 }
-/* despesas manuais (cadastradas em Finanças, exceto a fatura do ML — que entra separada, com o
-   valor pendente atual) dessa loja com vencimento dentro do período do Resumo Financeiro — usadas
-   como "custos do período" na Margem Líquida. */
+/* despesas manuais (cadastradas em Finanças, exceto a fatura do ML e o Imposto — que já entram
+   descontados dentro do próprio cálculo de margem, ver calcularMargensResumo/impostoCalc) dessa
+   loja com vencimento dentro do período do Resumo Financeiro — usadas como "custos do período" na
+   Margem Líquida. O Imposto aparece em Despesas/Fluxo de Caixa só como lembrete de pagamento
+   (pedido do Felipe 23/08), não pode somar aqui senão desconta 2x. */
 function despesasPeriodoLoja(loja,de,ate){
-  return despesasArr().filter(d=>d.loja===loja&&d.origem!=='ml_fatura'&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate);
+  return despesasArr().filter(d=>d.loja===loja&&d.origem!=='ml_fatura'&&d.origem!=='imposto'&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate);
 }
 /* margem de contribuição e margem líquida a partir de um resumo (do backend) - função separada
    pra ser reaproveitada tanto no Resumo Financeiro quanto no fechamento dos sócios. */
@@ -6529,15 +6602,9 @@ function renderResumoFinanceiroResultado(resumo,loja){
    tabela de despesas, usando o mesmo mês selecionado em financasFiltroMes. O fechamento (margem
    líquida do mês) é calculado sob demanda, com uma busca própria à API do Mercado Livre pro mês
    inteiro. */
-let sociosFechamento=null;
 let novoSocioData='';
 let novaDespesaData='';
 let novoPagAmauriData='';
-let sociosFechamentoMes=null;
-let sociosFechamentoCarregando=false;
-let sociosFechamentoErro=null;
-let sociosFechamentoProgresso=null; // {feito,total,etapa}
-let sociosFechamentoLoja=null; // qual loja o sociosFechamento em cache pertence (pra invalidar ao trocar)
 /* Retiradas e Reembolso funciona em qualquer loja 'distribui' (TorvStore, Dor Block, Orbix) - cada
    lançamento marca de qual loja saiu o dinheiro (útil pro Fluxo de Caixa saber de onde tirar). O
    valor final de pagar/devolver por sócio, porém, não é mais calculado isolado por loja: soma a
@@ -6545,96 +6612,76 @@ let sociosFechamentoLoja=null; // qual loja o sociosFechamento em cache pertence
    nelas (ver calcularFechamentoTodasLojas) - pedido do Felipe 23/08, revisado 2a vez. TorvShop não
    retira nada (fica de fora). */
 const LOJAS_RETIRADA=STORES.filter(l=>PAPEL_CAIXA_LOJA[l]!=='reserva');
-let sociosLojaAtual=LOJAS_RETIRADA[0]||STORES[0]; // loja selecionada na aba Retiradas e Reembolso
-async function calcularFechamentoSocios(){
-  const loja=sociosLojaAtual;
-  sociosFechamentoCarregando=true; sociosFechamentoErro=null; sociosFechamentoProgresso=null; renderFinancas();
-  try{
-    const mes=financasFiltroMes;
-    const [ano,mm]=mes.split('-').map(Number);
-    const de=`${mes}-01`;
-    const ate=`${mes}-${String(new Date(ano,mm,0).getDate()).padStart(2,'0')}`;
-    const resumo=await fetchResumoParaFechamento(loja,de,ate,(p)=>{ sociosFechamentoProgresso=p; renderFinancas(); });
-    sociosFechamento=resumo;
-    sociosFechamentoMes=mes;
-    sociosFechamentoLoja=loja;
-  }catch(e){ sociosFechamentoErro=e.message; }
-  finally{ sociosFechamentoCarregando=false; sociosFechamentoProgresso=null; renderFinancas(); }
-}
+/* agrupa as lojas de LOJAS_RETIRADA que têm EXATAMENTE os mesmos sócios/percentuais (pedido do
+   Felipe 23/08, 3a revisão: "na teoria torvshop, torvstore e dorblock é o mesmo grupo de felipe e
+   thiago" - não faz sentido ter uma lista de retirada separada por loja quando é o mesmo bolso
+   dos mesmos 2 sócios). Hoje dá TorvStore+Dor Block (Felipe/Thiago 50/50) num grupo só e Orbix
+   Brasil (tem o Paulo, % diferente) sozinha - mas é calculado a partir de OWNERSHIP_LOJA, não
+   fixo, então se a estrutura societária mudar isso reagrupa sozinho. */
+const GRUPOS_RETIRADA=(()=>{
+  const grupos=[];
+  LOJAS_RETIRADA.forEach(loja=>{
+    const assinatura=JSON.stringify(OWNERSHIP_LOJA[loja]||{});
+    let g=grupos.find(x=>x.assinatura===assinatura);
+    if(!g){ g={assinatura,lojas:[]}; grupos.push(g); }
+    g.lojas.push(loja);
+  });
+  return grupos.map(g=>g.lojas);
+})();
+function grupoRetiradaDaLoja(loja){ return GRUPOS_RETIRADA.find(g=>g.includes(loja))||[loja]; }
+let sociosLojaAtual=LOJAS_RETIRADA[0]||STORES[0]; // loja representante do GRUPO selecionado na aba Retiradas e Reembolso (ver grupoRetiradaDaLoja)
+let sociosEntradaLoja=sociosLojaAtual; // de qual loja específica (dentro do grupo) sai o dinheiro do próximo lançamento
 function renderSociosCard(){
   if(!LOJAS_RETIRADA.includes(sociosLojaAtual)) sociosLojaAtual=LOJAS_RETIRADA[0];
   const loja=sociosLojaAtual;
+  const lojasGrupo=grupoRetiradaDaLoja(loja);
+  if(!lojasGrupo.includes(sociosEntradaLoja)) sociosEntradaLoja=lojasGrupo[0];
   const mes=financasFiltroMes;
   const socios=sociosDaLoja(loja);
   const ownership=OWNERSHIP_LOJA[loja]||{};
   const listasPorSocio={}, retiradaPorSocio={}, reembolsoPorSocio={};
   socios.forEach(s=>{
-    listasPorSocio[s]=movimentosSocioMes(loja,s,mes);
+    listasPorSocio[s]=movimentosSocioMesGrupo(lojasGrupo,s,mes);
     retiradaPorSocio[s]=totalPorTipo(listasPorSocio[s],'retirada');
     reembolsoPorSocio[s]=totalPorTipo(listasPorSocio[s],'reembolso');
   });
   const tagTipo=t=>t==='reembolso'?'<span class="badge okv">Reembolso</span>':'<span class="badge">Retirada</span>';
   const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
-      ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}">✕</button></td></tr>`).join('')}
+      ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}${lojasGrupo.length>1?` <span class="loja-tag">${esc(x.loja)}</span>`:''}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}|${x.loja}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}|${x.loja}">✕</button></td></tr>`).join('')}
     </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
-  const linhaAjuste=(nome,ajuste)=>ajuste>0.004
-    ?`<span class="okv">Pagamento de <b>${fmtMoney(ajuste)}</b> pra ${nome}</span>`
-    :(ajuste<-0.004?`<span class="pend">${nome} devolve <b>${fmtMoney(-ajuste)}</b></span>`:'<span class="muted">Já equilibrado</span>');
-  let fechamentoHtml;
-  if(sociosFechamentoCarregando&&sociosLojaAtual===loja){
-    fechamentoHtml=sociosFechamentoProgresso&&sociosFechamentoProgresso.total?barraProgresso(sociosFechamentoProgresso.feito,sociosFechamentoProgresso.total,'📊 '+(sociosFechamentoProgresso.etapa||'Calculando fechamento de sócios...')):barraIndeterminada('📊 Calculando fechamento de sócios...');
-  }else if(sociosFechamentoErro&&sociosFechamentoLoja===loja){
-    fechamentoHtml=`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(sociosFechamentoErro)}</p>`;
-  }else if(sociosFechamento&&sociosFechamentoMes===mes&&sociosFechamentoLoja===loja){
-    const m=calcularMargensResumo(sociosFechamento,loja);
-    const {base,geralMes}=baseDistribuivelLoja(loja,m.margemLiquida,mes);
-    fechamentoHtml=`<div class="card" style="margin-top:14px">
-        <div class="muted" style="font-size:11px">FECHAMENTO DE ${esc(mesLabel(mes)).toUpperCase()} — ${geralMes?`SOBRA PRA DIVIDIR: ${fmtMoney(base)} (margem líquida ${fmtMoney(m.margemLiquida)} − despesas "Geral" da operação ${fmtMoney(geralMes)})`:`MARGEM LÍQUIDA DO MÊS: ${fmtMoney(m.margemLiquida)}`}${rotuloFonteFechamento(sociosFechamento)?` <span class="badge okv" title="Usa dado confirmado (Conciliação do Mercado Livre e/ou Auditoria) em vez do estimado do dia a dia, onde já tiver disponível pra esse período">${esc(rotuloFonteFechamento(sociosFechamento))}</span>`:''}</div>
-        <div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr);margin-top:8px">
-          ${socios.map(s=>{
-            const pct=ownership[s]||0;
-            const cota=base*(pct/100);
-            const ajuste=cota-retiradaPorSocio[s]+reembolsoPorSocio[s];
-            return `<div><span class="muted" style="font-size:11px">${NOME_SOCIO[s]} (${pct.toFixed(pct%1?2:0)}%)</span><br><b>${fmtMoney(cota)}</b><br>retirou <b>${fmtMoney(retiradaPorSocio[s])}</b>${reembolsoPorSocio[s]?`, reembolso de <b>${fmtMoney(reembolsoPorSocio[s])}</b>`:''}<br>${linhaAjuste(NOME_SOCIO[s],ajuste)}</div>`;
-          }).join('')}
-        </div>
-      </div>`;
-  }else{
-    fechamentoHtml=`<p class="hint" style="margin-top:10px">Clique em "Calcular fechamento" pra ver a margem líquida de ${esc(mesLabel(mes))} e quanto cada um recebe ou devolve.</p>`;
-  }
-  /* meses disponiveis pro seletor: junta os meses que ja tem despesa lançada + os meses que ja
-     tem retirada/reembolso lançado + o mes atualmente selecionado (financasFiltroMes), pra sempre
-     ter pelo menos uma opção mesmo em loja/mes sem nenhum lançamento ainda. Mesma lista usada no
-     filtro de mês da aba Despesas, pra manter os dois sincronizados quando possível. */
-  const mesesDespesasSoc=despesasArr().filter(despesaBateFiltroLoja).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
-  const mesesSociosSoc=socios.flatMap(s=>sociosLoja(loja)[s]).map(x=>(x.data||'').slice(0,7)).filter(Boolean);
+  /* meses disponiveis pro seletor: junta os meses que ja tem despesa lançada (das lojas do grupo)
+     + os meses que ja tem retirada/reembolso lançado (idem) + o mes atualmente selecionado
+     (financasFiltroMes), pra sempre ter pelo menos uma opção mesmo em grupo/mes sem nenhum
+     lançamento ainda. */
+  const mesesDespesasSoc=despesasArr().filter(d=>lojasGrupo.includes(d.loja)).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
+  const mesesSociosSoc=lojasGrupo.flatMap(lj=>socios.flatMap(s=>sociosLoja(lj)[s])).map(x=>(x.data||'').slice(0,7)).filter(Boolean);
   const mesesDisponiveisSoc=[...new Set([...mesesDespesasSoc,...mesesSociosSoc,mes])].sort().reverse();
+  const nomeGrupo=lojasGrupo.join(' + ');
   return `
     <div class="card" style="margin-top:16px">
-      <h3 style="margin-top:0">💸 Retiradas e Reembolsos — ${socios.map(s=>NOME_SOCIO[s]).join(', ')} (${esc(loja)})</h3>
+      <h3 style="margin-top:0">💸 Retiradas e Reembolsos — ${socios.map(s=>NOME_SOCIO[s]).join(', ')} (${esc(nomeGrupo)})</h3>
       <div class="toolbar-produtos" style="margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Loja
-          <select id="socLojaSel">${LOJAS_RETIRADA.map(l=>`<option value="${esc(l)}" ${l===loja?'selected':''}>${esc(l)}</option>`).join('')}</select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Grupo
+          <select id="socLojaSel">${GRUPOS_RETIRADA.map(g=>`<option value="${esc(g[0])}" ${g[0]===loja?'selected':''}>${esc(g.join(' + '))}</option>`).join('')}</select>
         </label>
         <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Mês
           <select id="scMesSel">${mesesDisponiveisSoc.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${esc(mesLabel(m))}</option>`).join('')}</select>
         </label>
       </div>
-      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima, e pode trocar pelo seletor acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. Marque de qual loja saiu o dinheiro (útil pro Fluxo de Caixa) — o valor final de pagar/devolver por sócio soma a cota dele em todas as lojas que participa, não é calculado isolado por loja (ver "Calcular fechamento de todas as lojas" no Resumo Financeiro).</p>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
+      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima, e pode trocar pelo seletor acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. ${lojasGrupo.length>1?`${esc(nomeGrupo)} têm os mesmos sócios, então entram juntas numa lista só`:'Essa loja tem sócio próprio (Paulo), por isso fica separada'} — o valor final de pagar/devolver soma a cota do sócio em todas as lojas que participa (ver "Calcular fechamento de todas as lojas" no Resumo Financeiro).</p>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr${lojasGrupo.length>1?' 1fr':''} auto">
         <label>Sócio<select id="socQuem">${socios.map(s=>`<option value="${s}">${NOME_SOCIO[s]}</option>`).join('')}</select></label>
         <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
         <label>Descrição<input id="socDescricao" type="text" placeholder="Ex: combustível"></label>
         <label>Valor (R$)<input id="socValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
         <label>Data${botaoData('socData',novoSocioData||hoje(),{style:''})}</label>
+        ${lojasGrupo.length>1?`<label>Saiu de<select id="socLojaEntrada">${lojasGrupo.map(l=>`<option value="${esc(l)}" ${l===sociosEntradaLoja?'selected':''}>${esc(l)}</option>`).join('')}</select></label>`:''}
         <button class="btn gold" id="btnAddSocio" style="align-self:end">+ Adicionar</button>
       </div>
       <div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr);gap:14px;margin-top:14px">
         ${socios.map(s=>`<div><b style="font-size:12.5px">${NOME_SOCIO[s]} — retirou ${fmtMoney(retiradaPorSocio[s])}${reembolsoPorSocio[s]?` · reembolso ${fmtMoney(reembolsoPorSocio[s])}`:''}</b>${listaSocio(s,listasPorSocio[s])}</div>`).join('')}
       </div>
       <p class="hint" style="margin-top:12px">O valor final de pagar/devolver de cada sócio (somando todas as lojas) sai no botão "📋 Calcular fechamento de todas as lojas", lá em cima em Resumo Financeiro.</p>
-      <button class="btn" id="btnFecharSocios" style="margin-top:6px" ${sociosFechamentoCarregando?'disabled':''}>${sociosFechamentoCarregando?'Calculando...':'📊 Calcular fechamento de '+esc(mesLabel(mes))}</button>
-      ${fechamentoHtml}
     </div>`;
 }
 function renderFinancas(){
@@ -6724,16 +6771,19 @@ function renderFinancas(){
     </tr></thead><tbody>
       ${doMes.length?doMes.map(d=>{
         const temItens=Array.isArray(d.itens)&&d.itens.length>0;
+        const podeDetalhar=d.origem==='ml_fatura'&&d.faturaKey;
+        const detalhando=financasDetalhandoFatura[d.id];
         const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
-        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${temItens?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px">${financasExpandido[d.id]?'▾ ocultar':'▸ detalhar'}</button>`:''}
+        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${d.origem==='imposto'?' <span class="badge">Auto (imposto)</span>':''}${podeDetalhar?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px" ${detalhando?'disabled':''}>${detalhando?'Buscando...':(financasExpandido[d.id]?'▾ ocultar':'▸ detalhar')}</button>`:''}
           ${d.origem==='ml_fatura'&&d.periodoDe&&d.periodoAte?`<div class="hint" style="margin:2px 0 0">Cobranças referentes a ${fmtData(d.periodoDe)} a ${fmtData(d.periodoAte)} · vence ${fmtData(d.dataPagamento)}</div>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
+          ${d.origem==='imposto'?`<div class="hint" style="margin:2px 0 0">${d.impostoAliquota||0}% sobre o faturamento de ${esc(mesLabel(d.impostoRefMes))} (${fmtMoney(d.impostoFaturamentoBase||0)}) — já descontado direto na Margem Líquida, isso aqui é só lembrete de pagamento.</div>`:''}
         </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
         <td>${fmtData(d.dataPagamento)}</td>
         <td>${d.recorrente?'<span class="badge okv">🔁 Recorrente</span>':'<span class="muted">—</span>'}</td>
-        <td style="text-align:center"><input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}></td>
+        <td style="text-align:center">${d.origem==='ml_fatura'?(d.pago?'<span class="badge okv" title="Débito automático — o Doca confirma sozinho quando o Mercado Livre marcar como pago">✓ Pago (auto)</span>':'<span class="badge" title="Débito automático — o Doca marca sozinho quando o Mercado Livre confirmar o pagamento">Pendente (auto)</span>'):`<input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}>`}</td>
         <td><button class="btn sm" data-fneditar="${d.id}">Editar</button> <button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
       </tr>`;
         const linhaDetalhe=(temItens&&financasExpandido[d.id])?`<tr><td colspan="7" style="background:var(--panel2,rgba(255,255,255,.02))">
@@ -6743,7 +6793,7 @@ function renderFinancas(){
                 <div class="hint" style="margin:2px 0 0;font-size:11px">${esc(explicarCobrancaML(it.label))}</div>
               </td><td style="border:none;padding:6px 8px;text-align:right;vertical-align:top" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}
           </tbody></table>
-        </td></tr>`:'';
+        </td></tr>`:(financasExpandido[d.id]&&!temItens&&!detalhando&&podeDetalhar?`<tr><td colspan="7"><p class="hint" style="color:#e66;margin:4px 0">⚠ Não consegui buscar o detalhamento dessa fatura.</p></td></tr>`:'');
         return linhaPrincipal+linhaDetalhe;
       }).join(''):`<tr><td colspan="7" class="empty">Nenhuma despesa cadastrada nesse mês.</td></tr>`}
     </tbody></table></div>
@@ -6799,7 +6849,11 @@ function renderFinancas(){
     });
   });
   el.querySelectorAll('[data-fndetalhar]').forEach(b=>b.onclick=()=>{
-    financasExpandido[b.dataset.fndetalhar]=!financasExpandido[b.dataset.fndetalhar];
+    const id=b.dataset.fndetalhar;
+    const d=despesasArr().find(x=>x.id===id);
+    const temItens=d&&Array.isArray(d.itens)&&d.itens.length>0;
+    if(!temItens){ puxarItensFaturaMl(id); return; }
+    financasExpandido[id]=!financasExpandido[id];
     renderFinancas();
   });
   el.querySelectorAll('[data-puxarfatura]').forEach(b=>b.onclick=async()=>{
@@ -6852,7 +6906,9 @@ function renderFinancas(){
   const btnSocData=document.getElementById('socData');
   if(btnSocData) btnSocData.onclick=()=>abrirSeletorData(novoSocioData||hoje(),(iso)=>{ novoSocioData=iso; renderFinancas(); });
   const socLojaSel=document.getElementById('socLojaSel');
-  if(socLojaSel) socLojaSel.onchange=e=>{ sociosLojaAtual=e.target.value; renderFinancas(); };
+  if(socLojaSel) socLojaSel.onchange=e=>{ sociosLojaAtual=e.target.value; sociosEntradaLoja=e.target.value; renderFinancas(); };
+  const socLojaEntrada=document.getElementById('socLojaEntrada');
+  if(socLojaEntrada) socLojaEntrada.onchange=e=>{ sociosEntradaLoja=e.target.value; };
   const btnAddSocio=document.getElementById('btnAddSocio');
   if(btnAddSocio) btnAddSocio.onclick=()=>{
     const socio=document.getElementById('socQuem').value;
@@ -6862,26 +6918,24 @@ function renderFinancas(){
     const data=novoSocioData||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
     novoSocioData='';
-    addMovimentoSocio(sociosLojaAtual,socio,tipo,descricao,valor,data);
+    addMovimentoSocio(sociosEntradaLoja,socio,tipo,descricao,valor,data);
     toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(NOME_SOCIO[socio]||socio)+' lançado(a).');
     renderFinancas();
   };
   el.querySelectorAll('[data-editsocio]').forEach(b=>b.onclick=()=>{
-    const [socio,id]=b.dataset.editsocio.split('|');
-    abrirEditarSocioModal(sociosLojaAtual,socio,id);
+    const [socio,id,lojaLancamento]=b.dataset.editsocio.split('|');
+    abrirEditarSocioModal(lojaLancamento,socio,id);
   });
   el.querySelectorAll('[data-remsocio]').forEach(b=>b.onclick=()=>{
-    const [socio,id]=b.dataset.remsocio.split('|');
+    const [socio,id,lojaLancamento]=b.dataset.remsocio.split('|');
     confirmAction('Excluir esse lançamento?',()=>{
-      removerMovimentoSocio(sociosLojaAtual,socio,id);
+      removerMovimentoSocio(lojaLancamento,socio,id);
       toast('Lançamento removido.');
       renderFinancas();
     });
   });
   const scMesSel=document.getElementById('scMesSel');
   if(scMesSel) scMesSel.onchange=e=>{ financasFiltroMes=e.target.value; renderFinancas(); };
-  const btnFecharSocios=document.getElementById('btnFecharSocios');
-  if(btnFecharSocios) btnFecharSocios.onclick=calcularFechamentoSocios;
   const fcAlvo=document.getElementById('fcAlvo');
   if(fcAlvo) fcAlvo.onchange=e=>{ fluxoCaixaAlvo=e.target.value; renderFinancas(); };
   const fcSimAlvo=document.getElementById('fcSimAlvo');
@@ -9470,6 +9524,7 @@ function irParaAba(nome){
   const p=document.getElementById('tab-'+nome); if(p) p.classList.remove('hidden');
   if(sub) irParaSub(sub);
   if(nome==='tarefas') mostrarAlertaTarefasDoDia();
+  if(nome==='financas') mostrarAlertaDespesasDoDia();
   try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){}
 }
 document.querySelectorAll('#mainNav button').forEach(b=>{ b.onclick=()=>irParaAba(b.dataset.tab); });
@@ -9520,8 +9575,10 @@ renderBloqueio();   /* trava a tela imediatamente, antes de tudo */
 renderAll();
 /* alerta de tarefas de hoje - só agora, depois do loadFromLocalStorage()+renderAll() acima,
    é que o state tem os dados reais (antes disso ainda era o esqueleto vazio, por isso o
-   alerta nunca aparecia sozinho ao abrir o programa - pedido do Felipe 19/08, 4ª rodada). */
-mostrarAlertaTarefasDoDia();
+   alerta nunca aparecia sozinho ao abrir o programa - pedido do Felipe 19/08, 4ª rodada).
+   Encadeado com o alerta de despesas vencendo (pedido do Felipe 23/08) - os dois usam o mesmo
+   modal, então não dá pra abrir junto, um mostra depois que o outro for fechado. */
+mostrarAlertaTarefasDoDia(mostrarAlertaDespesasDoDia);
 tentarReconectar();
 /* sincroniza com o Mercado Livre sozinho assim que o Doca abre, se o backend já estiver
    configurado — não precisa clicar em nada nem dar F5. Passa por TODAS as lojas (STORES),
@@ -9583,6 +9640,12 @@ tentarReconectar();
     }catch(e){
       console.error(`Sincronização automática do imposto (Visão Geral) falhou ao abrir o Doca (loja ${loja}):`,e.message);
     }
+    try{
+      await sincronizarImpostoDespesaMes(loja);
+      renderFinancas();
+    }catch(e){
+      console.error(`Sincronização automática da despesa de Imposto falhou ao abrir o Doca (loja ${loja}):`,e.message);
+    }
   }
 })();
 /* alerta de tarefas do dia - pedido do Felipe 19/08, ajustado 20/08:
@@ -9621,9 +9684,12 @@ function tarefasDeHojePendentes(){
   });
   return porData;
 }
-function mostrarAlertaTarefasDoDia(){
+/* aoFechar (opcional): chamado depois que o usuário fecha o alerta - usado pra encadear com o
+   alerta de despesas vencendo, já que os dois usam o MESMO modal (ver mostrarAlertaDespesasDoDia)
+   e não dá pra abrir os dois ao mesmo tempo sem um sobrescrever o outro. */
+function mostrarAlertaTarefasDoDia(aoFechar){
   const lista=tarefasDeHojePendentes();
-  if(!lista.length) return;
+  if(!lista.length){ if(aoFechar) aoFechar(); return; }
   const body=openModal(false);
   body.innerHTML=`<h3>⏰ ${lista.length} tarefa${lista.length>1?'s':''} pra hoje</h3>
     <p class="hint" style="margin:0 0 12px">Ainda não concluída${lista.length>1?'s':''}:</p>
@@ -9631,14 +9697,37 @@ function mostrarAlertaTarefasDoDia(){
       ${lista.map(t=>`<tr><td>${esc(t.titulo)}${t.hora?` <span class="muted" style="font-size:11px">(${esc(t.hora)})</span>`:''}</td></tr>`).join('')}
     </tbody></table></div>
     <div class="modal-actions"><button class="btn gold" id="btnFecharAlertaTarefasDoDia">Ok, entendi</button></div>`;
-  document.getElementById('btnFecharAlertaTarefasDoDia').onclick=closeModal;
+  document.getElementById('btnFecharAlertaTarefasDoDia').onclick=()=>{ closeModal(); if(aoFechar) aoFechar(); };
+}
+/* despesas vencendo ou vencidas e ainda não pagas (pedido do Felipe 23/08, "igual gestão ativa") -
+   mesmo padrão do alerta de tarefas: aparece ao abrir o Doca e ao entrar em Finanças, some quando
+   fechado mas VOLTA a aparecer enquanto a despesa continuar pendente (só some de vez quando
+   marcar como paga). Fatura ML fica de fora - é debitada automático e o próprio Doca já marca
+   como paga sozinho (ver puxarFaturaMl), não precisa de lembrete manual pra ela. */
+function despesasVencendoPendentes(){
+  const h=hoje();
+  return despesasArr().filter(d=>!d.pago&&d.origem!=='ml_fatura'&&d.dataPagamento&&d.dataPagamento<=h)
+    .sort((a,b)=>a.dataPagamento.localeCompare(b.dataPagamento));
+}
+function mostrarAlertaDespesasDoDia(aoFechar){
+  const lista=despesasVencendoPendentes();
+  if(!lista.length){ if(aoFechar) aoFechar(); return; }
+  const body=openModal(false);
+  body.innerHTML=`<h3>💸 ${lista.length} despesa${lista.length>1?'s':''} vencendo</h3>
+    <p class="hint" style="margin:0 0 12px">Ainda não paga${lista.length>1?'s':''}:</p>
+    <div class="table-wrap"><table class="tbl-produtos"><tbody>
+      ${lista.map(d=>`<tr><td>${esc(d.descricao)} <span class="loja-tag">${esc(d.loja)}</span></td><td class="num">${fmtMoney(d.valor)}</td><td class="muted" style="white-space:nowrap">${d.dataPagamento<hoje()?'venceu ':'vence '}${fmtData(d.dataPagamento)}</td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="modal-actions"><button class="btn gold" id="btnFecharAlertaDespesasDoDia">Ok, entendi</button></div>`;
+  document.getElementById('btnFecharAlertaDespesasDoDia').onclick=()=>{ closeModal(); if(aoFechar) aoFechar(); };
 }
 /* bug corrigido 19/08: essa linha chamava checarTarefasVencendo(), uma função que nunca chegou
    a ser criada - o erro (ReferenceError não capturado) parava a execução do script bem aqui,
    impedindo o setInterval do re-sync financeiro periódico (linha abaixo) de sequer ser
    registrado. Troca pela função que já existe e faz o mesmo (avisar de tarefa pendente pra
-   hoje), rodando 1x já na abertura do app. */
-mostrarAlertaTarefasDoDia();
+   hoje), rodando 1x já na abertura do app - encadeada com o alerta de despesas (pedido do Felipe
+   23/08), já que os dois competem pelo mesmo modal. */
+mostrarAlertaTarefasDoDia(mostrarAlertaDespesasDoDia);
 /* re-sync periódico só do financeiro (Mercado Pago), enquanto a aba do Doca fica aberta.
    Motivo (descoberto com dado real em 13/08): o relatório do Mercado Pago fica pronto rápido,
    mas o Doca só ia buscar ele quando a aba era aberta/recarregada - sem isso, um relatório que

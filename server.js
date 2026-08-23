@@ -2747,17 +2747,19 @@ function anoRazoavel(dataIso) {
   const ano = Number(String(dataIso || '').slice(0, 4));
   return ano && ano <= 2100 ? true : false;
 }
-async function buscarFaturaMl(loja) {
+/* busca o detalhamento (itens/cobranças) de UM período de fatura pela key - separado de
+   buscarFaturaMl pra dar pra reaproveitar tanto na busca do período mais recente quanto sob
+   demanda pra um período JÁ CONHECIDO (ver /financas/fatura-ml/detalhar) - o endpoint de listagem
+   de períodos só devolve o mais recente (limit=1), mas o detalhamento por key funciona pra
+   qualquer período antigo desde que a gente já saiba a key (o Doca guarda ela em cada despesa,
+   ver faturaKey). */
+async function buscarItensFaturaPorKey(loja, key) {
   const accessToken = await tokenValido(loja);
-  const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=1';
-  const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const p = (j.results || [])[0];
-  if (!p) return null;
   let itens = [];
   let itensAviso = null;
-  if (p.key) {
+  if (key) {
     try {
-      const urlResumo = `https://api.mercadolibre.com/billing/integration/periods/key/${p.key}/summary?group=ML&document_type=BILL`;
+      const urlResumo = `https://api.mercadolibre.com/billing/integration/periods/key/${key}/summary?group=ML&document_type=BILL`;
       const jResumo = await fetchMLDebug(urlResumo, { headers: { Authorization: `Bearer ${accessToken}` } });
       const charges = (jResumo.summary && jResumo.summary.charges) || [];
       const bonuses = (jResumo.summary && jResumo.summary.bonuses) || [];
@@ -2772,7 +2774,7 @@ async function buscarFaturaMl(loja) {
         const limite = 150;
         let total = null;
         do {
-          const urlDetalhes = `https://api.mercadolibre.com/billing/integration/periods/key/${p.key}/group/ML/details?document_type=BILL&limit=${limite}&offset=${offset}`;
+          const urlDetalhes = `https://api.mercadolibre.com/billing/integration/periods/key/${key}/group/ML/details?document_type=BILL&limit=${limite}&offset=${offset}`;
           const jDetalhes = await fetchMLDebug(urlDetalhes, { headers: { Authorization: `Bearer ${accessToken}` } });
           const linhas = jDetalhes.results || [];
           total = typeof jDetalhes.total === 'number' ? jDetalhes.total : linhas.length;
@@ -2790,6 +2792,15 @@ async function buscarFaturaMl(loja) {
       }
     }
   }
+  return { itens, itensAviso };
+}
+async function buscarFaturaMl(loja) {
+  const accessToken = await tokenValido(loja);
+  const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=1';
+  const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  const p = (j.results || [])[0];
+  if (!p) return null;
+  const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key);
   let vencimento = p.debt_expiration_date || p.expiration_date || null;
   if (vencimento && !anoRazoavel(vencimento)) vencimento = null;
   if (!vencimento && p.period && p.period.date_to && anoRazoavel(p.period.date_to)) vencimento = p.period.date_to;
@@ -2812,6 +2823,20 @@ app.get('/financas/fatura-ml', async (req, res) => {
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const fatura = await buscarFaturaMl(loja);
     res.json({ ok: true, loja, fatura });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
+/* detalhamento sob demanda de uma fatura JÁ CONHECIDA (qualquer mês, não só a mais recente) -
+   pedido do Felipe 23/08: o botão "Detalhar" só funcionava na fatura mais atual porque
+   buscarFaturaMl só traz o período mais recente (limit=1); aqui o frontend manda a key que já
+   tem guardada na despesa (faturaKey) e a gente busca o detalhamento direto por ela. */
+app.get('/financas/fatura-ml/detalhar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const key = req.query.key;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!key) return res.status(400).json({ ok: false, erro: 'Parametro "key" obrigatorio.' });
+    const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, key);
+    res.json({ ok: true, itens, itensAviso });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 /* ================= Financas: Resumo Financeiro (faturamento, margem, deducoes por periodo) ================= */
@@ -3148,7 +3173,9 @@ app.get('/financas/faturamento-mes', async (req, res) => {
   try {
     const loja = req.query.loja;
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    const { de, ate } = calcularPeriodoResumo('mes_corrente');
+    // de/ate opcionais (pedido do Felipe 23/08 - despesa de Imposto automática, base no
+    // faturamento do MES ANTERIOR, não do mes corrente) - sem eles, comportamento de sempre.
+    const { de, ate } = (req.query.de && req.query.ate) ? calcularPeriodoResumo('personalizado', req.query.de, req.query.ate) : calcularPeriodoResumo('mes_corrente');
     const faturamento = await buscarFaturamentoRapido(loja, de, ate);
     res.json({ ok: true, loja, periodo: { de, ate }, faturamento });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
