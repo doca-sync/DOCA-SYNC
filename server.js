@@ -3395,6 +3395,24 @@ const loja = req.query.loja || req.body?.loja;
         ]
       );
     }
+    /* achado com dado real do Felipe 23/08: um anuncio CANCELADO no Mercado Livre some da
+       listagem /users/{id}/items/search (buscarItensDoVendedor) - o loop acima so' faz UPSERT
+       dos itens que vieram na resposta, entao a linha desse anuncio em ml_produtos ficava
+       congelada pra sempre com o ultimo status conhecido (ex: "paused"), porque nada nunca
+       marcava ela como fechada. O Doca (frontend) ate' tem logica pra tratar status="closed"
+       como "sumiu, ignora" (marcarAusentesNoML), mas dependia do BACKEND ja' ter marcado assim -
+       o que nunca acontecia. Aqui fecha o buraco: qualquer linha dessa loja que nao veio nesta
+       sincronizacao (e ainda nao estava "closed") vira "closed" agora. So' roda quando a
+       sincronizacao trouxe pelo menos 1 item - se vier vazia (ex: falha passageira da API do
+       ML), nao mexe em nada, pra nao fechar a loja inteira por engano numa falha transitoria. */
+    if (itens.length > 0) {
+      const idsAtuais = itens.map(it => it.id);
+      await pool.query(
+        `update ml_produtos set status = 'closed', atualizado_em = now()
+         where loja = $1 and status <> 'closed' and not (ml_item_id = any($2::text[]))`,
+        [loja, idsAtuais]
+      );
+    }
     await pool.query(
       'update ml_sync_log set concluido_em = now(), itens_sincronizados = $2 where id = $1',
       [logId, itens.length]
