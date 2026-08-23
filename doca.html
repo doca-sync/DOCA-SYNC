@@ -5310,8 +5310,10 @@ function abrirEditarDespesaModal(id){
     </div>
     <div class="acoes-linha" style="margin-top:10px">
       <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="feRecorrente" style="width:auto" ${d.recorrente?'checked':''}> Despesa recorrente (repete todo mês)</label>
+      ${(d.origem!=='ml_fatura'&&d.origem!=='imposto')?`<label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="fePago" style="width:auto" ${d.pago?'checked':''}> Pago (desmarque se tickou por engano)</label>`:''}
     </div>
     ${d.origem==='ml_fatura'?`<p class="hint" style="margin-top:8px">⚠ Esta despesa veio automático da fatura do Mercado Livre — se sincronizar de novo, o valor puxado da API substitui o que você editar aqui.</p>`:''}
+    ${d.origem==='imposto'?`<p class="hint" style="margin-top:8px">⚠ Esta despesa de Imposto é automática — o status de pago fica em Despesas, na coluna Pago.</p>`:''}
     <div class="modal-actions"><button class="btn" id="btnCancelarEditDesp">Cancelar</button><button class="btn acc" id="btnSalvarEditDesp">Salvar alterações</button></div>`;
   document.getElementById('btnCancelarEditDesp').onclick=closeModal;
   document.getElementById('btnSalvarEditDesp').onclick=()=>{
@@ -5323,6 +5325,8 @@ function abrirEditarDespesaModal(id){
       recorrente:document.getElementById('feRecorrente').checked,
     });
     if(!r.ok){ alert(r.msg); return; }
+    const fePago=document.getElementById('fePago');
+    if(fePago&&fePago.checked!==d.pago) marcarDespesaPaga(id,fePago.checked);
     closeModal(); toast('Despesa atualizada.'); renderFinancas();
   };
 }
@@ -6602,7 +6606,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
    tabela de despesas, usando o mesmo mês selecionado em financasFiltroMes. O fechamento (margem
    líquida do mês) é calculado sob demanda, com uma busca própria à API do Mercado Livre pro mês
    inteiro. */
-let novoSocioData='';
+let novoSocioData={}; // gi (índice em GRUPOS_RETIRADA) -> data escolhida pro próximo lançamento (objeto pq agora tem 1 formulário por grupo, todos na mesma tela)
 let novaDespesaData='';
 let novoPagAmauriData='';
 /* Retiradas e Reembolso funciona em qualquer loja 'distribui' (TorvStore, Dor Block, Orbix) - cada
@@ -6629,60 +6633,61 @@ const GRUPOS_RETIRADA=(()=>{
   return grupos.map(g=>g.lojas);
 })();
 function grupoRetiradaDaLoja(loja){ return GRUPOS_RETIRADA.find(g=>g.includes(loja))||[loja]; }
-let sociosLojaAtual=LOJAS_RETIRADA[0]||STORES[0]; // loja representante do GRUPO selecionado na aba Retiradas e Reembolso (ver grupoRetiradaDaLoja)
-let sociosEntradaLoja=sociosLojaAtual; // de qual loja específica (dentro do grupo) sai o dinheiro do próximo lançamento
+let sociosEntradaLojaPorGrupo={}; // gi (índice em GRUPOS_RETIRADA) -> de qual loja específica do grupo sai o dinheiro do próximo lançamento
+/* Redesenho pedido pelo Felipe 23/08 (última revisão): "não precisa separar filtro por loja,
+   mostre os 3 na mesma tela e depois só discrimine por sócio no relatório" - tira o seletor de
+   "Grupo" e mostra um cartão PARA CADA grupo (TorvStore+Dor Block, Orbix Brasil) empilhado na
+   mesma tela, sem precisar trocar de filtro pra ver o outro. O mês continua com um seletor só
+   (compartilhado), já que o lançamento sempre é "nesse mês". */
 function renderSociosCard(){
-  if(!LOJAS_RETIRADA.includes(sociosLojaAtual)) sociosLojaAtual=LOJAS_RETIRADA[0];
-  const loja=sociosLojaAtual;
-  const lojasGrupo=grupoRetiradaDaLoja(loja);
-  if(!lojasGrupo.includes(sociosEntradaLoja)) sociosEntradaLoja=lojasGrupo[0];
   const mes=financasFiltroMes;
-  const socios=sociosDaLoja(loja);
-  const ownership=OWNERSHIP_LOJA[loja]||{};
-  const listasPorSocio={}, retiradaPorSocio={}, reembolsoPorSocio={};
-  socios.forEach(s=>{
-    listasPorSocio[s]=movimentosSocioMesGrupo(lojasGrupo,s,mes);
-    retiradaPorSocio[s]=totalPorTipo(listasPorSocio[s],'retirada');
-    reembolsoPorSocio[s]=totalPorTipo(listasPorSocio[s],'reembolso');
-  });
-  const tagTipo=t=>t==='reembolso'?'<span class="badge okv">Reembolso</span>':'<span class="badge">Retirada</span>';
-  const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
-      ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}${lojasGrupo.length>1?` <span class="loja-tag">${esc(x.loja)}</span>`:''}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}|${x.loja}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}|${x.loja}">✕</button></td></tr>`).join('')}
-    </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
-  /* meses disponiveis pro seletor: junta os meses que ja tem despesa lançada (das lojas do grupo)
-     + os meses que ja tem retirada/reembolso lançado (idem) + o mes atualmente selecionado
-     (financasFiltroMes), pra sempre ter pelo menos uma opção mesmo em grupo/mes sem nenhum
-     lançamento ainda. */
-  const mesesDespesasSoc=despesasArr().filter(d=>lojasGrupo.includes(d.loja)).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
-  const mesesSociosSoc=lojasGrupo.flatMap(lj=>socios.flatMap(s=>sociosLoja(lj)[s])).map(x=>(x.data||'').slice(0,7)).filter(Boolean);
+  const mesesDespesasSoc=despesasArr().filter(d=>LOJAS_RETIRADA.includes(d.loja)).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
+  const mesesSociosSoc=LOJAS_RETIRADA.flatMap(lj=>sociosDaLoja(lj).flatMap(s=>sociosLoja(lj)[s])).map(x=>(x.data||'').slice(0,7)).filter(Boolean);
   const mesesDisponiveisSoc=[...new Set([...mesesDespesasSoc,...mesesSociosSoc,mes])].sort().reverse();
-  const nomeGrupo=lojasGrupo.join(' + ');
-  return `
-    <div class="card" style="margin-top:16px">
-      <h3 style="margin-top:0">💸 Retiradas e Reembolsos — ${socios.map(s=>NOME_SOCIO[s]).join(', ')} (${esc(nomeGrupo)})</h3>
-      <div class="toolbar-produtos" style="margin-bottom:8px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Grupo
-          <select id="socLojaSel">${GRUPOS_RETIRADA.map(g=>`<option value="${esc(g[0])}" ${g[0]===loja?'selected':''}>${esc(g.join(' + '))}</option>`).join('')}</select>
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Mês
-          <select id="scMesSel">${mesesDisponiveisSoc.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${esc(mesLabel(m))}</option>`).join('')}</select>
-        </label>
-      </div>
-      <p class="hint" style="margin:0 0 10px">Lance aqui em ${esc(mesLabel(mes))} (mesmo mês selecionado na tabela de despesas acima, e pode trocar pelo seletor acima): <b>Retirada</b> é o que cada sócio já tirou da empresa pra ele; <b>Reembolso</b> é o inverso — o que ele pagou do próprio bolso pela empresa e que precisa ser devolvido. ${lojasGrupo.length>1?`${esc(nomeGrupo)} têm os mesmos sócios, então entram juntas numa lista só`:'Essa loja tem sócio próprio (Paulo), por isso fica separada'} — o valor final de pagar/devolver soma a cota do sócio em todas as lojas que participa (ver "Calcular fechamento de todas as lojas" no Resumo Financeiro).</p>
+  const tagTipo=t=>t==='reembolso'?'<span class="badge okv">Reembolso</span>':'<span class="badge">Retirada</span>';
+  const gruposHtml=GRUPOS_RETIRADA.map((lojasGrupo,gi)=>{
+    const nomeGrupo=lojasGrupo.join(' + ');
+    const socios=sociosDaLoja(lojasGrupo[0]);
+    if(!lojasGrupo.includes(sociosEntradaLojaPorGrupo[gi])) sociosEntradaLojaPorGrupo[gi]=lojasGrupo[0];
+    const entradaLoja=sociosEntradaLojaPorGrupo[gi];
+    const listasPorSocio={}, retiradaPorSocio={}, reembolsoPorSocio={};
+    socios.forEach(s=>{
+      listasPorSocio[s]=movimentosSocioMesGrupo(lojasGrupo,s,mes);
+      retiradaPorSocio[s]=totalPorTipo(listasPorSocio[s],'retirada');
+      reembolsoPorSocio[s]=totalPorTipo(listasPorSocio[s],'reembolso');
+    });
+    const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
+        ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}${lojasGrupo.length>1?` <span class="loja-tag">${esc(x.loja)}</span>`:''}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}|${x.loja}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}|${x.loja}">✕</button></td></tr>`).join('')}
+      </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
+    return `
+    <div class="card" style="margin-top:16px" data-gruposocio="${gi}">
+      <h3 style="margin-top:0">💸 ${esc(nomeGrupo)} — ${socios.map(s=>NOME_SOCIO[s]).join(', ')}</h3>
+      <p class="hint" style="margin:0 0 10px">${lojasGrupo.length>1?`${esc(nomeGrupo)} têm os mesmos sócios, então entram juntas numa lista só`:'Essa loja tem sócio próprio (Paulo), por isso fica separada'} — <b>Retirada</b> é o que cada sócio já tirou pra ele; <b>Reembolso</b> é o inverso.</p>
       <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr${lojasGrupo.length>1?' 1fr':''} auto">
-        <label>Sócio<select id="socQuem">${socios.map(s=>`<option value="${s}">${NOME_SOCIO[s]}</option>`).join('')}</select></label>
-        <label>Tipo<select id="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
-        <label>Descrição<input id="socDescricao" type="text" placeholder="Ex: combustível"></label>
-        <label>Valor (R$)<input id="socValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
-        <label>Data${botaoData('socData',novoSocioData||hoje(),{style:''})}</label>
-        ${lojasGrupo.length>1?`<label>Saiu de<select id="socLojaEntrada">${lojasGrupo.map(l=>`<option value="${esc(l)}" ${l===sociosEntradaLoja?'selected':''}>${esc(l)}</option>`).join('')}</select></label>`:''}
-        <button class="btn gold" id="btnAddSocio" style="align-self:end">+ Adicionar</button>
+        <label>Sócio<select class="socQuem">${socios.map(s=>`<option value="${s}">${NOME_SOCIO[s]}</option>`).join('')}</select></label>
+        <label>Tipo<select class="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
+        <label>Descrição<input class="socDescricao" type="text" placeholder="Ex: combustível"></label>
+        <label>Valor (R$)<input class="socValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
+        <label>Data${botaoData(`socData_${gi}`,novoSocioData[gi]||hoje(),{style:''})}</label>
+        ${lojasGrupo.length>1?`<label>Saiu de<select class="socLojaEntrada">${lojasGrupo.map(l=>`<option value="${esc(l)}" ${l===entradaLoja?'selected':''}>${esc(l)}</option>`).join('')}</select></label>`:''}
+        <button class="btn gold" data-addsocio="${gi}" style="align-self:end">+ Adicionar</button>
       </div>
       <div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr);gap:14px;margin-top:14px">
         ${socios.map(s=>`<div><b style="font-size:12.5px">${NOME_SOCIO[s]} — retirou ${fmtMoney(retiradaPorSocio[s])}${reembolsoPorSocio[s]?` · reembolso ${fmtMoney(reembolsoPorSocio[s])}`:''}</b>${listaSocio(s,listasPorSocio[s])}</div>`).join('')}
       </div>
-      <p class="hint" style="margin-top:12px">O valor final de pagar/devolver de cada sócio (somando todas as lojas) sai no botão "📋 Calcular fechamento de todas as lojas", lá em cima em Resumo Financeiro.</p>
     </div>`;
+  }).join('');
+  return `
+    <div class="card" style="margin-top:16px">
+      <h3 style="margin-top:0">💸 Retiradas e Reembolsos</h3>
+      <div class="toolbar-produtos" style="margin-bottom:8px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)">Mês
+          <select id="scMesSel">${mesesDisponiveisSoc.map(m=>`<option value="${m}" ${m===mes?'selected':''}>${esc(mesLabel(m))}</option>`).join('')}</select>
+        </label>
+      </div>
+      <p class="hint" style="margin:0">Lance abaixo em ${esc(mesLabel(mes))} (mesmo mês da tabela de despesas acima, pode trocar pelo seletor). O valor final de pagar/devolver de cada sócio (somando todas as lojas que ele participa) sai no botão "📋 Calcular fechamento de todas as lojas", lá em cima em Resumo Financeiro.</p>
+    </div>
+    ${gruposHtml}`;
 }
 function renderFinancas(){
   const el=document.getElementById('tab-financas'); if(!el) return;
@@ -6758,6 +6763,9 @@ function renderFinancas(){
       <h3 style="margin-top:0">📄 Fatura do Mercado Livre</h3>
       <p class="hint" style="margin:0 0 6px">Busca sozinha quando o Doca abre (comissão de venda, anúncio, Full etc — não é o saldo do Mercado Pago), e cadastra/atualiza como despesa recorrente automaticamente.</p>
       ${STORES.filter(l=>financasUltimoErroAuto[l]).map(l=>`<p class="hint" style="color:#e66;margin:6px 0 0">⚠ ${esc(l)}: a última tentativa automática falhou — ${esc(financasUltimoErroAuto[l])}</p>`).join('')}
+    </div>`:''}
+    ${!finLoja(financasFiltroLoja).aliquotaImposto?`<div class="card">
+      <p class="hint" style="margin:0">⚠ A despesa automática de Imposto (${esc(financasFiltroLoja)}) ainda não aparece porque não há alíquota configurada — defina em <b>Resumo Financeiro → Alíquota</b> pra essa loja que ela entra sozinha na próxima sincronização (todo dia 20, com base no faturamento do mês anterior).</p>
     </div>`:''}
     <div class="toolbar-produtos">
       <select id="fnFiltroLoja">
@@ -6903,25 +6911,28 @@ function renderFinancas(){
   if(audAnexoLiberacao) audAnexoLiberacao.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('liberacao',f); e.target.value=''; };
   document.querySelectorAll('[data-baixaranexo]').forEach(b=>{ b.onclick=()=>baixarAnexoAuditoria(b.dataset.baixaranexo); });
   document.querySelectorAll('[data-excluiranexo]').forEach(b=>{ b.onclick=()=>excluirAnexoAuditoria(b.dataset.excluiranexo); });
-  const btnSocData=document.getElementById('socData');
-  if(btnSocData) btnSocData.onclick=()=>abrirSeletorData(novoSocioData||hoje(),(iso)=>{ novoSocioData=iso; renderFinancas(); });
-  const socLojaSel=document.getElementById('socLojaSel');
-  if(socLojaSel) socLojaSel.onchange=e=>{ sociosLojaAtual=e.target.value; sociosEntradaLoja=e.target.value; renderFinancas(); };
-  const socLojaEntrada=document.getElementById('socLojaEntrada');
-  if(socLojaEntrada) socLojaEntrada.onchange=e=>{ sociosEntradaLoja=e.target.value; };
-  const btnAddSocio=document.getElementById('btnAddSocio');
-  if(btnAddSocio) btnAddSocio.onclick=()=>{
-    const socio=document.getElementById('socQuem').value;
-    const tipo=document.getElementById('socTipo').value;
-    const descricao=document.getElementById('socDescricao').value.trim();
-    const valor=parseMoeda(document.getElementById('socValor').value);
-    const data=novoSocioData||hoje();
-    if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
-    novoSocioData='';
-    addMovimentoSocio(sociosEntradaLoja,socio,tipo,descricao,valor,data);
-    toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(NOME_SOCIO[socio]||socio)+' lançado(a).');
-    renderFinancas();
-  };
+  el.querySelectorAll('[data-gruposocio]').forEach(card=>{
+    const gi=Number(card.dataset.gruposocio);
+    const lojasGrupo=GRUPOS_RETIRADA[gi]||[];
+    const btnSocData=card.querySelector(`#socData_${gi}`);
+    if(btnSocData) btnSocData.onclick=()=>abrirSeletorData(novoSocioData[gi]||hoje(),(iso)=>{ novoSocioData[gi]=iso; renderFinancas(); });
+    const socLojaEntrada=card.querySelector('.socLojaEntrada');
+    if(socLojaEntrada) socLojaEntrada.onchange=e=>{ sociosEntradaLojaPorGrupo[gi]=e.target.value; };
+    const btnAddSocio=card.querySelector('[data-addsocio]');
+    if(btnAddSocio) btnAddSocio.onclick=()=>{
+      const socio=card.querySelector('.socQuem').value;
+      const tipo=card.querySelector('.socTipo').value;
+      const descricao=card.querySelector('.socDescricao').value.trim();
+      const valor=parseMoeda(card.querySelector('.socValor').value);
+      const data=novoSocioData[gi]||hoje();
+      const lojaEntrada=sociosEntradaLojaPorGrupo[gi]||lojasGrupo[0];
+      if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+      novoSocioData[gi]='';
+      addMovimentoSocio(lojaEntrada,socio,tipo,descricao,valor,data);
+      toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(NOME_SOCIO[socio]||socio)+' lançado(a).');
+      renderFinancas();
+    };
+  });
   el.querySelectorAll('[data-editsocio]').forEach(b=>b.onclick=()=>{
     const [socio,id,lojaLancamento]=b.dataset.editsocio.split('|');
     abrirEditarSocioModal(lojaLancamento,socio,id);
@@ -9716,9 +9727,17 @@ function mostrarAlertaDespesasDoDia(aoFechar){
   body.innerHTML=`<h3>💸 ${lista.length} despesa${lista.length>1?'s':''} vencendo</h3>
     <p class="hint" style="margin:0 0 12px">Ainda não paga${lista.length>1?'s':''}:</p>
     <div class="table-wrap"><table class="tbl-produtos"><tbody>
-      ${lista.map(d=>`<tr><td>${esc(d.descricao)} <span class="loja-tag">${esc(d.loja)}</span></td><td class="num">${fmtMoney(d.valor)}</td><td class="muted" style="white-space:nowrap">${d.dataPagamento<hoje()?'venceu ':'vence '}${fmtData(d.dataPagamento)}</td></tr>`).join('')}
+      ${lista.map(d=>`<tr><td>${esc(d.descricao)} <span class="loja-tag">${esc(d.loja)}</span></td><td class="num">${fmtMoney(d.valor)}</td><td class="muted" style="white-space:nowrap">${d.dataPagamento<hoje()?'venceu ':'vence '}${fmtData(d.dataPagamento)}</td><td><button class="btn sm" data-alertjapaguei="${d.id}">Já paguei</button></td></tr>`).join('')}
     </tbody></table></div>
     <div class="modal-actions"><button class="btn gold" id="btnFecharAlertaDespesasDoDia">Ok, entendi</button></div>`;
+  body.querySelectorAll('[data-alertjapaguei]').forEach(btn=>{
+    btn.onclick=()=>{
+      marcarDespesaPaga(btn.getAttribute('data-alertjapaguei'),true);
+      toast('Despesa marcada como paga.');
+      renderFinancas();
+      mostrarAlertaDespesasDoDia(aoFechar); // redesenha o alerta só com o que ainda falta (fecha sozinho se não sobrar nada)
+    };
+  });
   document.getElementById('btnFecharAlertaDespesasDoDia').onclick=()=>{ closeModal(); if(aoFechar) aoFechar(); };
 }
 /* bug corrigido 19/08: essa linha chamava checarTarefasVencendo(), uma função que nunca chegou
