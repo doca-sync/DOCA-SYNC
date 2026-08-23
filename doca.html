@@ -6633,12 +6633,14 @@ const GRUPOS_RETIRADA=(()=>{
   return grupos.map(g=>g.lojas);
 })();
 function grupoRetiradaDaLoja(loja){ return GRUPOS_RETIRADA.find(g=>g.includes(loja))||[loja]; }
-let sociosEntradaLojaPorGrupo={}; // gi (índice em GRUPOS_RETIRADA) -> de qual loja específica do grupo sai o dinheiro do próximo lançamento
-/* Redesenho pedido pelo Felipe 23/08 (última revisão): "não precisa separar filtro por loja,
-   mostre os 3 na mesma tela e depois só discrimine por sócio no relatório" - tira o seletor de
-   "Grupo" e mostra um cartão PARA CADA grupo (TorvStore+Dor Block, Orbix Brasil) empilhado na
-   mesma tela, sem precisar trocar de filtro pra ver o outro. O mês continua com um seletor só
-   (compartilhado), já que o lançamento sempre é "nesse mês". */
+/* Redesenho pedido pelo Felipe 23/08 (revisão final): "não precisa mostrar de que loja é a
+   retirada, deixe só as 3 colunas dos sócios e depois vc descrimina no relatorio do fechamento
+   das empresas como resumo no final" - tira também o seletor "Saiu de" e a tag de loja em cada
+   lançamento (não interessa mais no dia a dia). Todo lançamento de um grupo com mais de uma loja
+   é gravado sempre no "balde" da PRIMEIRA loja do grupo (lojasGrupo[0], ex: TorvStore) - não muda
+   o resultado final, porque o fechamento consolidado (calcularFechamentoTodasLojas) SOMA a cota e
+   as retiradas/reembolsos do sócio em TODAS as lojas que ele participa antes de bater o total, não
+   compara loja a loja - então tanto faz em qual "balde" do grupo o lançamento fica guardado. */
 function renderSociosCard(){
   const mes=financasFiltroMes;
   const mesesDespesasSoc=despesasArr().filter(d=>LOJAS_RETIRADA.includes(d.loja)).map(d=>(d.dataPagamento||'').slice(0,7)).filter(Boolean);
@@ -6648,8 +6650,6 @@ function renderSociosCard(){
   const gruposHtml=GRUPOS_RETIRADA.map((lojasGrupo,gi)=>{
     const nomeGrupo=lojasGrupo.join(' + ');
     const socios=sociosDaLoja(lojasGrupo[0]);
-    if(!lojasGrupo.includes(sociosEntradaLojaPorGrupo[gi])) sociosEntradaLojaPorGrupo[gi]=lojasGrupo[0];
-    const entradaLoja=sociosEntradaLojaPorGrupo[gi];
     const listasPorSocio={}, retiradaPorSocio={}, reembolsoPorSocio={};
     socios.forEach(s=>{
       listasPorSocio[s]=movimentosSocioMesGrupo(lojasGrupo,s,mes);
@@ -6657,19 +6657,18 @@ function renderSociosCard(){
       reembolsoPorSocio[s]=totalPorTipo(listasPorSocio[s],'reembolso');
     });
     const listaSocio=(socio,lista)=>lista.length?`<table class="tbl-produtos" style="margin-top:6px"><tbody>
-        ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}${lojasGrupo.length>1?` <span class="loja-tag">${esc(x.loja)}</span>`:''}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}|${x.loja}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}|${x.loja}">✕</button></td></tr>`).join('')}
+        ${lista.map(x=>`<tr><td>${tagTipo(x.tipo)}</td><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td style="white-space:nowrap"><button class="btn sm" data-editsocio="${socio}|${x.id}|${x.loja}">Editar</button> <button class="btn sm danger-outline" data-remsocio="${socio}|${x.id}|${x.loja}">✕</button></td></tr>`).join('')}
       </tbody></table>`:`<p class="empty-inline">Nada lançado em ${esc(mesLabel(mes))}.</p>`;
     return `
     <div class="card" style="margin-top:16px" data-gruposocio="${gi}">
       <h3 style="margin-top:0">💸 ${esc(nomeGrupo)} — ${socios.map(s=>NOME_SOCIO[s]).join(', ')}</h3>
       <p class="hint" style="margin:0 0 10px">${lojasGrupo.length>1?`${esc(nomeGrupo)} têm os mesmos sócios, então entram juntas numa lista só`:'Essa loja tem sócio próprio (Paulo), por isso fica separada'} — <b>Retirada</b> é o que cada sócio já tirou pra ele; <b>Reembolso</b> é o inverso.</p>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr${lojasGrupo.length>1?' 1fr':''} auto">
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 2fr 1fr 1fr auto">
         <label>Sócio<select class="socQuem">${socios.map(s=>`<option value="${s}">${NOME_SOCIO[s]}</option>`).join('')}</select></label>
         <label>Tipo<select class="socTipo"><option value="retirada">Retirada</option><option value="reembolso">Reembolso</option></select></label>
         <label>Descrição<input class="socDescricao" type="text" placeholder="Ex: combustível"></label>
         <label>Valor (R$)<input class="socValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
         <label>Data${botaoData(`socData_${gi}`,novoSocioData[gi]||hoje(),{style:''})}</label>
-        ${lojasGrupo.length>1?`<label>Saiu de<select class="socLojaEntrada">${lojasGrupo.map(l=>`<option value="${esc(l)}" ${l===entradaLoja?'selected':''}>${esc(l)}</option>`).join('')}</select></label>`:''}
         <button class="btn gold" data-addsocio="${gi}" style="align-self:end">+ Adicionar</button>
       </div>
       <div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr);gap:14px;margin-top:14px">
@@ -6916,8 +6915,6 @@ function renderFinancas(){
     const lojasGrupo=GRUPOS_RETIRADA[gi]||[];
     const btnSocData=card.querySelector(`#socData_${gi}`);
     if(btnSocData) btnSocData.onclick=()=>abrirSeletorData(novoSocioData[gi]||hoje(),(iso)=>{ novoSocioData[gi]=iso; renderFinancas(); });
-    const socLojaEntrada=card.querySelector('.socLojaEntrada');
-    if(socLojaEntrada) socLojaEntrada.onchange=e=>{ sociosEntradaLojaPorGrupo[gi]=e.target.value; };
     const btnAddSocio=card.querySelector('[data-addsocio]');
     if(btnAddSocio) btnAddSocio.onclick=()=>{
       const socio=card.querySelector('.socQuem').value;
@@ -6925,10 +6922,9 @@ function renderFinancas(){
       const descricao=card.querySelector('.socDescricao').value.trim();
       const valor=parseMoeda(card.querySelector('.socValor').value);
       const data=novoSocioData[gi]||hoje();
-      const lojaEntrada=sociosEntradaLojaPorGrupo[gi]||lojasGrupo[0];
       if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
       novoSocioData[gi]='';
-      addMovimentoSocio(lojaEntrada,socio,tipo,descricao,valor,data);
+      addMovimentoSocio(lojasGrupo[0],socio,tipo,descricao,valor,data);
       toast((tipo==='reembolso'?'Reembolso':'Retirada')+' de '+(NOME_SOCIO[socio]||socio)+' lançado(a).');
       renderFinancas();
     };
