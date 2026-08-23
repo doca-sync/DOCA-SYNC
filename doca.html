@@ -1308,7 +1308,18 @@ function limparMarcasFull(){
   /* a marca de "já criado" só vale enquanto o envio existir */
   state.full.itens.forEach(i=>{ if(i.enviado&&!state.envios.some(e=>e.id===i.enviado.envioId)) i.enviado=null; });
 }
-function persist(){ ultimaAtividadeLocal=Date.now(); state.produtos.forEach(p=>{sincronizarLotes(p);sincronizarPedidos(p);}); reconciliarTudo(); limparMarcasFull(); saveToLocalStorage(); alteracaoLocal=true; if(fileHandle) saveToFile(); if(nuvemAuth) salvarNaNuvem(); renderAll(); }
+/* pedido do Felipe 24/08: digitando em qualquer campo (ex: Descrição de despesa/retirada) e um
+   save em segundo plano (sincronização automática, resposta de outra aba/loja etc. - qualquer
+   coisa que chame persist() no meio) substituía o HTML inteiro via renderAll() e o texto ainda
+   não confirmado no campo sumia. Os dados continuam salvos normalmente de qualquer jeito - só a
+   atualização VISUAL é adiada até o campo perder o foco, pra não apagar o que está sendo digitado
+   bem na hora. */
+let renderPendenteAposDigitar=false;
+function persist(){ ultimaAtividadeLocal=Date.now(); state.produtos.forEach(p=>{sincronizarLotes(p);sincronizarPedidos(p);}); reconciliarTudo(); limparMarcasFull(); saveToLocalStorage(); alteracaoLocal=true; if(fileHandle) saveToFile(); if(nuvemAuth) salvarNaNuvem(); if(usuarioDigitando()){ renderPendenteAposDigitar=true; return; } renderAll(); }
+document.addEventListener('focusout',()=>{
+  if(!renderPendenteAposDigitar) return;
+  setTimeout(()=>{ if(renderPendenteAposDigitar&&!usuarioDigitando()){ renderPendenteAposDigitar=false; renderAll(); } },50);
+},true);
 /* ---- carrega o conteúdo do arquivo para a tela ---- */
 async function carregarDoArquivo(silencioso){
   if(!fileHandle) return false;
@@ -5334,12 +5345,19 @@ async function puxarFaturaMl(loja){
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
     d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
+    d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null;
     if(f.valorPendente===0) d.pago=true;
   }else{
     snapshot('fatura do Mercado Livre importada ('+loja+')');
+    /* periodoDe/periodoAte (pedido do Felipe 24/08): a fatura do ML é filtrada em Despesas pelo
+       VENCIMENTO (dataPagamento), que pode cair num mês diferente do mês em que as cobranças
+       aconteceram de fato (ex: cobranças de agosto, ciclo fecha e vence só em setembro) - guarda
+       o período de referência à parte pra mostrar na tela e não parecer que "sumiu" a fatura do
+       mês anterior quando na real ela está ali, só datada pelo vencimento. */
     arr.push({id:gerarId('desp'),descricao:'Fatura Mercado Livre — '+loja,valor:f.valor,dataPagamento,
       pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,
-      itens:f.itens||[],valorTotal:f.valorTotal,itensAviso:f.itensAviso||null,criadoEm:Date.now()});
+      itens:f.itens||[],valorTotal:f.valorTotal,itensAviso:f.itensAviso||null,
+      periodoDe:f.dataInicio||null,periodoAte:f.dataFim||null,criadoEm:Date.now()});
   }
   delete financasUltimoErroAuto[loja];
   persist();
@@ -5828,7 +5846,7 @@ function renderComparacaoAuditoria(res){
       <h3 style="margin-top:0">⚖️ Resumo Financeiro × Auditoria × Conciliação</h3>
       <p class="hint" style="margin:0 0 10px">Compara os 3 pra ver se o Resumo Financeiro (cálculo rápido do dia a dia) está calibrado — mesma loja/período da Auditoria acima (${fmtData(auditoriaDe)} a ${fmtData(auditoriaAte)}). A coluna Conciliação só aparece se você anexou o relatório "Por venda" de <b>${esc(auditoriaAnexoMes)}</b> acima${mesFechado?'':', e só bate certo se esse mês for exatamente o período escolhido pra Auditoria'}.</p>
       ${!mesFechado&&anexoVenda?`<p class="hint" style="color:#e6a23c;margin:0 0 10px">⚠ O mês do anexo (${esc(auditoriaAnexoMes)}) não é igual ao período da Auditoria — a coluna Conciliação abaixo não é comparável direito com as outras duas nesse caso.</p>`:''}
-      ${!compR||compR.status==='carregando'?barraIndeterminada('Calculando o Resumo Financeiro do mesmo período...'):
+      ${!compR||compR.status==='carregando'?(compR&&compR.progresso&&compR.progresso.total?barraProgresso(compR.progresso.feito,compR.progresso.total,'Calculando o Resumo Financeiro do mesmo período...'):barraIndeterminada('Calculando o Resumo Financeiro do mesmo período...')):
         compR.status==='erro'?`<p class="hint" style="color:#e66">⚠ Erro ao calcular o Resumo Financeiro: ${esc(compR.erro)}</p>`:
         `<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
           <th>Métrica</th><th class="num">Resumo Financeiro</th><th class="num">Auditoria</th><th class="num">Conciliação (ML)</th>
@@ -6665,6 +6683,7 @@ function renderFinancas(){
         const temItens=Array.isArray(d.itens)&&d.itens.length>0;
         const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
         <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${temItens?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px">${financasExpandido[d.id]?'▾ ocultar':'▸ detalhar'}</button>`:''}
+          ${d.origem==='ml_fatura'&&d.periodoDe&&d.periodoAte?`<div class="hint" style="margin:2px 0 0">Cobranças referentes a ${fmtData(d.periodoDe)} a ${fmtData(d.periodoAte)} · vence ${fmtData(d.dataPagamento)}</div>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
         </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
