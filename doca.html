@@ -6120,41 +6120,28 @@ function primeiroDiaComCaixaPara(lojas,valor,dias){
   for(let i=0;i<n;i++){ if(sufMin[i]>=valor) return {data:dense[i].data,saldoNaqueleDia:dense[i].saldo}; }
   return null;
 }
+/* Fluxo de Caixa é sempre por loja individual, sem agrupar (pedido do Felipe 24/08: "acho melhor
+   fazer um por loja e não pelo grupo, pode tirar do filtro"). O bug do "aparece 0 ao selecionar
+   loja" era um slice errado aqui (alvo.slice(4) numa string "loja:X" cortava só 4 caracteres de
+   um prefixo de 5, sobrando ":X" - uma chave que não batia com nenhuma loja de verdade e caía
+   sempre no financeiro vazio). Removendo o prefixo/grupo de vez, o valor do <select> já é o
+   nome da loja direto, sem essa conta de índice pra errar. */
 function opcoesAlvoCaixa(){
-  const opts=[];
-  GRUPOS_CAIXA.forEach((g,i)=>{ if(g.length>1) opts.push({valor:'grupo:'+i,label:'Grupo '+g.join(' + ')}); });
-  STORES.forEach(l=>opts.push({valor:'loja:'+l,label:l}));
-  return opts;
+  return STORES.map(l=>({valor:l,label:l}));
 }
 function lojasDoAlvo(alvo){
-  if(!alvo) return [STORES[0]];
-  if(alvo.startsWith('grupo:')) return GRUPOS_CAIXA[Number(alvo.slice(6))]||[STORES[0]];
-  return [alvo.slice(4)];
+  return [alvo||STORES[0]];
 }
-let fluxoCaixaAlvo='grupo:0';
-let fluxoCaixaSimAlvo='grupo:0';
+let fluxoCaixaAlvo=STORES[0];
+let fluxoCaixaSimAlvo=STORES[0];
 let fluxoCaixaSimValor='';
 let fluxoCaixaSimResultado=null; // null | 'sem-cobertura' | {data,saldoNaqueleDia}
-let fluxoCaixaLucro={}; // loja -> {status:'carregando'|'pronto'|'erro',mes,margemLiquida,faturamento,progresso,erro}
-/* usa dado CONFIRMADO no lugar da tarifa/frete/faturamento ASSUMIDOS do Resumo Financeiro, sempre
-   que já tiver algo mais preciso pro MESMO período exato (pedido do Felipe 23/08, revisado depois
-   dele perguntar "por que Auditoria e não Conciliação"): ordem de prioridade, do mais confiável
-   pro menos - Conciliação (relatório oficial do Mercado Livre, sem nenhum cálculo do Doca no meio)
-   > Auditoria (Doca confere pedido a pedido direto no Mercado Pago) > Resumo Financeiro (estimado
-   do dia a dia). A Conciliação só cobre tarifa/frete (o "bruto" dela é um conceito mais largo, não
-   bate com Faturamento - ver comparação 3 vias na Auditoria), e só existe se o Felipe tiver
-   anexado o relatório "Por venda" daquele mês exato; por isso o faturamento sempre vem de Auditoria
-   (se tiver) ou do Resumo Financeiro. Continua buscando o Resumo Financeiro de qualquer jeito,
-   porque só ele tem o detalhe por SKU (pra calcular CMV), que nem Auditoria nem Conciliação têm. */
-async function fetchResumoParaFechamento(loja,de,ate,onProgress){
-  const resumo=await fetchResumoJob(loja,'personalizado',de,ate,onProgress);
-  return aplicarPrioridadeFechamento(resumo,loja,de,ate);
-}
-/* aplica os overrides de Auditoria/Conciliação em cima de um resumo JÁ BUSCADO (ver comentário
-   acima de fetchResumoParaFechamento pra ordem de prioridade) - separado da busca em si pra dar
-   pra reaproveitar um resumo que já veio de fetchResumoJob (ex: calcularFechamentoTodasLojas, que
-   já busca o resumo com o período flexível tipo "Hoje"/"Mês corrente" e só precisa aplicar os
-   overrides em cima, sem buscar tudo de novo). */
+/* aplica os overrides de Auditoria/Conciliação em cima de um resumo JÁ BUSCADO - ordem de
+   prioridade, do mais confiável pro menos: Conciliação (relatório oficial do Mercado Livre) >
+   Auditoria (Doca confere pedido a pedido no Mercado Pago) > Resumo Financeiro (estimado do dia a
+   dia). Separado da busca em si pra dar pra reaproveitar um resumo que já veio de fetchResumoJob
+   (ex: calcularFechamentoTodasLojas, que já busca o resumo com o período flexível tipo "Hoje"/
+   "Mês corrente" e só precisa aplicar os overrides em cima, sem buscar tudo de novo). */
 async function aplicarPrioridadeFechamento(resumo,loja,de,ate){
   resumo._usouAuditoria=false; resumo._usouConciliacao=false;
   const base=backendUrl();
@@ -6195,64 +6182,11 @@ function rotuloFonteFechamento(resumo){
   if(resumo._usouAuditoria) return '🔍 confirmado pela Auditoria';
   return '';
 }
-async function calcularLucroMesFluxoCaixa(loja){
-  fluxoCaixaLucro[loja]={status:'carregando',progresso:null};
-  renderFinancas();
-  try{
-    const mes=mesAtualStr();
-    const de=mes+'-01', ate=hoje();
-    const resumo=await fetchResumoParaFechamento(loja,de,ate,(p)=>{ fluxoCaixaLucro[loja]={status:'carregando',progresso:p}; renderFinancas(); });
-    const m=calcularMargensResumo(resumo,loja);
-    fluxoCaixaLucro[loja]={status:'pronto',mes,margemLiquida:m.margemLiquida,faturamento:resumo.faturamento||0,rotuloFonte:rotuloFonteFechamento(resumo)};
-  }catch(e){ fluxoCaixaLucro[loja]={status:'erro',erro:e.message}; }
-  renderFinancas();
-}
 function renderSimuladorResultadoCaixa(){
   if(fluxoCaixaSimResultado==null) return '';
   if(fluxoCaixaSimResultado==='sem-cobertura') return `<p class="hint" style="color:#e66;margin-top:10px">⚠ Não fecha dentro dos próximos 90 dias com o que já está garantido de entrar — ou espera mais liberações do Mercado Pago, ou reduz o valor.</p>`;
   const r=fluxoCaixaSimResultado, hojeStr=hoje();
   return `<p class="hint" style="margin-top:10px">${r.data===hojeStr?`<b class="okv">Já dá pra fazer hoje</b>`:`Primeiro dia em que dá: <b class="okv">${fmtData(r.data)}</b>`} — saldo projetado naquele dia, já descontando o gasto: ${fmtMoney(r.saldoNaqueleDia)}.</p>`;
-}
-/* sugestão de retirada de hoje por sócio, a partir de uma base já definida (margem líquida
-   inteira pra quem distribui 100%, ou só a sobra pra quem banca operação primeiro) - reaproveitado
-   tanto pela TorvStore quanto por Dor Block/Orbix, cada uma passando a base certa. */
-function renderSugestaoRetiradaSocios(loja,mes,base){
-  const socios=sociosDaLoja(loja), ownership=OWNERSHIP_LOJA[loja]||{};
-  const linhas=socios.map(s=>{
-    const lista=movimentosSocioMes(loja,s,mes);
-    const retirou=totalPorTipo(lista,'retirada'), reembolso=totalPorTipo(lista,'reembolso');
-    const cota=base*((ownership[s]||0)/100);
-    const sugerido=cota-retirou+reembolso;
-    return `<div><span class="muted" style="font-size:11px">${NOME_SOCIO[s]}</span><br><b class="${sugerido>0.004?'okv':''}">${fmtMoney(Math.max(0,sugerido))}</b>${sugerido<-0.004?` <span class="pend" style="font-size:11px">(já retirou a mais)</span>`:''}</div>`;
-  }).join('');
-  return `<div class="form-grid" style="grid-template-columns:repeat(${socios.length},1fr)">${linhas}</div>`;
-}
-function renderInterpretacaoLoja(loja,papel,st){
-  const badgeAuditoria=st.rotuloFonte?` <span class="badge okv" title="Usa dado confirmado (Conciliação do Mercado Livre e/ou Auditoria) em vez do estimado do dia a dia, onde já tiver disponível pra esse período">${esc(st.rotuloFonte)}</span>`:'';
-  if(papel==='distribui'){
-    return `<p>Lucro líquido de ${esc(mesLabel(st.mes))} até agora: <b>${fmtMoney(st.margemLiquida)}</b>${badgeAuditoria}. Como 100% do lucro dessa loja é retirada, a sugestão de retirada de hoje pra cada sócio (já descontando o que já foi retirado/reembolsado no mês) é:</p>
-      ${renderSugestaoRetiradaSocios(loja,st.mes,st.margemLiquida)}
-      <p class="hint" style="margin-top:8px">Lance a retirada de fato na aba Retiradas e Reembolso. O valor final de pagar/devolver por sócio soma a cota dele em todas as lojas que participa (ver "Calcular fechamento de todas as lojas" no Resumo Financeiro) — isso aqui é só uma estimativa do dia a dia, só desta loja.</p>
-      <button class="btn sm" data-fcluc="${esc(loja)}" style="margin-top:6px">🔄 Recalcular</button>`;
-  }
-  return `<p>${esc(loja)} não faz retirada — todo o lucro fica de caixa/reinvestimento. Gerou <b>${fmtMoney(st.margemLiquida)}</b> de lucro líquido em ${esc(mesLabel(st.mes))} até agora, além do saldo já acumulado de <b>${fmtMoney(finLoja(loja).mercadoPago||0)}</b> disponível hoje.</p>
-    <p class="hint">Pode ser realocado conforme a necessidade pra produtos/estoque da TorvStore, Dor Block ou da própria TorvShop (mesmos sócios) — decisão sua, o Doca só mostra o que tem disponível.</p>
-    <button class="btn sm" data-fcluc="${esc(loja)}" style="margin-top:6px">🔄 Recalcular</button>`;
-}
-function renderCardOperacaoLoja(loja){
-  const papel=PAPEL_CAIXA_LOJA[loja];
-  const st=fluxoCaixaLucro[loja];
-  const mes=mesAtualStr();
-  let corpo;
-  if(!st||st.status==='erro'){
-    corpo=`${st&&st.erro?`<p class="hint" style="color:#e66">⚠ ${esc(st.erro)}</p>`:''}<button class="btn" data-fcluc="${esc(loja)}">📊 Calcular lucro de ${esc(mesLabel(mes))}</button>`;
-  }else if(st.status==='carregando'){
-    corpo=st.progresso&&st.progresso.total?barraProgresso(st.progresso.feito,st.progresso.total,'Calculando lucro do mês...'):barraIndeterminada('Calculando lucro do mês...');
-  }else{
-    corpo=renderInterpretacaoLoja(loja,papel,st);
-  }
-  const titulo={distribui:'💰 '+loja+' — retirada sugerida',reserva:'🏦 '+loja+' — reserva/reinvestimento'}[papel];
-  return `<div class="card" style="margin-top:14px"><h3 style="margin-top:0">${esc(titulo)}</h3>${corpo}</div>`;
 }
 function renderFluxoCaixa(){
   const opts=opcoesAlvoCaixa();
@@ -6289,7 +6223,6 @@ function renderFluxoCaixa(){
       </div>
       ${renderSimuladorResultadoCaixa()}
     </div>
-    ${STORES.map(loja=>renderCardOperacaoLoja(loja)).join('')}
   `;
 }
 /* fechamento de todas as lojas de uma vez, no MESMO periodo escolhido no Resumo Financeiro acima -
@@ -7043,7 +6976,6 @@ function renderFinancas(){
     fluxoCaixaSimResultado=r||'sem-cobertura';
     renderFinancas();
   };
-  document.querySelectorAll('[data-fcluc]').forEach(b=>{ b.onclick=()=>calcularLucroMesFluxoCaixa(b.dataset.fcluc); });
   el.querySelectorAll('[data-rankver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.rankver);
     if(resumoRankingAberto.has(id)) resumoRankingAberto.delete(id); else resumoRankingAberto.add(id);
