@@ -7071,7 +7071,7 @@ function renderFinancas(){
                 <div class="hint" style="margin:2px 0 0;font-size:11px">${esc(explicarCobrancaML(it.label))}</div>
               </td><td style="border:none;padding:6px 8px;text-align:right;vertical-align:top" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}
           </tbody></table>
-        </td></tr>`:(financasExpandido[d.id]&&!temItens&&!detalhando&&podeDetalhar?`<tr><td colspan="7"><p class="hint" style="color:#e66;margin:4px 0">⚠ Não consegui buscar o detalhamento dessa fatura.</p></td></tr>`:'');
+        </td></tr>`:(financasExpandido[d.id]&&!temItens&&!detalhando&&podeDetalhar?`<tr><td colspan="7"><p class="hint" style="color:#e66;margin:4px 0">⚠ ${esc(d.itensAviso||'Não consegui buscar o detalhamento dessa fatura.')} <a href="#" data-fnredetalhar="${d.id}">tentar de novo</a></p></td></tr>`:'');
         return linhaPrincipal+linhaDetalhe;
       }).join(''):`<tr><td colspan="7" class="empty">Nenhuma despesa cadastrada nesse mês.</td></tr>`}
     </tbody></table></div>
@@ -7134,6 +7134,7 @@ function renderFinancas(){
     financasExpandido[id]=!financasExpandido[id];
     renderFinancas();
   });
+  el.querySelectorAll('[data-fnredetalhar]').forEach(a=>a.onclick=(ev)=>{ ev.preventDefault(); puxarItensFaturaMl(a.dataset.fnredetalhar); });
   el.querySelectorAll('[data-puxarfatura]').forEach(b=>b.onclick=async()=>{
     const loja=b.dataset.puxarfatura;
     financasPuxandoFatura=loja; renderFinancas();
