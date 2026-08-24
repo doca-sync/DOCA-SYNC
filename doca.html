@@ -5513,6 +5513,17 @@ async function puxarFaturaMl(loja){
       itens:f.itens||[],valorTotal:f.valorTotal,itensAviso:f.itensAviso||null,
       periodoDe:f.dataInicio||null,periodoAte:f.dataFim||null,semVencimentoReal,vencimentoEstimado,criadoEm:Date.now()});
   }
+  /* periodosQuitados (pedido do Felipe 24/08, caso da Dor Block): fatura antiga que já foi paga
+     mas deixou de ser "a fatura principal" rastreada (ex: uma cobrança mais nova em aberto tomou
+     o lugar dela na busca acima) nunca virava "Pago" sozinha. O backend manda junto as keys de
+     todo período já quitado (unpaid_amount===0) que ele encontrou nessa mesma consulta - aqui
+     confere se alguma despesa antiga da loja bate com uma dessas keys e marca como paga. */
+  if(Array.isArray(f.periodosQuitados)){
+    f.periodosQuitados.forEach(key=>{
+      const antiga=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===key&&!x.pago);
+      if(antiga) antiga.pago=true;
+    });
+  }
   delete financasUltimoErroAuto[loja];
   persist();
   return f;

@@ -2981,7 +2981,17 @@ async function buscarFaturaMl(loja) {
   const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key);
   let vencimento = p.debt_expiration_date || p.expiration_date || null;
   if (vencimento && !anoRazoavel(vencimento)) vencimento = null;
-  if (!vencimento && p.period && p.period.date_to && anoRazoavel(p.period.date_to)) vencimento = p.period.date_to;
+  // NAO cai mais pro period.date_to como fallback de vencimento (esse era o bug real, achado no
+  // debug 24/08 com Orbix/TorvShop: pra periodo ainda OPEN, esse date_to e' so' a data em que o
+  // periodo FECHA, nao quando a fatura VENCE - reintroduzia o mesmo bug da TorvStore de outro
+  // jeito. Sem vencimento confirmado de verdade, fica null mesmo - o frontend sabe estimar
+  // certo pelo ciclo de cada loja (FATURA_CICLO) usando dataFim/dataInicio abaixo.
+  // periodosQuitados: pedido do Felipe 24/08 - a Dor Block tinha uma fatura antiga (Agosto) já
+  // paga que nunca virava "Pago" sozinha no Doca, porque uma vez que o período deixa de ser "o
+  // que precisa cobrar agora" (p aqui em cima), o Doca parava de olhar pra ele. Manda a lista de
+  // keys com unpaid_amount===0 pro frontend poder confirmar como paga qualquer despesa antiga
+  // que já bateu com uma dessas, mesmo não sendo mais a fatura "principal" rastreada.
+  const periodosQuitados = periodos.filter(x => x.key && typeof x.unpaid_amount === 'number' && x.unpaid_amount === 0).map(x => x.key);
   return {
     key: p.key || null,
     valor: typeof p.unpaid_amount === 'number' ? p.unpaid_amount : (typeof p.amount === 'number' ? p.amount : null),
@@ -2991,6 +3001,7 @@ async function buscarFaturaMl(loja) {
     dataFim: (p.period && p.period.date_to && anoRazoavel(p.period.date_to)) ? p.period.date_to : null,
     vencimento,
     status: p.period_status || null,
+    periodosQuitados,
     itens,
     itensAviso
   };
