@@ -5732,7 +5732,7 @@ function dataBrParaMes(s){
 function numeroCel(v){ return typeof v==='number'?v:(parseFloat(String(v||'').replace(',','.'))||0); }
 function resumirConciliacaoVenda(linhas,mes){
   const doMes=linhas.filter(l=>dataBrParaMes(l['Data da operação'])===mes);
-  const porTipo={}; let bruto=0,liquido=0,tarifaColuna=0,freteVendedor=0;
+  const porTipo={}; let bruto=0,liquido=0,tarifaColuna=0,freteVendedor=0,freteVendedorBrutoTotal=0;
   doMes.forEach(l=>{
     const t=l['Tipo de operação']||'?';
     if(!porTipo[t]) porTipo[t]={qtd:0,bruto:0,liquido:0};
@@ -5761,17 +5761,25 @@ function resumirConciliacaoVenda(linhas,mes){
          (server.js, corrigido no mesmo dia) - desconta aqui tambem. */
       const freteVendedorBruto=numeroCel(l['Envio pago pelo vendedor']);
       const freteCompradorLinha=numeroCel(l['Envio pago pelo comprador (+)']);
+      freteVendedorBrutoTotal+=freteVendedorBruto;
       freteVendedor+=Math.max(0,freteVendedorBruto-freteCompradorLinha);
     }
   });
-  const tarifa=tarifaColuna-freteVendedor;
+  /* a coluna de tarifa embute o frete BRUTO (nao o liquido) como se fosse uma linha de tarifa -
+     por isso o cancelamento da dupla contagem tem que usar o freteVendedorBrutoTotal aqui, mesmo
+     que o freteVendedor retornado abaixo (pro card/comparacao) seja o liquido. Usar o liquido
+     aqui por engano (bug do dia 24/08, achado pelo Felipe comparando a tela) deixava sobrar a
+     parte do comprador dentro da tarifa, inflando ela por engano. */
+  const tarifa=tarifaColuna-freteVendedorBrutoTotal;
   Object.values(porTipo).forEach(x=>{ x.bruto=Math.round(x.bruto*100)/100; x.liquido=Math.round(x.liquido*100)/100; });
   /* versaoCalculo: sobe toda vez que a fórmula de tarifa/frete muda de verdade (não só ajuste de
      texto), pra dar pra avisar "esse anexo é de antes desse cálculo, suba de novo" mesmo quando o
      campo já existe mas com o valor calculado do jeito antigo/errado (ex: v1 não separava a
      tarifa de envio da comissão de venda, dava um número de tarifa ~4x maior que o real; v2 não
-     descontava o frete pago pelo comprador do "Envio pago pelo vendedor", que vem bruto do ML). */
-  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100,versaoCalculo:3};
+     descontava o frete pago pelo comprador do "Envio pago pelo vendedor", que vem bruto do ML;
+     v3 corrigiu isso mas passou a usar o freteVendedor (já líquido) pra cancelar a dupla
+     contagem na tarifa, quando o cancelamento precisa do valor BRUTO - inflava a tarifa). */
+  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100,versaoCalculo:4};
 }
 function ultimoDiaMes(mes){
   const [y,m]=String(mes||'').split('-').map(Number);
@@ -5957,10 +5965,10 @@ function renderComparacaoAuditoria(res){
           <th>Métrica</th><th class="num">Resumo Financeiro</th><th class="num">Auditoria</th><th class="num">Conciliação (ML)</th>
         </tr></thead><tbody>
           ${linha('Faturamento / Bruto',compR.resumo.faturamento,res.faturamento,rConc?rConc.bruto:null)}
-          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.versaoCalculo===3?rConc.tarifa:null)}
-          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.versaoCalculo===3?rConc.freteVendedor:null)}
+          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.versaoCalculo===4?rConc.tarifa:null)}
+          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.versaoCalculo===4?rConc.freteVendedor:null)}
         </tbody></table></div>
-        ${rConc&&rConc.versaoCalculo!==3?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes desse cálculo de tarifa/frete existir (ou foi calculado com uma versão antiga que tinha um bug de dupla contagem do frete, ou que não descontava o frete pago pelo comprador) — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra corrigir.</p>`:''}
+        ${rConc&&rConc.versaoCalculo!==4?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes desse cálculo de tarifa/frete existir (ou foi calculado com uma versão antiga que tinha um bug de dupla contagem do frete, ou que não descontava o frete pago pelo comprador) — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra corrigir.</p>`:''}
         ${rConc&&rConc.bruto!=null&&Math.abs(rConc.bruto-res.faturamento)>res.faturamento*0.01?`<p class="hint" style="margin-top:8px">O "Bruto" da Conciliação normalmente fica acima do Faturamento do Resumo/Auditoria de propósito — o Mercado Livre soma ali outras coisas que passam pela venda (frete pago pelo comprador, taxa de parcelamento etc.), não só o valor do produto. Não espere essa linha bater 100%, só as de Tarifa e Frete.</p>`:''}
         <p class="hint" style="margin-top:10px">Resumo Financeiro é o cálculo rápido/assumido do dia a dia; Auditoria confere pedido a pedido no Mercado Pago; Conciliação é o relatório oficial do Mercado Livre. Se os 3 estiverem próximos, o Resumo Financeiro está calibrado — diferença grande é sinal pra olhar as Anomalias acima.</p>`
       }
@@ -6101,7 +6109,7 @@ async function aplicarPrioridadeFechamento(resumo,loja,de,ate){
       const j=await r.json().catch(()=>null);
       const anexoVenda=(j&&j.ok?(j.anexos||[]):[]).find(a=>a.tipo==='venda');
       const rConc=anexoVenda&&anexoVenda.resumo;
-      if(rConc&&rConc.versaoCalculo===3){
+      if(rConc&&rConc.versaoCalculo===4){
         resumo.tarifas=rConc.tarifa;
         if(!resumo.frete) resumo.frete={};
         resumo.frete.vendedor=rConc.freteVendedor;
