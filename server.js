@@ -2923,9 +2923,22 @@ async function buscarItensFaturaPorKey(loja, key) {
         let offset = 0;
         const limite = 150;
         let total = null;
+        // retry com espera crescente em 429 - pedido do Felipe 24/08: esse endpoint de detalhamento
+        // vem esbarrando bastante no limite de chamadas do Mercado Livre logo depois da
+        // sincronização automática ao abrir o Doca (que já dispara bastante chamada em sequência).
+        async function buscarDetalhesComRetry(url) {
+          for (let tentativa = 0; tentativa < 4; tentativa++) {
+            try {
+              return await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+            } catch (e) {
+              if (e.http_status === 429 && tentativa < 3) { await sleep(800 * (tentativa + 1)); continue; }
+              throw e;
+            }
+          }
+        }
         do {
           const urlDetalhes = `https://api.mercadolibre.com/billing/integration/periods/key/${key}/group/ML/details?document_type=BILL&limit=${limite}&offset=${offset}`;
-          const jDetalhes = await fetchMLDebug(urlDetalhes, { headers: { Authorization: `Bearer ${accessToken}` } });
+          const jDetalhes = await buscarDetalhesComRetry(urlDetalhes);
           const linhas = jDetalhes.results || [];
           total = typeof jDetalhes.total === 'number' ? jDetalhes.total : linhas.length;
           linhas.forEach(r => {
