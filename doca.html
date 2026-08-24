@@ -528,6 +528,32 @@ tr.l-env{background:rgba(163,163,163,.07)}
 <script>
 if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 const STORES=["TorvStore","Dor Block","Orbix Brasil","TorvShop"];
+/* dia do mês de fechamento/vencimento do ciclo de fatura do Mercado Livre, por loja - pedido do
+   Felipe 24/08, cada loja tem um ciclo diferente. Usado só pra ESTIMAR o vencimento de uma fatura
+   ainda em período aberto (o Mercado Livre não informa vencimento real até fechar o período - ver
+   puxarFaturaMl/vencimentoEstimadoFatura) - o vencimento estimado é sempre no MESMO mês do
+   fechamento, no dia "vencimento". O Felipe avisou que às vezes varia 1-2 dias (ex: TorvShop
+   venceu dia 17 em vez de 15 em agosto/2026, possivelmente por cair em dia não útil) - por isso
+   esse valor é tratado como ESTIMATIVA na tela, nunca como confirmado. */
+const FATURA_CICLO={
+  'Dor Block':{fechamento:15,vencimento:21},
+  'TorvStore':{fechamento:22,vencimento:28},
+  'Orbix Brasil':{fechamento:4,vencimento:10},
+  'TorvShop':{fechamento:9,vencimento:15},
+};
+function _dataISO(ano,mesIdx,dia){ return `${ano}-${String(mesIdx+1).padStart(2,'0')}-${String(dia).padStart(2,'0')}`; }
+/* estima quando a fatura EM ABERTO de uma loja deve vencer, a partir do dia de fechamento/
+   vencimento configurado em FATURA_CICLO - acha a próxima ocorrência do dia de fechamento a
+   partir do início do período (periodoDe) e usa o dia de vencimento no MESMO mês dela. Devolve
+   null se a loja não tem ciclo configurado ainda. */
+function vencimentoEstimadoFatura(loja,periodoDe){
+  const cfg=FATURA_CICLO[loja]; if(!cfg) return null;
+  const base=periodoDe?new Date(periodoDe+'T12:00:00'):new Date();
+  let ano=base.getFullYear(), mesIdx=base.getMonth();
+  let fechamentoData=new Date(ano,mesIdx,cfg.fechamento,12);
+  if(fechamentoData<base){ mesIdx+=1; fechamentoData=new Date(ano,mesIdx,cfg.fechamento,12); }
+  return _dataISO(fechamentoData.getFullYear(),fechamentoData.getMonth(),cfg.vencimento);
+}
 /* estrutura societária de cada loja (pedido do Felipe 23/08, pra Retiradas/Reembolso e Fluxo de
    Caixa) - % de participação de cada sócio por loja. Orbix Brasil é a única com o Paulo (33,33%
    cada); as outras 3 são só Felipe/Thiago 50/50. PAPEL_CAIXA_LOJA descreve a política de caixa de
@@ -5369,9 +5395,9 @@ function abrirEditarDespesaModal(id){
     </div>
     <div class="acoes-linha" style="margin-top:10px">
       <label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="feRecorrente" style="width:auto" ${d.recorrente?'checked':''}> Despesa recorrente (repete todo mês)</label>
-      ${(d.origem!=='ml_fatura'&&d.origem!=='imposto')?`<label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="fePago" style="width:auto" ${d.pago?'checked':''}> Pago (desmarque se tickou por engano)</label>`:''}
+      ${d.origem!=='imposto'?`<label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox" id="fePago" style="width:auto" ${d.pago?'checked':''}> Pago${d.origem==='ml_fatura'?' (marque na mão se já pagou e o Doca ainda não confirmou sozinho)':' (desmarque se tickou por engano)'}</label>`:''}
     </div>
-    ${d.origem==='ml_fatura'?`<p class="hint" style="margin-top:8px">⚠ Esta despesa veio automático da fatura do Mercado Livre — se sincronizar de novo, o valor puxado da API substitui o que você editar aqui.</p>`:''}
+    ${d.origem==='ml_fatura'?`<p class="hint" style="margin-top:8px">⚠ Esta despesa veio automático da fatura do Mercado Livre — normalmente o Doca confirma sozinho quando busca a fatura de novo, mas só consegue conferir a MAIS RECENTE (o Mercado Livre só expõe o status de pagamento do período atual). Se essa fatura já rolou pro mês seguinte e você já pagou por fora, marque "Pago" aqui na mão.</p>`:''}
     ${d.origem==='imposto'?`<p class="hint" style="margin-top:8px">⚠ Esta despesa de Imposto é automática — o status de pago fica em Despesas, na coluna Pago.</p>`:''}
     <div class="modal-actions"><button class="btn" id="btnCancelarEditDesp">Cancelar</button><button class="btn acc" id="btnSalvarEditDesp">Salvar alterações</button></div>`;
   document.getElementById('btnCancelarEditDesp').onclick=closeModal;
@@ -5448,13 +5474,20 @@ async function puxarFaturaMl(loja){
   const f=j.fatura;
   const arr=despesasArr();
   // sem data de vencimento confiável (período ainda em aberto, ML não fechou a conta) usa hoje
-  // só pra a despesa aparecer no mês certo — não inventa uma data de vencimento que não existe
+  // só pra a despesa aparecer no mês certo — não inventa uma data de vencimento que não existe.
+  // semVencimentoReal marca isso (pedido do Felipe 24/08: a DorBlock apareceu no Fluxo de Caixa
+  // como "vence hoje" quando na real é um período AINDA ABERTO, sem vencimento de verdade nenhum
+  // ainda - o Fluxo de Caixa usa essa marcação pra não tratar "hoje" como se fosse um vencimento
+  // real, ver despesasPendentesParaProjecao) - some sozinha assim que o ML fechar o período e
+  // mandar um vencimento de verdade na próxima sincronização.
+  const semVencimentoReal=!f.vencimento;
   const dataPagamento=f.vencimento||hoje();
+  const vencimentoEstimado=semVencimentoReal?vencimentoEstimadoFatura(loja,f.dataInicio):null;
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
     d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
-    d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null;
+    d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null; d.semVencimentoReal=semVencimentoReal; d.vencimentoEstimado=vencimentoEstimado;
     if(f.valorPendente===0) d.pago=true;
   }else{
     snapshot('fatura do Mercado Livre importada ('+loja+')');
@@ -5466,7 +5499,7 @@ async function puxarFaturaMl(loja){
     arr.push({id:gerarId('desp'),descricao:'Fatura Mercado Livre — '+loja,valor:f.valor,dataPagamento,
       pago:f.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:f.key,origemRecorrenciaId:null,
       itens:f.itens||[],valorTotal:f.valorTotal,itensAviso:f.itensAviso||null,
-      periodoDe:f.dataInicio||null,periodoAte:f.dataFim||null,criadoEm:Date.now()});
+      periodoDe:f.dataInicio||null,periodoAte:f.dataFim||null,semVencimentoReal,vencimentoEstimado,criadoEm:Date.now()});
   }
   delete financasUltimoErroAuto[loja];
   persist();
@@ -6143,7 +6176,12 @@ function renderListaAnexosAuditoria(){
    os MESMOS sócios (Felipe+Thiago), pra dar pra ver o caixa somado - a Orbix nunca entra nesse
    grupo por causa do Paulo. */
 function despesasPendentesParaProjecao(lojas){
-  return despesasArr().filter(d=>!d.pago&&lojas.includes(d.loja));
+  /* fatura do ML sem vencimento real ainda (período em aberto, ML não fechou a conta) usa o
+     vencimento ESTIMADO (ciclo de fechamento/vencimento por loja em FATURA_CICLO, pedido do
+     Felipe 24/08) em vez do "hoje" que só serve pra bucketing na aba Despesas - ver
+     vencimentoEstimadoFatura/puxarFaturaMl. Só fica de fora da projeção quando nem isso tem
+     (loja sem ciclo configurado ainda). */
+  return despesasArr().filter(d=>!d.pago&&lojas.includes(d.loja)&&!(d.origem==='ml_fatura'&&d.semVencimentoReal&&!d.vencimentoEstimado));
 }
 /* compras de produto pagas à vista (não é despesa - já sai o dinheiro na hora, na loja que o
    Felipe escolheu como pagante ao clicar "Comprei"). Pedido do Felipe 24/08: mostrar essas
@@ -6182,9 +6220,11 @@ function projecaoCaixaBase(lojas,dias){
   lojas.forEach(loja=>{ financeiroCalibrado(loja).agendaLiberacoes.forEach(x=>{ entradas[x.data]=(entradas[x.data]||0)+x.valor; }); });
   const saidas={}; const saidasDetalhe={};
   despesasPendentesParaProjecao(lojas).forEach(d=>{
-    let data=d.dataPagamento||hojeStr; if(data<hojeStr) data=hojeStr;
+    const estimado=d.origem==='ml_fatura'&&d.semVencimentoReal&&!!d.vencimentoEstimado;
+    let data=estimado?d.vencimentoEstimado:(d.dataPagamento||hojeStr);
+    if(data<hojeStr) data=hojeStr;
     saidas[data]=(saidas[data]||0)+(Number(d.valor)||0);
-    (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:d.descricao||'Despesa',valor:Number(d.valor)||0});
+    (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:(d.descricao||'Despesa')+(estimado?' (estimado, valor parcial até agora)':''),valor:Number(d.valor)||0});
   });
   comprasAVistaParaProjecao(lojas).forEach(n=>{
     const data=n.dataCompra||hojeStr; if(data<hojeStr) return; /* já é história, o saldo sincronizado já reflete */
@@ -6375,11 +6415,15 @@ function renderFluxoCaixa(){
   const diaPior=proj.dense.find(x=>x.saldo===piorSaldo);
   const pendentes=comprasPendentesComCaixa(lojasAlvo[0],proj.dense);
   const analise=analisarFluxoCaixa(proj);
+  /* fatura ML ainda em período aberto (sem vencimento real) fica de fora da projeção - avisa aqui
+     pra não parecer que ela "sumiu". Pedido do Felipe 24/08. */
+  const faturaEmAberto=despesasArr().find(d=>d.origem==='ml_fatura'&&!d.pago&&d.semVencimentoReal&&lojasAlvo.includes(d.loja));
   return `
     <div class="card">
       <h3 style="margin-top:0">🌊 Projeção de saldo</h3>
       <p class="hint" style="margin:0 0 10px">Junta o saldo disponível no Mercado Pago + as liberações já agendadas (sincronizado sozinho a cada ~20min) menos as despesas cadastradas ainda não pagas — a fatura do Mercado Livre já entra aí, porque também é cadastrada como despesa. Não é previsão de vendas futuras, só o que já está garantido de entrar e comprometido de sair.</p>
       ${proj.semSync.length?`<p class="hint" style="color:#e6a23c;margin:0 0 10px">⚠ ${proj.semSync.map(esc).join(', ')} ainda não sincronizou o financeiro do Mercado Pago — o saldo/agenda dessa(s) loja(s) pode estar zerado até a próxima sincronização automática.</p>`:''}
+      ${faturaEmAberto?`<p class="hint" style="margin:0 0 10px">ℹ Existe uma fatura do Mercado Livre em aberto (período desde ${fmtData(faturaEmAberto.periodoDe)}, ~${fmtMoney(faturaEmAberto.valor)} até o momento — ainda vai crescer até fechar). ${faturaEmAberto.vencimentoEstimado?`Ela aparece na projeção abaixo com vencimento ESTIMADO em ${fmtData(faturaEmAberto.vencimentoEstimado)} (baseado no ciclo dessa loja) e valor parcial — os dois viram definitivos assim que o Mercado Livre fechar o período.`:'O Mercado Livre só informa o vencimento de verdade depois que fecha o período, e essa loja ainda não tem o ciclo cadastrado pra estimar — fica de fora da projeção até lá.'}</p>`:''}
       <div class="form-grid" style="grid-template-columns:1fr">
         <label>Ver<select id="fcAlvo">${opts.map(o=>`<option value="${o.valor}" ${o.valor===fluxoCaixaAlvo?'selected':''}>${esc(o.label)}</option>`).join('')}</select></label>
       </div>
