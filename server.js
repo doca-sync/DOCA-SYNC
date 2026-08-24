@@ -1472,6 +1472,93 @@ app.get('/debug/mp/relatorio/categorias', async (req, res) => {
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
+/* ---- "foi liberado certo?" (v20, pedido do Felipe 24/08) ----
+   Compara o total que o proprio Mercado Pago diz ter liberado num periodo (relatorio oficial de
+   Liberacoes, /v1/account/release_report, o mesmo que ja usamos pro saldo disponivel) com o
+   relatorio "Por liberacao de dinheiro" que o Felipe sobe manual em Conciliacao (que e' o mesmo
+   dado, so' que exportado pelo Mercado Livre). Roda em job assincrono (igual Auditoria) porque
+   pedir um relatorio novo pro Mercado Pago pode demorar minutos pra ficar pronto - e' async lah
+   fora tambem, entao esse job so' fica dando poll no /release_report/list ate achar.
+   CUIDADO: isso e' uma pergunta DIFERENTE da Auditoria normal. A Auditoria agrupa por quando o
+   pedido foi VENDIDO (date_closed); esse aqui agrupa por quando o dinheiro foi de fato LIBERADO
+   (money release date) - dois pedidos vendidos no mesmo dia podem ser liberados em datas bem
+   diferentes (14 dias corridos, ou mais se tiver reclamacao/mediacao no meio). Por isso NAO da
+   pra comparar isso direto com o repasse_liberado da Auditoria (que so' conta liberacao de
+   pedidos vendidos DENTRO do periodo da Auditoria, nao liberacoes que aconteceram no periodo) -
+   so' compara com o anexo "Por liberacao de dinheiro" (que usa a mesma data de liberacao). */
+const liberacaoJobs = new Map(); // jobId -> {status, resultado, erro, criadoEm}
+function gerarJobIdLiberacao() { return 'lib_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+async function rodarLiberacaoMes(jobId, loja, de, ate) {
+  const job = liberacaoJobs.get(jobId);
+  try {
+    const beginDate = `${de}T00:00:00-03:00`, endDate = `${ate}T23:59:59-03:00`;
+    const rPedido = await mpFetch(loja, '/v1/account/release_report', {
+      method: 'POST',
+      body: JSON.stringify({ begin_date: beginDate, end_date: endDate })
+    });
+    if (!rPedido.ok) {
+      const corpoErro = await rPedido.text().catch(() => '');
+      job.status = 'erro';
+      job.erro = `O Mercado Pago recusou o pedido do relatorio (HTTP ${rPedido.status}) - pode ser que esse período seja antigo demais pra esse tipo de relatório. ${corpoErro.slice(0, 300)}`;
+      return;
+    }
+    const inicio = Date.now();
+    const LIMITE_MS = 5 * 60 * 1000; // MP pode levar alguns minutos pra gerar um relatorio novo
+    let arquivoPronto = null;
+    while (Date.now() - inicio < LIMITE_MS) {
+      await sleep(6000);
+      const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
+      const jList = await rList.json().catch(() => null);
+      const candidatos = (Array.isArray(jList) ? jList : [])
+        .filter(x => x.file_name && x.begin_date && (x.begin_date.slice(0, 10) === de) && x.status === 'enabled')
+        .sort((a, b) => new Date(b.date_created) - new Date(a.date_created));
+      if (candidatos.length) { arquivoPronto = candidatos[0]; break; }
+    }
+    if (!arquivoPronto) {
+      job.status = 'erro';
+      job.erro = 'O Mercado Pago demorou demais pra gerar esse relatório (mais de 5 min) - tenta de novo daqui a pouco, ele pode ainda estar processando do lado deles.';
+      return;
+    }
+    const rDown = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(arquivoPronto.file_name)}`, { method: 'GET' });
+    const texto = await rDown.text();
+    const { cabecalho, linhas } = parseCsvPontoEVirgula(texto);
+    if (!linhas.length) { job.status = 'erro'; job.erro = 'Relatório baixado mas veio vazio.'; return; }
+    const colValor = ['NET_CREDIT_AMOUNT', 'SETTLEMENT_NET_AMOUNT', 'GROSS_AMOUNT', 'AMOUNT'].find(c => cabecalho.includes(c));
+    if (!colValor) { job.status = 'erro'; job.erro = `Relatório baixado mas não achei coluna de valor conhecida (colunas disponíveis: ${cabecalho.join(', ')}).`; return; }
+    const colData = ['DATE', 'TRANSACTION_DATE', 'MONEY_RELEASE_DATE'].find(c => cabecalho.includes(c));
+    const doPeriodo = colData ? linhas.filter(l => { const d = (l[colData] || '').slice(0, 10); return d >= de && d <= ate; }) : linhas;
+    const totalLiberado = doPeriodo.reduce((s, l) => s + (parseFloat(l[colValor]) || 0), 0);
+    job.status = 'concluido';
+    job.resultado = {
+      loja, periodo: { de, ate },
+      arquivo: arquivoPronto.file_name,
+      coluna_valor_usada: colValor,
+      total_linhas_relatorio: linhas.length,
+      total_linhas_periodo: doPeriodo.length,
+      total_liberado_mp: Math.round(totalLiberado * 100) / 100
+    };
+  } catch (e) {
+    job.status = 'erro';
+    job.erro = e.message;
+  }
+}
+app.post('/liberacao/mes/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja, de = req.query.de, ate = req.query.ate;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!de || !ate) return res.status(400).json({ ok: false, erro: 'Parametros "de" e "ate" obrigatorios (AAAA-MM-DD).' });
+    const jobId = gerarJobIdLiberacao();
+    liberacaoJobs.set(jobId, { status: 'rodando', resultado: null, erro: null, criadoEm: Date.now() });
+    rodarLiberacaoMes(jobId, loja, de, ate); // fire-and-forget, roda em background
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/liberacao/mes/status', (req, res) => {
+  const jobId = req.query.id;
+  const job = liberacaoJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Job não encontrado - pode ter expirado (fica só em memória, some se o servidor reiniciar).' });
+  res.json({ ok: true, status: job.status, resultado: job.resultado, erro: job.erro });
+});
 app.get('/debug/mp/relatorio/pagamentos-resumo', async (req, res) => {
   try {
     const loja = req.query.loja;

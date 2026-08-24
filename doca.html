@@ -5669,6 +5669,76 @@ let auditoriaAnexoMes=mesAtualStr(); // 'AAAA-MM' - mes de referencia do relator
 let auditoriaAnexos={}; // { 'loja|mes': {status:'carregando'|'pronto'|'erro', lista:[...], erro} }
 let auditoriaAnexoEnviando=null; // 'venda' | 'liberacao' | null - qual upload esta rodando agora
 const ROTULO_TIPO_ANEXO={venda:'Por venda',liberacao:'Por liberação de dinheiro'};
+/* "foi liberado certo?" (pedido do Felipe 24/08): compara o anexo "Por liberação de dinheiro"
+   (exportado do Mercado Livre) com o relatório OFICIAL de Liberações do próprio Mercado Pago
+   (pedido/baixado na hora, direto da API) - os dois usam a mesma data de liberação de verdade,
+   então dá pra comparar direto (diferente do repasse_liberado da Auditoria, que agrupa por data
+   da VENDA, não da liberação). */
+let liberacaoCheck={}; // chave 'loja|de|ate' -> {status:'rodando'|'pronto'|'erro', jobId, resultado, erro}
+async function iniciarCheckLiberacao(loja,de,ate){
+  const chave=`${loja}|${de}|${ate}`;
+  liberacaoCheck[chave]={status:'rodando',jobId:null,resultado:null,erro:null};
+  renderFinancas();
+  try{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    const r=await fetch(`${base}/liberacao/mes/iniciar?loja=${encodeURIComponent(loja)}&de=${de}&ate=${ate}`,{method:'POST'});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao iniciar a conferência (status '+r.status+').'));
+    if(!liberacaoCheck[chave]) return;
+    liberacaoCheck[chave]={status:'rodando',jobId:j.jobId,resultado:null,erro:null};
+    renderFinancas();
+    await pollCheckLiberacao(chave,j.jobId,base);
+  }catch(e){
+    liberacaoCheck[chave]={status:'erro',jobId:null,resultado:null,erro:e.message};
+    renderFinancas();
+  }
+}
+async function pollCheckLiberacao(chave,jobId,base){
+  while(true){
+    await new Promise(res=>setTimeout(res,3000));
+    const atual=liberacaoCheck[chave];
+    if(!atual||atual.jobId!==jobId) return; // saiu da tela ou pediu de novo - abandona esse poll
+    try{
+      const r=await fetch(`${base}/liberacao/mes/status?id=${encodeURIComponent(jobId)}`);
+      let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inesperada do backend ao consultar status.'); }
+      if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao consultar o status da conferência.');
+      if(j.status==='concluido'){ liberacaoCheck[chave]={status:'pronto',jobId,resultado:j.resultado,erro:null}; renderFinancas(); return; }
+      if(j.status==='erro'){ liberacaoCheck[chave]={status:'erro',jobId,resultado:null,erro:j.erro}; renderFinancas(); return; }
+    }catch(e){
+      liberacaoCheck[chave]={status:'erro',jobId,resultado:null,erro:e.message};
+      renderFinancas();
+      return;
+    }
+  }
+}
+function renderCheckLiberacao(loja,mes,anexoLiberacao){
+  if(!anexoLiberacao) return '';
+  const de=`${mes}-01`, ate=ultimoDiaMes(mes);
+  const chave=`${loja}|${de}|${ate}`;
+  const st=liberacaoCheck[chave];
+  const rLib=anexoLiberacao.resumo||{};
+  return `
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--borda)">
+      <div class="acoes-linha" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <span class="muted" style="font-size:12.5px">🔎 Conferir o "Por liberação" com o relatório oficial de Liberações do Mercado Pago (mesma data de liberação nos dois — pode levar alguns minutos, o MP gera o relatório na hora).</span>
+        <button class="btn sm" id="btnCheckLiberacao" ${st&&st.status==='rodando'?'disabled':''}>${st&&st.status==='rodando'?'Conferindo...':'🔎 Conferir'}</button>
+      </div>
+      ${st&&st.status==='rodando'?barraIndeterminada('Pedindo o relatório de Liberações pro Mercado Pago...'):''}
+      ${st&&st.status==='erro'?`<p class="hint" style="color:#e66;margin-top:8px">⚠ ${esc(st.erro)}</p>`:''}
+      ${st&&st.status==='pronto'?(()=>{
+        const totalMl=Number(rLib.liquido)||0, totalMp=Number(st.resultado.total_liberado_mp)||0;
+        const diff=totalMl-totalMp, divergente=Math.abs(diff)>1;
+        return `<div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;margin-top:10px">
+          <div><span class="muted" style="font-size:11px">LIBERADO (RELATÓRIO ML)</span><br><b style="font-size:16px">${fmtMoney(totalMl)}</b></div>
+          <div><span class="muted" style="font-size:11px">LIBERADO (OFICIAL MERCADO PAGO)</span><br><b style="font-size:16px">${fmtMoney(totalMp)}</b></div>
+          <div><span class="muted" style="font-size:11px">DIFERENÇA</span><br><b style="font-size:16px" class="${divergente?'pend':'okv'}">${fmtMoney(diff)}</b></div>
+        </div>
+        <p class="hint" style="margin-top:8px">${divergente?'⚠ Os dois relatórios são fontes oficiais (um do Mercado Livre, outro direto do Mercado Pago) — uma diferença acima de R$1 aqui é sinal de algo errado, vale olhar linha a linha.':'✓ Bateu — o que o Mercado Livre diz ter liberado confere com o relatório oficial do Mercado Pago.'} (${fmtInt(st.resultado.total_linhas_periodo)} de ${fmtInt(st.resultado.total_linhas_relatorio)} linha(s) do relatório do MP entraram no período).</p>`;
+      })():''}
+    </div>
+  `;
+}
 function chaveAnexosAuditoria(loja,mes){ return loja+'|'+mes; }
 /* comparação 3 vias (pedido do Felipe 23/08): Resumo Financeiro (cálculo rápido/assumido) x
    Auditoria (conferido pedido a pedido no MP) x Conciliação (relatório oficial do ML) - pra ver
@@ -5935,6 +6005,7 @@ function renderAuditoriaMes(){
         <label class="btn sm" style="cursor:pointer">${auditoriaAnexoEnviando==='liberacao'?'Enviando...':'📤 Por liberação de dinheiro'}<input type="file" accept=".xlsx" id="audAnexoLiberacao" style="display:none" ${auditoriaAnexoEnviando?'disabled':''}></label>
       </div>
       ${renderListaAnexosAuditoria()}
+      ${(()=>{ const stA=auditoriaAnexos[chaveAnexosAuditoria(auditoriaLoja,auditoriaAnexoMes)]; const aLib=(stA&&stA.status==='pronto')?stA.lista.find(a=>a.tipo==='liberacao'):null; return renderCheckLiberacao(auditoriaLoja,auditoriaAnexoMes,aLib); })()}
     </div>
     ${renderComparacaoAuditoria(res)}
   `;
@@ -6925,6 +6996,8 @@ function renderFinancas(){
   if(audAnexoVenda) audAnexoVenda.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('venda',f); e.target.value=''; };
   const audAnexoLiberacao=document.getElementById('audAnexoLiberacao');
   if(audAnexoLiberacao) audAnexoLiberacao.onchange=e=>{ const f=e.target.files&&e.target.files[0]; if(f) enviarAnexoAuditoria('liberacao',f); e.target.value=''; };
+  const btnCheckLiberacao=document.getElementById('btnCheckLiberacao');
+  if(btnCheckLiberacao) btnCheckLiberacao.onclick=()=>{ const mes=auditoriaAnexoMes; iniciarCheckLiberacao(auditoriaLoja,`${mes}-01`,ultimoDiaMes(mes)); };
   document.querySelectorAll('[data-baixaranexo]').forEach(b=>{ b.onclick=()=>baixarAnexoAuditoria(b.dataset.baixaranexo); });
   document.querySelectorAll('[data-excluiranexo]').forEach(b=>{ b.onclick=()=>excluirAnexoAuditoria(b.dataset.excluiranexo); });
   const btnSocData=document.getElementById('socData');
