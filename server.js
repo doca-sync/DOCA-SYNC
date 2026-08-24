@@ -368,12 +368,25 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
   }
   const orderId = claim.resource_id;
   let shippingId = null;
+  let valorVenda = null;
   try {
     const pedido = await fetchMLDebug(`https://api.mercadolibre.com/orders/${orderId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
     shippingId = pedido.shipping && pedido.shipping.id;
+    // preco UNITARIO do produto (nao o total do pedido) - se tiver mais de 1 item no pedido, usa
+    // o mais caro deles pra decidir (pedido do Felipe 24/08, corrigido: e' preco do produto, nao
+    // total do pedido - um pedido de 3 unidades de R$8 nao deveria cair na regra manual).
+    valorVenda = Math.max(0, ...(pedido.order_items || []).map(oi => Number(oi.unit_price) || 0));
   } catch (e) {
     await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: 'falha ao buscar o pedido: ' + e.message });
     return { claimId, erro: e.message };
+  }
+  /* regra nova do Felipe (24/08): preco unitario do produto acima de R$20 NAO entra na resolucao
+     automatica - fica pendente pra revisao manual mesmo (mesmo padrao de "sucesso:false com
+     motivo" ja usado nos outros casos que pulam a automacao, pra aparecer certinho como pendente
+     na tela). Abaixo de R$20 continua tudo automatico como ja era. */
+  if (valorVenda > 20) {
+    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: `Produto de R$${valorVenda.toFixed(2).replace('.', ',')} (acima de R$20) - fora da regra automática, precisa revisão manual` });
+    return { claimId, pulado: true, motivo: 'valor da venda acima de R$20 - revisao manual' };
   }
   const { absorvidoPeloVendedor, valor, erro: erroFrete } = await freteFoiDoVendedor(accessToken, shippingId);
   if (absorvidoPeloVendedor === null) {
@@ -585,10 +598,11 @@ app.get('/debug/claims/simular', async (req, res) => {
     if (!claimId) return res.status(400).json({ ok: false, erro: 'Parametro "claimId" obrigatorio.' });
     const accessToken = await tokenValido(loja);
     const claim = await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    let shippingId = null, orderErro = null;
+    let shippingId = null, orderErro = null, valorVenda = null;
     try {
       const pedido = await fetchMLDebug(`https://api.mercadolibre.com/orders/${claim.resource_id}`, { headers: { Authorization: `Bearer ${accessToken}` } });
       shippingId = pedido.shipping && pedido.shipping.id;
+      valorVenda = Math.max(0, ...(pedido.order_items || []).map(oi => Number(oi.unit_price) || 0));
     } catch (e) { orderErro = e.message; }
     const frete = await freteFoiDoVendedor(accessToken, shippingId);
     const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
@@ -622,10 +636,11 @@ app.get('/debug/claims/simular', async (req, res) => {
       ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "${textoFallbackSimulado}" (estagio: ${claim.stage || '?'})`
       : (jaEmAndamento ? `sem acao/mensagem disponivel, MAS ja em andamento (${motivoAndamento}) - contaria como resolvida, aguardando o comprador` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente de verdade`);
     if (claim.resource !== 'order') regraAplicavel = 'fora da regra (resource != order)';
+    else if (valorVenda != null && valorVenda > 20) regraAplicavel = `fora da regra automática - venda de R$${valorVenda.toFixed(2).replace('.', ',')} acima de R$20, precisa revisão manual`;
     else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : `devolucao indisponivel - ${fallbackTxt}`;
     else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : `reembolso indisponivel - ${fallbackTxt}`;
     else regraAplicavel = 'nao foi possivel determinar o frete';
-    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, stage: claim.stage, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, jaEmAndamento, motivoAndamento, mensagensClaim, regraAplicavel, claim });
+    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, valorVenda, stage: claim.stage, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, jaEmAndamento, motivoAndamento, mensagensClaim, regraAplicavel, claim });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 /* processa de verdade (EXECUTA a acao automatica) todas as reclamacoes abertas da loja - roda
