@@ -6337,7 +6337,7 @@ function renderFluxoCaixa(){
       ${eventos.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
         <th>Data</th><th class="num">Entra</th><th class="num">Sai</th><th class="num">Saldo projetado</th>
       </tr></thead><tbody>
-        ${eventos.map(e=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${e.saiu?fmtMoney(e.saiu):'—'}${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<div class="hint" style="font-size:10.5px;font-weight:normal">${e.saidaDetalhe.map(x=>esc(x.descricao)).join(', ')}</div>`:''}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td></tr>`).join('')}
+        ${eventos.map(e=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<span class="muted" style="font-size:11px;font-weight:normal">${esc(e.saidaDetalhe.map(x=>x.descricao).join(', ').toUpperCase())}</span> `:''}${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td></tr>`).join('')}
       </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhuma entrada ou saída conhecida nos próximos 60 dias.</p>'}
     </div>
     ${pendentes.length?`<div class="card" style="margin-top:14px">
