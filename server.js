@@ -2946,10 +2946,24 @@ async function buscarItensFaturaPorKey(loja, key) {
 }
 async function buscarFaturaMl(loja) {
   const accessToken = await tokenValido(loja);
-  const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=1';
+  // limit=3 (nao mais 1) - pedido do Felipe 24/08: com limit=1 o Doca so' via' o periodo MAIS
+  // RECENTE, que assim que um novo mes abre passa a ser o periodo AINDA EM ANDAMENTO (sem
+  // vencimento confirmado, ainda acumulando) - e o periodo anterior, que estava FECHADO e "A
+  // VENCER" de verdade (com data de vencimento real e valor que precisa ser pago em poucos dias),
+  // sumia do radar do Doca inteiramente. Buscando mais periodos, da' pra escolher certo qual e' o
+  // que realmente importa agora.
+  const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=3';
   const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-  const p = (j.results || [])[0];
-  if (!p) return null;
+  const periodos = j.results || [];
+  if (!periodos.length) return null;
+  // prioriza o periodo mais recente que ja tem vencimento CONFIRMADO pelo Mercado Livre
+  // (debt_expiration_date/expiration_date) e ainda tem divida (unpaid_amount>0) - esse e' o que
+  // esta' "A VENCER" de verdade (fechado, aguardando pagamento, com data real). O periodo mais
+  // recente da lista costuma ser o que ainda esta' EM ANDAMENTO (sem vencimento confirmado ainda),
+  // que nao e' o que precisa ser cobrado agora. Sem nenhum candidato assim (loja sem periodo
+  // fechado pendente), cai pro mais recente mesmo - igual ao comportamento de antes.
+  let p = periodos.find(x => (x.debt_expiration_date || x.expiration_date) && typeof x.unpaid_amount === 'number' && x.unpaid_amount > 0);
+  if (!p) p = periodos[0];
   const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key);
   let vencimento = p.debt_expiration_date || p.expiration_date || null;
   if (vencimento && !anoRazoavel(vencimento)) vencimento = null;
