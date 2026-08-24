@@ -1035,10 +1035,21 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
            cupom, financiamento etc se tiver) e confere se o que sobrou bate com o que o Mercado
            Pago diz que efetivamente recebeu (net_received_amount) e se ja foi liberado - pedido do
            Felipe 23/08: "o que precisa auditar e' se repassou certo". So' roda pra pedido nao
-           cancelado (cancelado nao tem repasse de venda esperado). */
+           cancelado (cancelado nao tem repasse de venda esperado).
+           CUIDADO (bug achado 23/08 em producao: 1048 "divergentes" de 5281 pedidos - falso
+           positivo generalizado): charges_details tem cobranca em AMBAS as direcoes, nao so'
+           saida. Quando o pagamento e' parcelado, o Mercado Pago lanca um par
+           financing_transfer (from:"payer", to:"collector" - ENTRADA extra na conta do vendedor,
+           o valor do parcelamento) + financing_fee (from:"collector", to:"mp" - a taxa que sai em
+           cima disso). So' contar as SAIDAS (from==='collector', que e' o que 'cobrancas' guarda)
+           ignora essa entrada e faz repasseEsperado ficar sistematicamente errado em qualquer
+           pedido parcelado. Corrige contando tambem as ENTRADAS (to==='collector') e somando de
+           volta. */
         if (!cancelado) {
-          const custoTotalReal = cobrancas.reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
-          const repasseEsperado = totalPedido - custoTotalReal;
+          const saidasReais = cobrancas.reduce((s, c) => s + ((c.amounts && Number(c.amounts.original)) || 0), 0);
+          const entradasExtras = (jp.charges_details || []).filter(c => c.accounts && c.accounts.to === 'collector').reduce((s, c) => s + ((c.amounts && Number(c.amounts.original)) || 0), 0);
+          const baseTransacao = Number(jp.transaction_amount) || totalPedido;
+          const repasseEsperado = baseTransacao - saidasReais + entradasExtras;
           const repasseReal = (jp.transaction_details && Number(jp.transaction_details.net_received_amount)) || 0;
           repasseEsperadoTotal += repasseEsperado;
           const statusRepasse = jp.money_release_status;
