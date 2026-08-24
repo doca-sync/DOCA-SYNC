@@ -6314,6 +6314,58 @@ function comprasPendentesComCaixa(loja,dense){
     return {p,c,custoTotal,check,curva:curva.get(p.id)||null};
   });
 }
+/* Relatório curto tipo "analista de fluxo de caixa" - pedido do Felipe 24/08. Interpreta a MESMA
+   projeção que já alimenta a tabela (proj.dense), sem buscar nada novo - só os 3 pontos discutidos
+   no chat: 1) o pior dia do período tem folga ou vai faltar (e quando); 2) a curva está subindo,
+   estável ou caindo (folga crescendo ou encolhendo); 3) qual a maior saída isolada do período e se
+   o caixa já acumulado até aquele dia cobre sozinho, sem depender do que entra no próprio dia. */
+function analisarFluxoCaixa(proj){
+  const dense=proj.dense;
+  if(!dense.length) return [];
+  const piorSaldo=Math.min(...dense.map(x=>x.saldo));
+  const diaPior=dense.find(x=>x.saldo===piorSaldo);
+  const ultimoDia=dense[dense.length-1];
+  const paragrafos=[];
+  if(piorSaldo<0){
+    paragrafos.push(`⚠ O caixa fica negativo em <b>${fmtData(diaPior.data)}</b>, faltando <b>${fmtMoney(Math.abs(piorSaldo))}</b> pra cobrir tudo que já está previsto até lá. Precisa de uma ação antes dessa data — reforçar com saldo de outra loja, negociar prazo de alguma despesa, ou reduzir gasto (Ads costuma ser o mais rápido de cortar).`);
+  }else if(piorSaldo<300||piorSaldo<proj.saldoInicial*0.15){
+    paragrafos.push(`⚠ O caixa não fica negativo, mas chega bem apertado em <b>${fmtData(diaPior.data)}</b>, com só <b>${fmtMoney(piorSaldo)}</b> de folga. Qualquer imprevisto (despesa não cadastrada, liberação atrasada) pode virar o jogo — vale acompanhar de perto essa data.`);
+  }else{
+    paragrafos.push(`✓ O caixa se mantém positivo nos 60 dias inteiros, com no mínimo <b>${fmtMoney(piorSaldo)}</b> de folga em ${fmtData(diaPior.data)} (o dia mais apertado do período). Sem ação necessária por enquanto.`);
+  }
+  const variacao=ultimoDia.saldo-proj.saldoInicial;
+  if(Math.abs(variacao)>Math.max(50,proj.saldoInicial*0.03)){
+    paragrafos.push(variacao>0
+      ?`Tendência de alta: o saldo projetado sobe de ${fmtMoney(proj.saldoInicial)} hoje pra ${fmtMoney(ultimoDia.saldo)} em ${fmtData(ultimoDia.data)} — entra mais do que sai no período.`
+      :`Tendência de queda: o saldo projetado cai de ${fmtMoney(proj.saldoInicial)} hoje pra ${fmtMoney(ultimoDia.saldo)} em ${fmtData(ultimoDia.data)} — as saídas já cadastradas pesam mais que as entradas conhecidas. Vale checar se é só timing (uma despesa pontual) ou se é estrutural (ex: Ads acima do que a margem sustenta).`);
+  }else{
+    paragrafos.push(`O saldo projetado fica praticamente estável no período (${fmtMoney(proj.saldoInicial)} → ${fmtMoney(ultimoDia.saldo)}).`);
+  }
+  const eventosSaida=dense.filter(x=>x.saiu>0).sort((a,b)=>b.saiu-a.saiu);
+  if(eventosSaida.length){
+    const maior=eventosSaida[0];
+    const idx=dense.findIndex(x=>x.data===maior.data);
+    const saldoAntes=idx>0?dense[idx-1].saldo:proj.saldoInicial;
+    const desc=(maior.saidaDetalhe&&maior.saidaDetalhe.length)?maior.saidaDetalhe.map(x=>x.descricao).join(', '):'saída';
+    paragrafos.push(saldoAntes>=maior.saiu
+      ?`A maior saída isolada do período é ${fmtMoney(maior.saiu)} em ${fmtData(maior.data)} (${esc(desc)}) — o caixa já acumulado até esse dia (${fmtMoney(saldoAntes)}) cobre sozinho, sem depender do que entra naquele mesmo dia.`
+      :`A maior saída isolada do período é ${fmtMoney(maior.saiu)} em ${fmtData(maior.data)} (${esc(desc)}) — maior que o caixa acumulado até esse dia (${fmtMoney(saldoAntes)}), então parte dela só fecha com o que entra no próprio dia. É o ponto mais sensível da projeção.`);
+  }
+  /* notas educativas - pedido do Felipe 24/08: "pra nós que nunca mexemos com essa parte
+     financeira, era legal colocar mais alguma informação no relatório pra ir aprendendo". Duas
+     notas: 1) o "fôlego em dias" (régua clássica de saúde de caixa: quantos dias o saldo de hoje
+     aguenta se NINGUÉM mais comprasse nada) calculado de verdade em cima do período; 2) a
+     diferença entre fluxo de caixa e lucro, que é a confusão mais comum de quem tá começando a
+     olhar pra esse número. */
+  const totalSaidasPeriodo=dense.reduce((s,x)=>s+x.saiu,0);
+  const mediaSaidaDia=totalSaidasPeriodo/dense.length;
+  if(mediaSaidaDia>0){
+    const folegoDias=Math.floor(proj.saldoInicial/mediaSaidaDia);
+    paragrafos.push(`📚 <b>Fôlego de caixa:</b> se nenhuma venda nova entrasse a partir de hoje, o saldo atual aguentaria pagar as saídas médias do período por cerca de <b>${folegoDias} dia(s)</b> antes de zerar. Não é uma previsão real (as vendas seguem acontecendo todo dia) — é só uma régua de segurança: quanto maior esse número, mais gordura a loja tem pra aguentar um imprevisto sem passar aperto.`);
+  }
+  paragrafos.push(`📚 <b>Fluxo de caixa não é a mesma coisa que lucro:</b> lucro é "quanto sobra no papel" (venda menos custo). Fluxo de caixa é "quando o dinheiro realmente cai e sai da conta". Dá pra estar tendo lucro e mesmo assim ficar apertado num dia específico, só porque uma conta grande (como a fatura do Mercado Livre) venceu antes do dinheiro das vendas correspondentes ter sido liberado pelo Mercado Pago. É exatamente esse descompasso de tempo que essa tela tenta antecipar — não é sobre se a loja é lucrativa, é sobre QUANDO o dinheiro está disponível.`);
+  return paragrafos;
+}
 function renderFluxoCaixa(){
   const opts=opcoesAlvoCaixa();
   const lojasAlvo=lojasDoAlvo(fluxoCaixaAlvo);
@@ -6322,6 +6374,7 @@ function renderFluxoCaixa(){
   const piorSaldo=Math.min(...proj.dense.map(x=>x.saldo));
   const diaPior=proj.dense.find(x=>x.saldo===piorSaldo);
   const pendentes=comprasPendentesComCaixa(lojasAlvo[0],proj.dense);
+  const analise=analisarFluxoCaixa(proj);
   return `
     <div class="card">
       <h3 style="margin-top:0">🌊 Projeção de saldo</h3>
@@ -6340,6 +6393,10 @@ function renderFluxoCaixa(){
         ${eventos.map(e=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<span class="muted" style="font-size:11px;font-weight:normal">${esc(e.saidaDetalhe.map(x=>x.descricao).join(', ').toUpperCase())}</span> `:''}${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td></tr>`).join('')}
       </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhuma entrada ou saída conhecida nos próximos 60 dias.</p>'}
     </div>
+    ${analise.length?`<div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">🧑‍💼 Análise do fluxo de caixa</h3>
+      ${analise.map(p=>`<p class="hint" style="margin:0 0 8px;font-size:13px">${p}</p>`).join('')}
+    </div>`:''}
     ${pendentes.length?`<div class="card" style="margin-top:14px">
       <h3 style="margin-top:0">🛒 Compras pendentes (aba Comprar, ainda não confirmadas)</h3>
       <p class="hint" style="margin:0 0 10px">Não entra no saldo projetado acima — só mostra em que dia teria caixa pra fazer cada compra, na ordem da fila (já considerando que os itens antes dele já teriam usado o caixa).</p>
