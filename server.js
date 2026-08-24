@@ -1491,7 +1491,12 @@ function gerarJobIdLiberacao() { return 'lib_' + Date.now().toString(36) + '_' +
 async function rodarLiberacaoMes(jobId, loja, de, ate) {
   const job = liberacaoJobs.get(jobId);
   try {
-    const beginDate = `${de}T00:00:00-03:00`, endDate = `${ate}T23:59:59-03:00`;
+    /* o Mercado Pago recusa o formato "-03:00" direto (HTTP 400 invalid_begin_date) - precisa ser
+       UTC com sufixo Z, sem milissegundos, igual o /debug/mp/relatorio/pedir que ja funcionava
+       (achado 24/08, testado em producao). */
+    const fmtSemMs = (d) => d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const beginDate = fmtSemMs(new Date(`${de}T00:00:00-03:00`));
+    const endDate = fmtSemMs(new Date(`${ate}T23:59:59-03:00`));
     const rPedido = await mpFetch(loja, '/v1/account/release_report', {
       method: 'POST',
       body: JSON.stringify({ begin_date: beginDate, end_date: endDate })
