@@ -5483,19 +5483,22 @@ async function puxarFaturaMl(loja){
   if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
   const f=j.fatura;
   const arr=despesasArr();
-  /* vencimento do ML nem sempre é confiável: quando o período em aberto ainda não tem
-     debt_expiration_date/expiration_date, o backend cai num fallback pro date_to do período (a
-     data de FECHAMENTO), não um vencimento de verdade - pedido do Felipe 24/08 (a TorvStore
-     apareceu com "vencimento" 22/08, que é exatamente o dia do fechamento configurado dela, não
-     do vencimento real de 28/08). Detecta esse caso (vencimento === dataFim) e troca pela
-     estimativa baseada no ciclo real da loja (FATURA_CICLO) em vez de confiar nesse fallback.
-     semVencimentoReal marca quando teve que estimar (o Fluxo de Caixa usa isso pra rotular
-     "estimado" na tela) - some sozinho assim que o Mercado Livre informar o vencimento de
-     verdade numa sincronização futura. */
-  const vencimentoDuvidoso=!f.vencimento||(f.dataFim&&f.vencimento===f.dataFim);
-  const vencimentoEstimado=vencimentoDuvidoso?vencimentoEstimadoFatura(loja,f.dataInicio,f.dataFim):null;
-  const semVencimentoReal=vencimentoDuvidoso;
-  const dataPagamento=(vencimentoDuvidoso?vencimentoEstimado:f.vencimento)||hoje();
+  /* o campo de vencimento que o Mercado Livre devolve se mostrou pouco confiável na prática -
+     pedido do Felipe 24/08 (a TorvStore apareceu com "vencimento" 22/08, que é o dia do
+     FECHAMENTO configurado dela, não o vencimento real de 28/08; a tentativa de detectar isso
+     comparando vencimento===dataFim não pegou esse caso, então o campo do ML deve estar vindo
+     diferente do que o backend espera). Já que o Felipe confirmou o ciclo real de fechamento/
+     vencimento de cada uma das 4 lojas (FATURA_CICLO), agora o Doca SEMPRE calcula o vencimento
+     por esse ciclo quando ele existe pra loja, em vez de tentar decidir se o campo do ML é
+     confiável ou não - é mais previsível e já bateu certo com a realidade (a única exceção
+     conhecida foi TorvShop variar 1-2 dias por causa de dia útil, por isso ainda fica rotulado
+     "estimado" na tela). Loja sem ciclo cadastrado continua usando o que o ML mandar (ou hoje()
+     como último recurso). */
+  const cfg=FATURA_CICLO[loja];
+  const vencimentoCiclo=cfg?vencimentoEstimadoFatura(loja,f.dataInicio,f.dataFim):null;
+  const semVencimentoReal=!!vencimentoCiclo;
+  const vencimentoEstimado=vencimentoCiclo;
+  const dataPagamento=vencimentoCiclo||f.vencimento||hoje();
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
