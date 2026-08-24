@@ -542,12 +542,22 @@ const FATURA_CICLO={
   'TorvShop':{fechamento:9,vencimento:15},
 };
 function _dataISO(ano,mesIdx,dia){ return `${ano}-${String(mesIdx+1).padStart(2,'0')}-${String(dia).padStart(2,'0')}`; }
-/* estima quando a fatura EM ABERTO de uma loja deve vencer, a partir do dia de fechamento/
-   vencimento configurado em FATURA_CICLO - acha a próxima ocorrência do dia de fechamento a
-   partir do início do período (periodoDe) e usa o dia de vencimento no MESMO mês dela. Devolve
-   null se a loja não tem ciclo configurado ainda. */
-function vencimentoEstimadoFatura(loja,periodoDe){
+/* estima o vencimento de uma fatura do ML a partir do ciclo configurado em FATURA_CICLO - pedido
+   do Felipe 24/08 (a TorvStore apareceu com "vencimento" 22/08, que é o dia do FECHAMENTO, não do
+   vencimento de verdade - o Mercado Livre às vezes só informa debt_expiration_date/
+   expiration_date um tempo depois de fechar o período, e o backend nesse meio-tempo cai num
+   fallback pro date_to do período, que é a data de FECHAMENTO, não vencimento).
+   Se já sabe quando o período FECHOU (periodoAte, uma data real vinda do ML), o vencimento é
+   sempre no MESMO mês desse fechamento, no dia configurado - essa é a estimativa mais confiável.
+   Sem periodoAte (período ainda aberto), estima a partir de quando abriu (periodoDe): acha a
+   próxima ocorrência do dia de fechamento e usa o vencimento no mesmo mês dela.
+   Devolve null se a loja não tem ciclo configurado ainda. */
+function vencimentoEstimadoFatura(loja,periodoDe,periodoAte){
   const cfg=FATURA_CICLO[loja]; if(!cfg) return null;
+  if(periodoAte){
+    const d=new Date(periodoAte+'T12:00:00');
+    return _dataISO(d.getFullYear(),d.getMonth(),cfg.vencimento);
+  }
   const base=periodoDe?new Date(periodoDe+'T12:00:00'):new Date();
   let ano=base.getFullYear(), mesIdx=base.getMonth();
   let fechamentoData=new Date(ano,mesIdx,cfg.fechamento,12);
@@ -5473,16 +5483,19 @@ async function puxarFaturaMl(loja){
   if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
   const f=j.fatura;
   const arr=despesasArr();
-  // sem data de vencimento confiável (período ainda em aberto, ML não fechou a conta) usa hoje
-  // só pra a despesa aparecer no mês certo — não inventa uma data de vencimento que não existe.
-  // semVencimentoReal marca isso (pedido do Felipe 24/08: a DorBlock apareceu no Fluxo de Caixa
-  // como "vence hoje" quando na real é um período AINDA ABERTO, sem vencimento de verdade nenhum
-  // ainda - o Fluxo de Caixa usa essa marcação pra não tratar "hoje" como se fosse um vencimento
-  // real, ver despesasPendentesParaProjecao) - some sozinha assim que o ML fechar o período e
-  // mandar um vencimento de verdade na próxima sincronização.
-  const semVencimentoReal=!f.vencimento;
-  const dataPagamento=f.vencimento||hoje();
-  const vencimentoEstimado=semVencimentoReal?vencimentoEstimadoFatura(loja,f.dataInicio):null;
+  /* vencimento do ML nem sempre é confiável: quando o período em aberto ainda não tem
+     debt_expiration_date/expiration_date, o backend cai num fallback pro date_to do período (a
+     data de FECHAMENTO), não um vencimento de verdade - pedido do Felipe 24/08 (a TorvStore
+     apareceu com "vencimento" 22/08, que é exatamente o dia do fechamento configurado dela, não
+     do vencimento real de 28/08). Detecta esse caso (vencimento === dataFim) e troca pela
+     estimativa baseada no ciclo real da loja (FATURA_CICLO) em vez de confiar nesse fallback.
+     semVencimentoReal marca quando teve que estimar (o Fluxo de Caixa usa isso pra rotular
+     "estimado" na tela) - some sozinho assim que o Mercado Livre informar o vencimento de
+     verdade numa sincronização futura. */
+  const vencimentoDuvidoso=!f.vencimento||(f.dataFim&&f.vencimento===f.dataFim);
+  const vencimentoEstimado=vencimentoDuvidoso?vencimentoEstimadoFatura(loja,f.dataInicio,f.dataFim):null;
+  const semVencimentoReal=vencimentoDuvidoso;
+  const dataPagamento=(vencimentoDuvidoso?vencimentoEstimado:f.vencimento)||hoje();
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
@@ -7040,13 +7053,13 @@ function renderFinancas(){
         const detalhando=financasDetalhandoFatura[d.id];
         const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
         <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${d.origem==='imposto'?' <span class="badge">Auto (imposto)</span>':''}${podeDetalhar?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px" ${detalhando?'disabled':''}>${detalhando?'Buscando...':(financasExpandido[d.id]?'▾ ocultar':'▸ detalhar')}</button>`:''}
-          ${d.origem==='ml_fatura'&&d.periodoDe&&d.periodoAte?`<div class="hint" style="margin:2px 0 0">Cobranças referentes a ${fmtData(d.periodoDe)} a ${fmtData(d.periodoAte)} · vence ${fmtData(d.dataPagamento)}</div>`:''}
+          ${d.origem==='ml_fatura'&&d.periodoDe&&d.periodoAte?`<div class="hint" style="margin:2px 0 0">Cobranças referentes a ${fmtData(d.periodoDe)} a ${fmtData(d.periodoAte)} · vence ${fmtData(d.dataPagamento)}${d.semVencimentoReal?' (estimado pelo ciclo da loja, ainda não confirmado pelo Mercado Livre)':''}</div>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
           ${d.origem==='imposto'?`<div class="hint" style="margin:2px 0 0">${d.impostoAliquota||0}% sobre o faturamento de ${esc(mesLabel(d.impostoRefMes))} (${fmtMoney(d.impostoFaturamentoBase||0)}) — já descontado direto na Margem Líquida, isso aqui é só lembrete de pagamento.</div>`:''}
         </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
-        <td>${fmtData(d.dataPagamento)}</td>
+        <td>${fmtData(d.dataPagamento)}${d.origem==='ml_fatura'&&d.semVencimentoReal?' <span class="muted" style="font-size:10.5px">(estimado)</span>':''}</td>
         <td>${d.recorrente?'<span class="badge okv">🔁 Recorrente</span>':'<span class="muted">—</span>'}</td>
         <td style="text-align:center">${d.origem==='ml_fatura'?(d.pago?'<span class="badge okv" title="Débito automático — o Doca confirma sozinho quando o Mercado Livre marcar como pago">✓ Pago (auto)</span>':'<span class="badge" title="Débito automático — o Doca marca sozinho quando o Mercado Livre confirmar o pagamento">Pendente (auto)</span>'):`<input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}>`}</td>
         <td><button class="btn sm" data-fneditar="${d.id}">Editar</button> <button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
