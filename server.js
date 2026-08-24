@@ -3002,6 +3002,21 @@ app.get('/financas/fatura-ml', async (req, res) => {
     res.json({ ok: true, loja, fatura });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* debug 24/08: devolve os períodos CRUS que o Mercado Livre manda (sem passar pela seleção nem
+   pela formatação de buscarFaturaMl), pra conferir de verdade os nomes/valores dos campos
+   (debt_expiration_date, expiration_date, unpaid_amount, period_status etc) numa loja específica
+   - a TorvStore continuou mostrando vencimento 22/08 (dia do fechamento) mesmo depois do fix de
+   buscar 3 períodos, então precisa ver o payload de verdade em vez de continuar advinhando. */
+app.get('/debug/fatura-ml/periodos', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const accessToken = await tokenValido(loja);
+    const url = 'https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=5';
+    const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    res.json({ ok: true, loja, bruto: j });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 /* detalhamento sob demanda de uma fatura JÁ CONHECIDA (qualquer mês, não só a mais recente) -
    pedido do Felipe 23/08: o botão "Detalhar" só funcionava na fatura mais atual porque
    buscarFaturaMl só traz o período mais recente (limit=1); aqui o frontend manda a key que já
