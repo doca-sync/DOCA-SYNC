@@ -1985,13 +1985,28 @@ function moverQtd(id,from,to,qty){
   persist();
   return {ok:true};
 }
-/* marca um pedido como comprado: ele vira um lote a coletar */
-function comprarPedido(produtoId,pedidoId){
+/* um produto é "adiantado pelo Amauri" quando está marcado na parceria E o custo do produto em si
+   está configurado como pago por ele (padrão da parceria - ver amauriCustos) - nesse caso a
+   TorvStore não desembolsa nada na hora da compra, só acerta depois no repasse mensal do que
+   vendeu. Pedido do Felipe 24/08. */
+function produtoAdiantadoPeloAmauri(p){
+  if(!p) return false;
+  const a=amauriState();
+  if(!a.produtoIds.includes(p.id)) return false;
+  return amauriCustos(p.id).custoProdutoQuemPagou==='amauri';
+}
+/* marca um pedido como comprado: ele vira um lote a coletar. contaPagante é a loja de onde saiu
+   o dinheiro de verdade (pedido do Felipe 24/08: "pago a vista da conta que tem dinheiro", nem
+   sempre é a loja dona do produto) - fica null pra produtos adiantados pelo Amauri, já que aí
+   não é dinheiro saindo agora. */
+function comprarPedido(produtoId,pedidoId,contaPagante){
   const p=prodById(produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
   const c=(p.pedidos||[]).find(x=>x.id===pedidoId); if(!c) return {ok:false,msg:'Pedido não encontrado.'};
   if(c.qtd<=0) return {ok:false,msg:'Informe uma quantidade maior que zero.'};
   snapshot(`pedido de ${fmtInt(c.qtd)} un. comprado (${p.sku})`);
   const q=c.qtd;
+  const adiantadoAmauri=produtoAdiantadoPeloAmauri(p);
+  const valorTotal=adiantadoAmauri?0:(p.custo||0)*q;
   p.pedidos=p.pedidos.filter(x=>x.id!==pedidoId);
   sincronizarPedidos(p);
   if(!p.lotes) p.lotes=[];
@@ -2003,7 +2018,8 @@ function comprarPedido(produtoId,pedidoId){
      porque o fornecedor às vezes só manda a NF depois da coleta já feita. */
   if(!Array.isArray(state.notasFiscais)) state.notasFiscais=[];
   state.notasFiscais.push({id:gerarId('nf'),produtoId:p.id,sku:p.sku,codigo:p.codigo,loja:p.loja,
-    fornecedor:p.fornecedor,qtd:q,dataCompra:hoje(),loteId:lote.id,recebida:false,numero:'',dataRecebida:null,criadoEm:Date.now()});
+    fornecedor:p.fornecedor,qtd:q,dataCompra:hoje(),loteId:lote.id,recebida:false,numero:'',dataRecebida:null,criadoEm:Date.now(),
+    valorTotal,contaPagante:adiantadoAmauri?null:(contaPagante||p.loja)});
   p.atualizadoEm=Date.now(); persist();
   return {ok:true,qtd:q};
 }
@@ -4242,9 +4258,26 @@ function wireAcaoButtons(scope){
     b.onclick=()=>{
       const [pid,cid]=b.dataset.comprei.split('|');
       const p=prodById(pid);
-      const r=comprarPedido(pid,cid);
-      if(!r.ok){ alert(r.msg); return; }
-      toast(`${fmtInt(r.qtd)} un. de ${p.sku} foram para a lista de coleta.`);
+      const finalizar=(contaPagante)=>{
+        const r=comprarPedido(pid,cid,contaPagante);
+        if(!r.ok){ alert(r.msg); return; }
+        toast(`${fmtInt(r.qtd)} un. de ${p.sku} foram para a lista de coleta.`);
+      };
+      /* produto adiantado pelo Amauri não desembolsa dinheiro agora - compra direto, sem
+         perguntar de qual loja saiu o pagamento. Os demais, pergunta - pedido do Felipe 24/08,
+         já que ele às vezes paga com o saldo de outra loja que tem dinheiro sobrando. */
+      if(produtoAdiantadoPeloAmauri(p) || !(p.custo>0)){ finalizar(p.loja); return; }
+      const body=openModal(false);
+      body.innerHTML=`<h3>Confirmar compra</h3>
+        <p class="hint" style="margin:0 0 10px">${esc(p.sku)} — pago com o saldo de qual loja?</p>
+        <div class="form-grid" style="grid-template-columns:1fr"><label>Loja pagante<select id="cpLoja">${optsLojas(p.loja)}</select></label></div>
+        <div class="modal-actions"><button class="btn" id="btnCancelarCompra">Cancelar</button><button class="btn acc" id="btnConfirmarCompra">Confirmar compra</button></div>`;
+      document.getElementById('btnCancelarCompra').onclick=closeModal;
+      document.getElementById('btnConfirmarCompra').onclick=()=>{
+        const contaPagante=document.getElementById('cpLoja').value;
+        closeModal();
+        finalizar(contaPagante);
+      };
     };
   });
   scope.querySelectorAll('[data-receber]').forEach(b=>{
@@ -4256,21 +4289,45 @@ function wireAcaoButtons(scope){
     };
   });
 }
-/* cada pedido é uma linha própria — pedidos do mesmo SKU não se somam */
-function tableComprar(list){
+/* checa, pra um pedido pendente (ainda não comprado), se já tem caixa garantido (saldo + agenda
+   de liberação - despesas/compras já conhecidas) pra pagar ele - usa a mesma projeção de 60 dias
+   do Fluxo de Caixa. Pedido do Felipe 24/08: "quando estiver em comprar, vai aparecer o valor da
+   compra... e se possível o que teria dinheiro pra fazer a compra". Produto adiantado pelo Amauri
+   não desembolsa nada, então não faz sentido checar caixa pra ele. */
+function badgeCaixaParaCompra(p,custoTotal,denseLoja){
+  if(produtoAdiantadoPeloAmauri(p)) return '<span class="muted" title="Adiantado pelo Amauri — não sai dinheiro da loja agora">—</span>';
+  if(!(custoTotal>0)) return '<span class="muted">—</span>';
+  const check=primeiroDiaComCaixaEmDense(denseLoja,custoTotal);
+  const hojeStr=hoje();
+  if(check&&check.data===hojeStr) return `<span class="badge okv" title="Saldo projetado dá pra essa compra hoje sem faltar pra mais nada depois">✓ tem caixa hoje</span>`;
+  if(check) return `<span class="badge pend" title="Só dá sem faltar caixa depois a partir de ${fmtData(check.data)}">⚠ só em ${fmtData(check.data)}</span>`;
+  return `<span class="badge pend" title="Não dá pra cobrir essa compra nos próximos 60 dias com o caixa já garantido">🔴 sem caixa (60d)</span>`;
+}
+/* cada pedido é uma linha própria — pedidos do mesmo SKU não se somam. Ordenado por prioridade de
+   Curva A primeiro (mesma classificação Pareto usada no alerta de ruptura da Visão Geral) - dentro
+   da mesma curva, mais antigo primeiro. Pedido do Felipe 24/08: "por ordem de prioridade por
+   produtos curva A". Produto sem leitura de venda no FULL (sem curva) fica por último. */
+function tableComprar(list,denseLoja,curva){
   const linhas=[];
   list.forEach(p=>(p.pedidos||[]).forEach(c=>linhas.push({p,c})));
   if(!linhas.length) return `<p class="empty-inline">Nada por aqui.</p>`;
-  linhas.sort((a,b)=>(a.c.data||'').localeCompare(b.c.data||'')||a.p.sku.localeCompare(b.p.sku));
+  const ordCurva={A:0,B:1,C:2,null:3};
+  linhas.sort((a,b)=>{
+    const ca=ordCurva[(curva&&curva.get(a.p.id))??'null'], cb=ordCurva[(curva&&curva.get(b.p.id))??'null'];
+    if(ca!==cb) return ca-cb;
+    return (a.c.data||'').localeCompare(b.c.data||'')||a.p.sku.localeCompare(b.p.sku);
+  });
   return `<div class="table-wrap" style="margin-bottom:18px"><table class="tbl-produtos"><thead><tr>
-    <th style="width:36px">Imprimir?</th><th>Pedido de</th><th>SKU</th><th>Código</th><th>Fornecedor</th><th>Qtd do pedido</th><th>Custo</th><th>Gerado por</th><th>Observação</th><th></th>
+    <th style="width:36px">Imprimir?</th><th>Curva</th><th>Pedido de</th><th>SKU</th><th>Código</th><th>Fornecedor</th><th>Qtd do pedido</th><th>Custo</th><th>Caixa p/ comprar</th><th>Gerado por</th><th>Observação</th><th></th>
   </tr></thead><tbody>
-    ${linhas.map(({p,c})=>{ const ce=compraDeEnvios(p); return `<tr>
+    ${linhas.map(({p,c})=>{ const ce=compraDeEnvios(p); const custoTotal=(p.custo||0)*c.qtd; const cv=curva&&curva.get(p.id); return `<tr>
       <td><input type="checkbox" class="chk-compra" data-ped="${p.id}|${c.id}" checked></td>
+      <td>${cv?`<span class="curva-badge curva-${cv}" title="Curva ${cv}">${cv}</span>`:'<span class="muted">—</span>'}</td>
       <td class="mono">${esc(fmtData(c.data))}</td>
       <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td><td>${esc(p.fornecedor)||'<span class="muted">—</span>'}</td>
       <td><input type="number" min="0" value="${c.qtd}" class="qty-acao" data-qtdped="${p.id}|${c.id}" title="Ajuste aqui se o fornecedor não tiver a quantidade toda">${p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(c.qtd,p.unidPorCaixa)}</div>`:''}</td>
-      <td class="num">${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney((p.custo||0)*c.qtd)}</td>
+      <td class="num">${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(custoTotal)}</td>
+      <td>${badgeCaixaParaCompra(p,custoTotal,denseLoja)}</td>
       <td>${c.origem?`<span class="cam" style="font-size:11.5px">${esc(c.origem)}</span>`:'<span class="muted">—</span>'}</td>
       <td><input type="text" class="obs-input" placeholder="Observação (opcional)" value="${esc(c.obs||'')}" title="${esc(c.obs||'')}" data-obsped="${p.id}|${c.id}"></td>
       <td><button class="btn sm acc" data-comprei="${p.id}|${c.id}">Comprei — vai coletar</button></td>
@@ -4285,7 +4342,9 @@ function renderComprar(){
     <p class="hint" style="margin:0 0 16px">Cada pedido aparece em uma linha própria, mesmo sendo do mesmo SKU. Se o fornecedor não tiver a quantidade toda, altere direto na coluna <b>Qtd do pedido</b> — os outros pedidos do mesmo SKU não são afetados. Ao clicar em <b>Comprei</b>, só aquele pedido vira um lote na lista de coleta.</p>`;
   STORES.forEach(loja=>{
     const l=state.produtos.filter(p=>p.loja===loja&&(p.pedidos||[]).length>0).sort((a,b)=>a.sku.localeCompare(b.sku));
-    h+=`<h3>${esc(loja)}</h3>${tableComprar(l)}`;
+    const denseLoja=l.length?projecaoCaixaBase([loja],60).dense:[];
+    const curva=l.length?classificarCurvaLoja(loja):null;
+    h+=`<h3>${esc(loja)}</h3>${tableComprar(l,denseLoja,curva)}`;
   });
   el.innerHTML=h;
   wireAcaoButtons(el);
@@ -6086,24 +6145,58 @@ function renderListaAnexosAuditoria(){
 function despesasPendentesParaProjecao(lojas){
   return despesasArr().filter(d=>!d.pago&&lojas.includes(d.loja));
 }
+/* compras de produto pagas à vista (não é despesa - já sai o dinheiro na hora, na loja que o
+   Felipe escolheu como pagante ao clicar "Comprei"). Pedido do Felipe 24/08: mostrar essas
+   compras no Fluxo de Caixa, no dia em que o dinheiro sai de verdade. Só entram as com
+   valorTotal>0 e contaPagante preenchida - produto adiantado pelo Amauri fica de fora (não
+   desembolsa nada agora). */
+function comprasAVistaParaProjecao(lojas){
+  return (state.notasFiscais||[]).filter(n=>n.contaPagante&&lojas.includes(n.contaPagante)&&Number(n.valorTotal)>0);
+}
+/* Calibra saldo/a-receber ENTRE sincronizações reais usando a própria agenda de liberações que o
+   Doca já tem salva: qualquer liberação agendada pra hoje ou pra uma data que já passou (e a
+   sincronização periódica - a cada 20min - ainda não pegou) é somada ao saldo e tirada do "a
+   receber" na hora de EXIBIR. Pedido do Felipe 24/08: "conforme for acontecendo os lançamentos
+   vc vai fazendo a soma ou a subtração automaticamente". Não mexe no state salvo (state.financeiro)
+   - é só conta derivada pra mostrar; quando a sincronização real chegar e sobrescrever tudo, volta
+   a bater sozinho, sem risco de somar duas vezes. */
+function financeiroCalibrado(loja){
+  const f=finLoja(loja);
+  const hojeStr=hoje();
+  const agenda=f.agendaLiberacoes||[];
+  const jaDeviaTerCaido=agenda.filter(x=>x.data<=hojeStr).reduce((s,x)=>s+(Number(x.valor)||0),0);
+  return {
+    mercadoPago:(f.mercadoPago||0)+jaDeviaTerCaido,
+    aReceber:Math.max(0,(f.aReceber||0)-jaDeviaTerCaido),
+    agendaLiberacoes:agenda.filter(x=>x.data>hojeStr),
+    mpAtualizadoEm:f.mpAtualizadoEm,
+    calibrado:jaDeviaTerCaido
+  };
+}
 function projecaoCaixaBase(lojas,dias){
   const hojeStr=hoje();
   let saldoInicial=0;
   const semSync=[];
-  lojas.forEach(loja=>{ const f=finLoja(loja); saldoInicial+=f.mercadoPago||0; if(!f.mpAtualizadoEm) semSync.push(loja); });
+  lojas.forEach(loja=>{ const fc=financeiroCalibrado(loja); saldoInicial+=fc.mercadoPago; if(!fc.mpAtualizadoEm) semSync.push(loja); });
   const entradas={};
-  lojas.forEach(loja=>{ (finLoja(loja).agendaLiberacoes||[]).forEach(x=>{ if(x.data>=hojeStr) entradas[x.data]=(entradas[x.data]||0)+x.valor; }); });
-  const saidas={};
+  lojas.forEach(loja=>{ financeiroCalibrado(loja).agendaLiberacoes.forEach(x=>{ entradas[x.data]=(entradas[x.data]||0)+x.valor; }); });
+  const saidas={}; const saidasDetalhe={};
   despesasPendentesParaProjecao(lojas).forEach(d=>{
     let data=d.dataPagamento||hojeStr; if(data<hojeStr) data=hojeStr;
     saidas[data]=(saidas[data]||0)+(Number(d.valor)||0);
+    (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:d.descricao||'Despesa',valor:Number(d.valor)||0});
+  });
+  comprasAVistaParaProjecao(lojas).forEach(n=>{
+    const data=n.dataCompra||hojeStr; if(data<hojeStr) return; /* já é história, o saldo sincronizado já reflete */
+    saidas[data]=(saidas[data]||0)+(Number(n.valorTotal)||0);
+    (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:`Compra: ${n.sku} (${fmtInt(n.qtd)} un.)`,valor:Number(n.valorTotal)||0});
   });
   const dense=[]; let saldo=saldoInicial;
   for(let i=0;i<=dias;i++){
     const d=_somaDiasISO(hojeStr,i);
     const entrou=entradas[d]||0, saiu=saidas[d]||0;
     saldo=saldo+entrou-saiu;
-    dense.push({data:d,entrou,saiu,saldo});
+    dense.push({data:d,entrou,saiu,saldo,saidaDetalhe:saidasDetalhe[d]||[]});
   }
   return {saldoInicial,dense,semSync};
 }
@@ -6111,14 +6204,17 @@ function projecaoCaixaBase(lojas,dias){
    depois (olha o mínimo do saldo dali até o fim da janela, não só o saldo daquele dia isolado) -
    responde a pergunta "quando dá pra fazer essa compra/gasto de X reais sem faltar pra mais nada
    depois". */
-function primeiroDiaComCaixaPara(lojas,valor,dias){
-  const {dense}=projecaoCaixaBase(lojas,dias);
+function primeiroDiaComCaixaEmDense(dense,valor){
   const n=dense.length;
   const sufMin=new Array(n);
   sufMin[n-1]=dense[n-1].saldo;
   for(let i=n-2;i>=0;i--) sufMin[i]=Math.min(dense[i].saldo,sufMin[i+1]);
   for(let i=0;i<n;i++){ if(sufMin[i]>=valor) return {data:dense[i].data,saldoNaqueleDia:dense[i].saldo}; }
   return null;
+}
+function primeiroDiaComCaixaPara(lojas,valor,dias){
+  const {dense}=projecaoCaixaBase(lojas,dias);
+  return primeiroDiaComCaixaEmDense(dense,valor);
 }
 /* Fluxo de Caixa é sempre por loja individual, sem agrupar (pedido do Felipe 24/08: "acho melhor
    fazer um por loja e não pelo grupo, pode tirar do filtro"). O bug do "aparece 0 ao selecionar
@@ -6188,6 +6284,36 @@ function renderSimuladorResultadoCaixa(){
   const r=fluxoCaixaSimResultado, hojeStr=hoje();
   return `<p class="hint" style="margin-top:10px">${r.data===hojeStr?`<b class="okv">Já dá pra fazer hoje</b>`:`Primeiro dia em que dá: <b class="okv">${fmtData(r.data)}</b>`} — saldo projetado naquele dia, já descontando o gasto: ${fmtMoney(r.saldoNaqueleDia)}.</p>`;
 }
+/* pedidos ainda não comprados (aba Comprar), com o dia em que CADA UM teria caixa disponível -
+   calculado em sequência na ordem da fila (mesma ordem da aba Comprar), pra o 2º item já
+   considerar que o caixa do 1º já teria sido usado. É só informativo - não entra no "SALDO
+   PROJETADO MÍNIMO" nem na tabela de eventos acima, porque ainda não é compra confirmada, só
+   intenção. Pedido do Felipe 24/08: "vai aparecer o valor do que está em comprar? no dia que
+   tiver dinheiro disponível?". Produto adiantado pelo Amauri fica de fora (não desembolsa nada). */
+function comprasPendentesComCaixa(loja,dense){
+  const l=state.produtos.filter(p=>p.loja===loja&&(p.pedidos||[]).length>0);
+  const curva=classificarCurvaLoja(loja);
+  const linhas=[];
+  l.forEach(p=>(p.pedidos||[]).forEach(c=>{
+    if(produtoAdiantadoPeloAmauri(p)) return;
+    const custoTotal=(p.custo||0)*c.qtd;
+    if(!(custoTotal>0)) return;
+    linhas.push({p,c,custoTotal});
+  }));
+  /* mesma prioridade da aba Comprar: Curva A primeiro reserva o caixa - pedido do Felipe 24/08. */
+  const ordCurva={A:0,B:1,C:2,null:3};
+  linhas.sort((a,b)=>{
+    const ca=ordCurva[curva.get(a.p.id)??'null'], cb=ordCurva[curva.get(b.p.id)??'null'];
+    if(ca!==cb) return ca-cb;
+    return (a.c.data||'').localeCompare(b.c.data||'')||a.p.sku.localeCompare(b.p.sku);
+  });
+  let denseAjustado=dense.map(x=>({...x}));
+  return linhas.map(({p,c,custoTotal})=>{
+    const check=primeiroDiaComCaixaEmDense(denseAjustado,custoTotal);
+    if(check) denseAjustado=denseAjustado.map(x=>x.data>=check.data?{...x,saldo:x.saldo-custoTotal}:x);
+    return {p,c,custoTotal,check,curva:curva.get(p.id)||null};
+  });
+}
 function renderFluxoCaixa(){
   const opts=opcoesAlvoCaixa();
   const lojasAlvo=lojasDoAlvo(fluxoCaixaAlvo);
@@ -6195,6 +6321,7 @@ function renderFluxoCaixa(){
   const eventos=proj.dense.filter(x=>x.entrou||x.saiu);
   const piorSaldo=Math.min(...proj.dense.map(x=>x.saldo));
   const diaPior=proj.dense.find(x=>x.saldo===piorSaldo);
+  const pendentes=comprasPendentesComCaixa(lojasAlvo[0],proj.dense);
   return `
     <div class="card">
       <h3 style="margin-top:0">🌊 Projeção de saldo</h3>
@@ -6210,9 +6337,18 @@ function renderFluxoCaixa(){
       ${eventos.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
         <th>Data</th><th class="num">Entra</th><th class="num">Sai</th><th class="num">Saldo projetado</th>
       </tr></thead><tbody>
-        ${eventos.map(e=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td></tr>`).join('')}
+        ${eventos.map(e=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${e.saiu?fmtMoney(e.saiu):'—'}${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<div class="hint" style="font-size:10.5px;font-weight:normal">${e.saidaDetalhe.map(x=>esc(x.descricao)).join(', ')}</div>`:''}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td></tr>`).join('')}
       </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhuma entrada ou saída conhecida nos próximos 60 dias.</p>'}
     </div>
+    ${pendentes.length?`<div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">🛒 Compras pendentes (aba Comprar, ainda não confirmadas)</h3>
+      <p class="hint" style="margin:0 0 10px">Não entra no saldo projetado acima — só mostra em que dia teria caixa pra fazer cada compra, na ordem da fila (já considerando que os itens antes dele já teriam usado o caixa).</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>Curva</th><th>SKU</th><th class="num">Qtd</th><th class="num">Valor</th><th>Caixa disponível</th>
+      </tr></thead><tbody>
+        ${pendentes.map(({p,c,custoTotal,check,curva})=>`<tr><td>${curva?`<span class="curva-badge curva-${curva}" title="Curva ${curva}">${curva}</span>`:'<span class="muted">—</span>'}</td><td class="mono">${esc(p.sku)}</td><td class="num">${fmtInt(c.qtd)}</td><td class="num">${fmtMoney(custoTotal)}</td><td>${check?(check.data===hoje()?'<span class="okv">✓ hoje</span>':`<span class="pend">a partir de ${fmtData(check.data)}</span>`):'<span class="pend">sem caixa nos próximos 60 dias</span>'}</td></tr>`).join('')}
+      </tbody></table></div>
+    </div>`:''}
     <div class="card" style="margin-top:14px">
       <h3 style="margin-top:0">🎯 Simulador — quando dá pra fazer essa compra/gasto</h3>
       <p class="hint" style="margin:0 0 10px">Informe o valor e o Doca mostra o primeiro dia em que o saldo projetado aguenta esse gasto sem faltar pra mais nada depois (despesas, fatura ML etc já contados acima).</p>
