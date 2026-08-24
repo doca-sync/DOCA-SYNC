@@ -5615,7 +5615,14 @@ async function pesquisarResumoFinanceiro(){
   financasResumoCarregando=true; financasResumoErro=null; financasResumoAnterior=null; financasResumoProgresso=null; renderFinancas();
   try{
     if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
-    const resumo=await fetchResumoJob(financasResumoLoja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{ financasResumoProgresso=p; renderFinancas(); });
+    let resumo=await fetchResumoJob(financasResumoLoja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{ financasResumoProgresso=p; renderFinancas(); });
+    /* pedido do Felipe 23/08: essa tela (Resumo Financeiro + ranking de produtos) tava usando SEMPRE
+       o cálculo estimado (tarifa por % de categoria, frete rateado por peso) - só o botão "Calcular
+       fechamento de todas as lojas" aplicava a Auditoria/Conciliação por cima. Isso fazia essa tela
+       mostrar margem calibrada com o frete ANTIGO (subestimado), enquanto o fechamento já mostrava
+       o frete corrigido - duas telas com números diferentes pro mesmo mês. Agora aplica o mesmo
+       override aqui, se já tiver Auditoria/Conciliação salva pra esse período exato. */
+    if(resumo&&resumo.periodo) resumo=await aplicarPrioridadeFechamento(resumo,financasResumoLoja,resumo.periodo.de,resumo.periodo.ate);
     financasResumoResultado=resumo;
     if(resumo&&resumo.periodo) buscarResumoAnteriorAutomatico(financasResumoLoja,resumo.periodo.de,resumo.periodo.ate);
   }catch(e){ financasResumoErro=e.message; }
@@ -5745,7 +5752,16 @@ function resumirConciliacaoVenda(linhas,mes){
        validado contra a Auditoria de julho/2026 da TorvStore (bateu em ~R$40 de diferença). */
     if(t==='Venda'){
       tarifaColuna+=numeroCel(l['Valor total de tarifas (desconto já aplicado)'])+numeroCel(l['Valor total de tarifas pós-pagas']);
-      freteVendedor+=numeroCel(l['Envio pago pelo vendedor']);
+      /* "Envio pago pelo vendedor" do proprio ML e' BRUTO - inclui a parte que o COMPRADOR pagou a
+         mais de frete (coluna "Envio pago pelo comprador (+)"), apesar do nome sugerir que e' so'
+         a sua parte. Achado 24/08 (pedido do Felipe, comparando com um pedido real): pedido
+         2000017191053798, "Envio pago pelo vendedor"=R$20,94 mas "Envio pago pelo comprador
+         (+)"=R$13,99 - a sua parte de verdade e' R$6,95 (20,94-13,99), confirmado batendo com o
+         net_received_amount desse pedido no Mercado Pago. Mesmo bug que existia na Auditoria
+         (server.js, corrigido no mesmo dia) - desconta aqui tambem. */
+      const freteVendedorBruto=numeroCel(l['Envio pago pelo vendedor']);
+      const freteCompradorLinha=numeroCel(l['Envio pago pelo comprador (+)']);
+      freteVendedor+=Math.max(0,freteVendedorBruto-freteCompradorLinha);
     }
   });
   const tarifa=tarifaColuna-freteVendedor;
@@ -5753,8 +5769,9 @@ function resumirConciliacaoVenda(linhas,mes){
   /* versaoCalculo: sobe toda vez que a fórmula de tarifa/frete muda de verdade (não só ajuste de
      texto), pra dar pra avisar "esse anexo é de antes desse cálculo, suba de novo" mesmo quando o
      campo já existe mas com o valor calculado do jeito antigo/errado (ex: v1 não separava a
-     tarifa de envio da comissão de venda, dava um número de tarifa ~4x maior que o real). */
-  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100,versaoCalculo:2};
+     tarifa de envio da comissão de venda, dava um número de tarifa ~4x maior que o real; v2 não
+     descontava o frete pago pelo comprador do "Envio pago pelo vendedor", que vem bruto do ML). */
+  return {linhasNoMes:doMes.length,linhasNoArquivo:linhas.length,porTipo,bruto:Math.round(bruto*100)/100,liquido:Math.round(liquido*100)/100,tarifa:Math.round(tarifa*100)/100,freteVendedor:Math.round(freteVendedor*100)/100,versaoCalculo:3};
 }
 function ultimoDiaMes(mes){
   const [y,m]=String(mes||'').split('-').map(Number);
@@ -5940,10 +5957,10 @@ function renderComparacaoAuditoria(res){
           <th>Métrica</th><th class="num">Resumo Financeiro</th><th class="num">Auditoria</th><th class="num">Conciliação (ML)</th>
         </tr></thead><tbody>
           ${linha('Faturamento / Bruto',compR.resumo.faturamento,res.faturamento,rConc?rConc.bruto:null)}
-          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.versaoCalculo===2?rConc.tarifa:null)}
-          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.versaoCalculo===2?rConc.freteVendedor:null)}
+          ${linha('Tarifas',compR.resumo.tarifas,res.tarifa_real,rConc&&rConc.versaoCalculo===3?rConc.tarifa:null)}
+          ${linha('Frete (pago pelo vendedor)',compR.resumo.frete&&compR.resumo.frete.vendedor,res.frete_real,rConc&&rConc.versaoCalculo===3?rConc.freteVendedor:null)}
         </tbody></table></div>
-        ${rConc&&rConc.versaoCalculo!==2?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes desse cálculo de tarifa/frete existir (ou foi calculado com uma versão antiga que tinha um bug de dupla contagem do frete) — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra corrigir.</p>`:''}
+        ${rConc&&rConc.versaoCalculo!==3?`<p class="hint" style="margin-top:8px">Esse anexo de Conciliação é de antes desse cálculo de tarifa/frete existir (ou foi calculado com uma versão antiga que tinha um bug de dupla contagem do frete, ou que não descontava o frete pago pelo comprador) — exclua e suba de novo o "Por venda" de ${esc(auditoriaAnexoMes)} pra corrigir.</p>`:''}
         ${rConc&&rConc.bruto!=null&&Math.abs(rConc.bruto-res.faturamento)>res.faturamento*0.01?`<p class="hint" style="margin-top:8px">O "Bruto" da Conciliação normalmente fica acima do Faturamento do Resumo/Auditoria de propósito — o Mercado Livre soma ali outras coisas que passam pela venda (frete pago pelo comprador, taxa de parcelamento etc.), não só o valor do produto. Não espere essa linha bater 100%, só as de Tarifa e Frete.</p>`:''}
         <p class="hint" style="margin-top:10px">Resumo Financeiro é o cálculo rápido/assumido do dia a dia; Auditoria confere pedido a pedido no Mercado Pago; Conciliação é o relatório oficial do Mercado Livre. Se os 3 estiverem próximos, o Resumo Financeiro está calibrado — diferença grande é sinal pra olhar as Anomalias acima.</p>`
       }
@@ -6084,7 +6101,7 @@ async function aplicarPrioridadeFechamento(resumo,loja,de,ate){
       const j=await r.json().catch(()=>null);
       const anexoVenda=(j&&j.ok?(j.anexos||[]):[]).find(a=>a.tipo==='venda');
       const rConc=anexoVenda&&anexoVenda.resumo;
-      if(rConc&&rConc.versaoCalculo===2){
+      if(rConc&&rConc.versaoCalculo===3){
         resumo.tarifas=rConc.tarifa;
         if(!resumo.frete) resumo.frete={};
         resumo.frete.vendedor=rConc.freteVendedor;

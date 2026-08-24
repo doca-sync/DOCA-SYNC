@@ -1023,7 +1023,13 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
         const cobrancas = (jp.charges_details || []).filter(c => c.accounts && c.accounts.from === 'collector');
         const temComissaoReal = cobrancas.some(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee');
         const valorComissaoReal = cobrancas.filter(c => c.name === 'ml_sale_fee' || c.name === 'mp_processing_fee').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
-        const valorFreteReal = cobrancas.filter(c => c.type === 'shipping').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0);
+        /* frete BRUTO cobrado (shp_fulfillment) inclui as duas pernas do envio - a sua e a que o
+           COMPRADOR pagou a mais (jp.shipping_amount, quando o frete e' caro pro destino e o ML
+           repassa parte pro comprador). Pedido do Felipe 23/08: um pedido real teve shp_fulfillment
+           de R$20,94 sendo que so' R$6,95 era seu (R$13,99 era do comprador, embutido no
+           total_paid_amount) - contar o bruto inteiro como "frete pago pelo vendedor" superestima.
+           Desconta a parte do comprador pra sobrar so' a sua. */
+        const valorFreteReal = Math.max(0, cobrancas.filter(c => c.type === 'shipping').reduce((s, c) => s + ((c.amounts && c.amounts.original) || 0), 0) - (Number(jp.shipping_amount) || 0));
         tarifaReal += valorComissaoReal;
         freteReal += valorFreteReal;
         if (cancelado && !temComissaoReal && saleFeeDoPedido > 0.009) {
@@ -1036,20 +1042,24 @@ async function rodarAuditoriaMes(jobId, loja, de, ate) {
            Pago diz que efetivamente recebeu (net_received_amount) e se ja foi liberado - pedido do
            Felipe 23/08: "o que precisa auditar e' se repassou certo". So' roda pra pedido nao
            cancelado (cancelado nao tem repasse de venda esperado).
-           CUIDADO (bug achado 23/08 em producao: 1048 "divergentes" de 5281 pedidos - falso
-           positivo generalizado): charges_details tem cobranca em AMBAS as direcoes, nao so'
-           saida. Quando o pagamento e' parcelado, o Mercado Pago lanca um par
-           financing_transfer (from:"payer", to:"collector" - ENTRADA extra na conta do vendedor,
-           o valor do parcelamento) + financing_fee (from:"collector", to:"mp" - a taxa que sai em
-           cima disso). So' contar as SAIDAS (from==='collector', que e' o que 'cobrancas' guarda)
-           ignora essa entrada e faz repasseEsperado ficar sistematicamente errado em qualquer
-           pedido parcelado. Corrige contando tambem as ENTRADAS (to==='collector') e somando de
-           volta. */
+           CUIDADO (2 bugs achados em producao 23/08, ambos com o mesmo sintoma - repasseEsperado
+           sistematicamente errado em subconjuntos de pedidos):
+           1) pagamento parcelado: o Mercado Pago lanca financing_transfer (from:"payer",
+              to:"collector" - ENTRADA extra, o valor do parcelamento) + financing_fee (a taxa que
+              sai em cima). So' contar SAIDAS (from==='collector') ignorava essa entrada.
+           2) frete pago pelo COMPRADOR (alem do preco do produto): esse valor nao aparece em
+              charges_details nenhum - e' um campo separado do pagamento (jp.shipping_amount),
+              incluido no jp.total_paid_amount mas NAO no jp.transaction_amount. Usar
+              transaction_amount como base deixava de fora esse dinheiro que tambem entra pro
+              vendedor.
+           A base certa e' jp.total_paid_amount - ja inclui produto + financiamento do comprador +
+           frete do comprador, tudo que efetivamente circula nesse pagamento antes das cobrancas
+           reais saırem. Testado contra 2 pedidos reais (1 parcelado, 1 com frete do comprador) e
+           bateu exato nos dois - dispensa somar entradas separadamente (senao duplica). */
         if (!cancelado) {
           const saidasReais = cobrancas.reduce((s, c) => s + ((c.amounts && Number(c.amounts.original)) || 0), 0);
-          const entradasExtras = (jp.charges_details || []).filter(c => c.accounts && c.accounts.to === 'collector').reduce((s, c) => s + ((c.amounts && Number(c.amounts.original)) || 0), 0);
-          const baseTransacao = Number(jp.transaction_amount) || totalPedido;
-          const repasseEsperado = baseTransacao - saidasReais + entradasExtras;
+          const baseTransacao = Number(jp.total_paid_amount) || Number(jp.transaction_amount) || totalPedido;
+          const repasseEsperado = baseTransacao - saidasReais;
           const repasseReal = (jp.transaction_details && Number(jp.transaction_details.net_received_amount)) || 0;
           repasseEsperadoTotal += repasseEsperado;
           const statusRepasse = jp.money_release_status;
