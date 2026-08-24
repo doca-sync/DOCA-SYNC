@@ -5483,22 +5483,18 @@ async function puxarFaturaMl(loja){
   if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
   const f=j.fatura;
   const arr=despesasArr();
-  /* o campo de vencimento que o Mercado Livre devolve se mostrou pouco confiável na prática -
-     pedido do Felipe 24/08 (a TorvStore apareceu com "vencimento" 22/08, que é o dia do
-     FECHAMENTO configurado dela, não o vencimento real de 28/08; a tentativa de detectar isso
-     comparando vencimento===dataFim não pegou esse caso, então o campo do ML deve estar vindo
-     diferente do que o backend espera). Já que o Felipe confirmou o ciclo real de fechamento/
-     vencimento de cada uma das 4 lojas (FATURA_CICLO), agora o Doca SEMPRE calcula o vencimento
-     por esse ciclo quando ele existe pra loja, em vez de tentar decidir se o campo do ML é
-     confiável ou não - é mais previsível e já bateu certo com a realidade (a única exceção
-     conhecida foi TorvShop variar 1-2 dias por causa de dia útil, por isso ainda fica rotulado
-     "estimado" na tela). Loja sem ciclo cadastrado continua usando o que o ML mandar (ou hoje()
-     como último recurso). */
+  /* achado o motivo real do vencimento vir errado (debug 24/08 com a TorvStore): o Mercado Livre
+     usa "9999-12-31" como valor sentinela de "sem vencimento ainda" no período em aberto, em vez
+     de null - o backend agora já filtra isso (ver buscarFaturaMl, period_status==='CLOSED'), então
+     quando ESSA função devolve um f.vencimento é porque é de verdade, confirmado pelo Mercado
+     Livre (o período já fechou). Só cai pra estimativa do ciclo (FATURA_CICLO, confirmado pelo
+     Felipe pra cada uma das 4 lojas) quando o backend não achou nenhum período fechado com dívida
+     - aí sim é estimativa mesmo, e fica rotulada "estimado" na tela. */
   const cfg=FATURA_CICLO[loja];
   const vencimentoCiclo=cfg?vencimentoEstimadoFatura(loja,f.dataInicio,f.dataFim):null;
-  const semVencimentoReal=!!vencimentoCiclo;
-  const vencimentoEstimado=vencimentoCiclo;
-  const dataPagamento=vencimentoCiclo||f.vencimento||hoje();
+  const semVencimentoReal=!f.vencimento;
+  const vencimentoEstimado=semVencimentoReal?vencimentoCiclo:null;
+  const dataPagamento=f.vencimento||vencimentoCiclo||hoje();
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');

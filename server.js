@@ -2969,13 +2969,14 @@ async function buscarFaturaMl(loja) {
   const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
   const periodos = j.results || [];
   if (!periodos.length) return null;
-  // prioriza o periodo mais recente que ja tem vencimento CONFIRMADO pelo Mercado Livre
-  // (debt_expiration_date/expiration_date) e ainda tem divida (unpaid_amount>0) - esse e' o que
-  // esta' "A VENCER" de verdade (fechado, aguardando pagamento, com data real). O periodo mais
-  // recente da lista costuma ser o que ainda esta' EM ANDAMENTO (sem vencimento confirmado ainda),
-  // que nao e' o que precisa ser cobrado agora. Sem nenhum candidato assim (loja sem periodo
-  // fechado pendente), cai pro mais recente mesmo - igual ao comportamento de antes.
-  let p = periodos.find(x => (x.debt_expiration_date || x.expiration_date) && typeof x.unpaid_amount === 'number' && x.unpaid_amount > 0);
+  // pega o periodo mais recente que ja FECHOU (period_status==='CLOSED') e ainda tem divida
+  // (unpaid_amount>0) - esse e' o que esta' "A VENCER" de verdade (confirmado via debug 24/08 com
+  // a TorvStore: results[0] era o periodo ainda OPEN, com debt_expiration_date/expiration_date
+  // = "9999-12-31" - um valor sentinela de "sem data ainda" que o Mercado Livre usa em vez de
+  // null, e que passava como se fosse uma data real na tentativa anterior). period_status e' o
+  // sinal limpo e direto, sem precisar interpretar datas sentinela. Sem nenhum periodo fechado
+  // com divida (tudo pago ou sem periodo fechado ainda), cai pro mais recente mesmo.
+  let p = periodos.find(x => x.period_status === 'CLOSED' && typeof x.unpaid_amount === 'number' && x.unpaid_amount > 0);
   if (!p) p = periodos[0];
   const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key);
   let vencimento = p.debt_expiration_date || p.expiration_date || null;
