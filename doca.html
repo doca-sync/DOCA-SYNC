@@ -5504,7 +5504,15 @@ async function puxarFaturaMl(loja){
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
-    d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
+    /* CORRIGIDO 25/08 (2a vez): quando a fatura acaba de ser totalmente quitada, unpaid_amount
+       vira 0 - mas sobrescrever "valor" com 0 nesse momento apaga o registro de quanto essa
+       fatura realmente custou (o Felipe pegou o caso: mostrava R$11.647,58 devendo, virou
+       R$0,00 assim que quitou). "valor" é o quanto ainda falta pagar; uma vez que já sabíamos
+       que faltava um valor > 0, mantém esse último valor conhecido mesmo depois de pago - só
+       assim o "Total do mês"/"Já pago" da aba Despesas continua contando o custo real, em vez de
+       fingir que a fatura não custou nada só porque já foi quitada. */
+    if(f.valor) d.valor=f.valor;
+    d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
     d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null; d.semVencimentoReal=semVencimentoReal; d.vencimentoEstimado=vencimentoEstimado;
     /* CORRIGIDO 25/08: antes só ligava "pago" (if(valorPendente===0) d.pago=true), nunca
        desligava - então uma fatura que quitou e depois voltou a acumular dívida nova (ou uma
