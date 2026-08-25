@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">build 2026-08-25-h</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v301</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -879,7 +879,8 @@ function fullItemDeProduto(p){
 function entradaPendenteDe(produtoId){
   if(!produtoId) return 0;
   let t=0;
-  state.envios.forEach(e=>e.itens.forEach(i=>{ if(i.produtoId===produtoId) t+=(i.solicitado||0); }));
+  // mesma correção 25/08 de pendentesPorData - casa pelo SKU realmente escolhido, não pelo mestre
+  state.envios.forEach(e=>e.itens.forEach(i=>{ if((i.skuEscolhidoId||i.produtoId)===produtoId) t+=(i.solicitado||0); }));
   return t;
 }
 /* o que ainda falta comprar por causa de envios */
@@ -8518,7 +8519,12 @@ function renderEnvio(){
           <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th>Total do envio</th><th></th>
         </tr></thead><tbody>
         ${e.itens.filter(i=>!i.kitDeItemId).map(i=>{
-          const p=prodById(i.produtoId); if(!p) return '';
+          /* CORRIGIDO 25/08: mostra o SKU REALMENTE escolhido (skuEscolhidoId), não o mestre do
+             estoque compartilhado (produtoId) - senão um SKU vinculado (ex: AMASSADORALHO)
+             aparecia na tela com o nome do mestre (AMASSADORALHO19), como se fosse ele mesmo
+             programado pro Full, quando na real é um anúncio próprio que só COMPARTILHA estoque
+             físico com o mestre. */
+          const p=prodById(i.skuEscolhidoId||i.produtoId); if(!p) return '';
           if(i.kitGuardaChuva){
             /* linha consolidada: soma os números de TODOS os componentes explodidos deste kit
                (itensDoGrupoKit inclui o próprio guarda-chuva, que sempre carrega 0 em tudo) num
@@ -9560,7 +9566,14 @@ function pendentesPorData(produtoId){
   if(!produtoId) return [];
   const porData={};
   state.envios.forEach(e=>e.itens.forEach(i=>{
-    if(i.produtoId!==produtoId||!(i.solicitado>0)) return;
+    /* CORRIGIDO 25/08: pra um SKU vinculado (estoque físico compartilhado, ver
+       produtoEfetivo/alocarNoEnvio), o item do envio guarda produtoId = SKU MESTRE (só pra
+       contar reservado/compra corretamente no estoque compartilhado) e skuEscolhidoId = o SKU
+       REAL que foi escolhido pro Full (cada anúncio vinculado tem Full/anúncio PRÓPRIO, mesmo
+       compartilhando estoque físico). Casar só por produtoId fazia o Doca achar que um SKU
+       vinculado nunca tinha nada programado (caso real: AMASSADORALHO some do alerta de
+       ruptura porque o envio ficava registrado como o mestre AMASSADORALHO19). */
+    if((i.skuEscolhidoId||i.produtoId)!==produtoId||!(i.solicitado>0)) return;
     const d=e.data||'9999-99-99'; /* sem data = não dá pra saber se chega a tempo, trata como "não conta" */
     porData[d]=(porData[d]||0)+i.solicitado;
   }));
