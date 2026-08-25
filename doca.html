@@ -5544,7 +5544,13 @@ async function puxarFaturaMl(loja){
       const od=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===per.key);
       const cv=_camposVencimentoFatura(loja,per);
       if(od){
-        od.valor=per.valor; od.valorTotal=per.valorTotal; od.dataPagamento=cv.dataPagamento;
+        /* mesma correção 25/08 do bloco acima: não sobrescreve valor com 0 quando a fatura já
+           está quitada (per.valor vem 0 pra sempre depois de paga) - senão apaga uma correção
+           manual que o Felipe fez em "Editar" (era exatamente esse bug: editava o valor real da
+           fatura da Orbix/TorvShop e a sincronização automática seguinte (a cada 20min) zerava
+           de novo, "não salvava"). */
+        if(per.valor) od.valor=per.valor;
+        od.valorTotal=per.valorTotal; od.dataPagamento=cv.dataPagamento;
         od.periodoDe=per.dataInicio||null; od.periodoAte=per.dataFim||null;
         od.semVencimentoReal=cv.semVencimentoReal; od.vencimentoEstimado=cv.vencimentoEstimado;
         od.pago=per.valorPendente===0;
