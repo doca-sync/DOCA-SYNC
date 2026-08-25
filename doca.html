@@ -6881,7 +6881,8 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição (${fmtMoney(margem)}) − despesas do período (${fmtMoney(custosPeriodo)}) − fatura ML pendente, valor cheio (${fmtMoney(faturaMlAtual)}) = ${fmtMoney(margemLiquida)}">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0">descontado da Margem de Contribuição: despesas ${fmtMoney(custosPeriodo)} + fatura ML ${fmtMoney(faturaMlAtual)}</div>
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
