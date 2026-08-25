@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">build 2026-08-25-g</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">build 2026-08-25-h</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5605,10 +5605,44 @@ function explicarCobrancaML(label){
   if(t.includes('reembols')||t.includes('estorno')) return 'Valor reembolsado por cancelamento ou estorno de uma venda.';
   if(t.includes('public')||t.includes('campanha')||t.includes('ads')) return 'Custo dos anúncios patrocinados (Ads) contratados pra aparecer em destaque nas buscas.';
   if(t.includes('full')||t.includes('armazen')||t.includes('coleta')||t.includes('fulfillment')) return 'Custo de armazenar, coletar ou movimentar produtos no centro de distribuição Full.';
+  if(t.includes('difal')||t.includes('icms')||t.includes('aliquota interestadual')) return 'Diferencial de alíquota interestadual (ICMS/DIFAL) sobre vendas pra outros estados.';
   if(t.includes('parcel')) return 'Taxa cobrada quando o comprador parcela o pagamento no cartão.';
-  if(t.includes('envio')||t.includes('frete')||t.includes('shipping')) return 'Custo do frete das vendas enviadas pelo Mercado Envios (repassado a você quando o anúncio tem frete grátis).';
+  if(t.includes('recebiment')||t.includes('mercado pago')) return 'Taxa cobrada pelo Mercado Pago pra receber/processar o valor da venda.';
+  if(t.includes('envio')||t.includes('frete')||t.includes('shipping')||t.includes('municipio')) return 'Custo do frete das vendas enviadas pelo Mercado Envios (repassado a você quando o anúncio tem frete grátis).';
   if(t.includes('venda')||t.includes('comiss')) return 'Comissão que o Mercado Livre cobra por cada venda concluída.';
   return 'Cobrança do Mercado Livre referente a essa categoria (detalhe direto da fatura oficial).';
+}
+/* agrupa as linhas de "detalhar fatura" (que vêm uma por LABEL individual, ex: "Custo por vender
+   no Mercado Livre" separado de "Cancelamento do custo por vender no Mercado Livre") em um punhado
+   de categorias maiores, com subtotal cada uma - pedido do Felipe 25/08, mesma ideia da tabela por
+   categoria que fizemos pro relatório do Full (armazenagem/coleta/retirada/inconformidade), só que
+   agora pra fatura do ML inteira. "Cancelamento de X" cai na MESMA categoria de X (o valor do
+   cancelamento já vem negativo do Mercado Livre, então o subtotal já sai líquido sozinho). */
+function categoriaCobrancaML(label){
+  const t=normalizarTexto(label);
+  if(t.includes('bonific')||t.includes('devolu')||t.includes('reembols')||t.includes('estorno')) return 'Estornos e reembolsos';
+  if(t.includes('public')||t.includes('campanha')||t.includes('ads')) return 'Publicidade (Ads)';
+  if(t.includes('full')||t.includes('armazen')||t.includes('coleta')||t.includes('fulfillment')) return 'Armazenagem e logística (Full)';
+  if(t.includes('difal')||t.includes('icms')||t.includes('aliquota interestadual')) return 'Impostos (ICMS/DIFAL)';
+  if(t.includes('parcel')) return 'Taxa de parcelamento';
+  if(t.includes('recebiment')||t.includes('mercado pago')) return 'Taxas do Mercado Pago';
+  if(t.includes('envio')||t.includes('frete')||t.includes('shipping')||t.includes('municipio')) return 'Frete';
+  if(t.includes('venda')||t.includes('comiss')) return 'Comissão de venda';
+  return 'Outras tarifas';
+}
+/* agrupa um array de itens {label,valor} nas categorias acima, somando o valor de cada uma -
+   devolve já ordenado do maior custo pro menor (valor absoluto), pra tela mostrar primeiro o que
+   pesa mais na fatura. */
+function agruparItensPorCategoria(itens){
+  const porCategoria=new Map();
+  (itens||[]).forEach(it=>{
+    const cat=categoriaCobrancaML(it.label);
+    if(!porCategoria.has(cat)) porCategoria.set(cat,{categoria:cat,total:0,itens:[]});
+    const g=porCategoria.get(cat);
+    g.total+=(Number(it.valor)||0);
+    g.itens.push(it);
+  });
+  return [...porCategoria.values()].sort((a,b)=>Math.abs(b.total)-Math.abs(a.total));
 }
 function mesLabel(m){
   if(!m) return '—';
@@ -7160,12 +7194,14 @@ function renderFinancas(){
         <td style="text-align:center">${d.origem==='ml_fatura'?(d.pago?'<span class="badge okv" title="Débito automático — o Doca confirma sozinho quando o Mercado Livre marcar como pago">✓ Pago (auto)</span>':'<span class="badge" title="Débito automático — o Doca marca sozinho quando o Mercado Livre confirmar o pagamento">Pendente (auto)</span>'):`<input type="checkbox" data-fnpago="${d.id}" ${d.pago?'checked':''}>`}</td>
         <td><button class="btn sm" data-fneditar="${d.id}">Editar</button> <button class="btn sm danger-outline" data-fnexcluir="${d.id}">Excluir</button></td>
       </tr>`;
+        const gruposDetalhe=temItens?agruparItensPorCategoria(d.itens):[];
         const linhaDetalhe=(temItens&&financasExpandido[d.id])?`<tr><td colspan="7" style="background:var(--panel2,rgba(255,255,255,.02))">
           <table class="tbl-produtos" style="margin:4px 0"><tbody>
-            ${d.itens.map(it=>`<tr><td style="border:none;padding:6px 8px;vertical-align:top">
-                <div class="muted">${esc(it.label||'')}</div>
-                <div class="hint" style="margin:2px 0 0;font-size:11px">${esc(explicarCobrancaML(it.label))}</div>
-              </td><td style="border:none;padding:6px 8px;text-align:right;vertical-align:top" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}
+            ${gruposDetalhe.map(g=>`<tr><td style="border:none;padding:8px 8px 2px;vertical-align:top"><b>${esc(g.categoria)}</b></td><td style="border:none;padding:8px 8px 2px;text-align:right;vertical-align:top"><b class="${g.total<0?'okv':''}">${fmtMoney(g.total)}</b></td></tr>
+              ${g.itens.map(it=>`<tr><td style="border:none;padding:2px 8px 2px 20px;vertical-align:top">
+                  <div class="muted" style="font-size:12px">${esc(it.label||'')}</div>
+                  <div class="hint" style="margin:1px 0 0;font-size:10.5px">${esc(explicarCobrancaML(it.label))}</div>
+                </td><td style="border:none;padding:2px 8px;text-align:right;vertical-align:top;font-size:12px" class="${it.valor<0?'okv':''}">${fmtMoney(it.valor)}</td></tr>`).join('')}`).join('')}
           </tbody></table>
         </td></tr>`:(financasExpandido[d.id]&&!temItens&&!detalhando&&podeDetalhar?`<tr><td colspan="7"><p class="hint" style="color:#e66;margin:4px 0">⚠ ${esc(d.itensAviso||'Não consegui buscar o detalhamento dessa fatura.')} <a href="#" data-fnredetalhar="${d.id}">tentar de novo</a></p></td></tr>`:'');
         return linhaPrincipal+linhaDetalhe;
