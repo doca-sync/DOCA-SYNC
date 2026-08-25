@@ -1805,7 +1805,17 @@ async function upsertFinanceiroMp(loja, patch) {
   );
 }
 async function passoSaldoMp(loja, row) {
-  const JANELA_FRESCOR_MS = 8 * 60 * 60 * 1000;
+  // JANELA_FRESCOR_MS: 8h -> 20h (25/08, achado com dado real da TorvStore via
+  // /debug/mp/relatorio/listar). O Mercado Pago so' gera um release_report NOVO pra essa loja a
+  // cada ~10-15h (bate com o volume de vendas dela - as outras 3 lojas geram bem mais rapido) -
+  // isso e' um limite do lado do Mercado Pago, pedir de novo mais vezes nao ajuda (o Doca ja'
+  // pede um novo a cada ciclo, gated por PAUSA_ENTRE_PEDIDOS_MS, sem sucesso: o mais recente da
+  // lista simplesmente nao fica mais novo que isso). Com janela de 8h, o relatorio mais fresco
+  // que existe ficava rejeitado por boa parte do dia (13h+ de idade e' normal pra essa loja) e o
+  // saldo mostrado na tela ficava travado num valor ainda mais antigo, girando em pedidos novos
+  // que nunca chegavam a tempo. 20h da' margem suficiente pra sempre aceitar o relatorio mais
+  // recente que existe (evita usar algo de dias atras', que aí sim seria enganoso).
+  const JANELA_FRESCOR_MS = 20 * 60 * 60 * 1000;
   try {
     const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
