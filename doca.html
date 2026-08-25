@@ -5474,6 +5474,23 @@ function marcarDespesaPaga(id,pago){
 let financasUltimoErroAuto={}; // loja -> mensagem do último erro da tentativa AUTOMÁTICA de puxar a fatura (não persistido — só pra visibilidade nesta sessão, sem precisar abrir o console do navegador)
 let mlUltimoErroAuto={}; // loja -> mensagem do último erro da sincronização AUTOMÁTICA de produtos do Mercado Livre ao abrir o Doca (mesma ideia acima) - pedido do Felipe 19/08: produto novo cadastrado no ML não estava aparecendo, e a sincronização automática falhava sem avisar nada na tela (só no console)
 function sleep(ms){ return new Promise(res=>setTimeout(res,ms)); }
+/* calcula dataPagamento/semVencimentoReal/vencimentoEstimado pra um período de fatura ML (seja o
+   "principal" ou um dos "outros") - fatorado pra puxarFaturaMl não repetir a mesma lógica 2x.
+   achado o motivo real do vencimento vir errado (debug 24/08 com a TorvStore): o Mercado Livre usa
+   "9999-12-31" como valor sentinela de "sem vencimento ainda" no período em aberto, em vez de null
+   - o backend já filtra isso (ver buscarFaturaMl), então quando "per.vencimento" chega aqui é
+   porque é de verdade, confirmado pelo Mercado Livre (o período já fechou). Só cai pra estimativa
+   do ciclo (FATURA_CICLO, confirmado pelo Felipe pra cada uma das 4 lojas) quando o backend não
+   achou vencimento real pra esse período - aí sim é estimativa mesmo, e fica rotulada "estimado"
+   na tela. */
+function _camposVencimentoFatura(loja,per){
+  const cfg=FATURA_CICLO[loja];
+  const vencimentoCiclo=cfg?vencimentoEstimadoFatura(loja,per.dataInicio,per.dataFim):null;
+  const semVencimentoReal=!per.vencimento;
+  const vencimentoEstimado=semVencimentoReal?vencimentoCiclo:null;
+  const dataPagamento=per.vencimento||vencimentoCiclo||hoje();
+  return {semVencimentoReal,vencimentoEstimado,dataPagamento};
+}
 async function puxarFaturaMl(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -5483,24 +5500,19 @@ async function puxarFaturaMl(loja){
   if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
   const f=j.fatura;
   const arr=despesasArr();
-  /* achado o motivo real do vencimento vir errado (debug 24/08 com a TorvStore): o Mercado Livre
-     usa "9999-12-31" como valor sentinela de "sem vencimento ainda" no período em aberto, em vez
-     de null - o backend agora já filtra isso (ver buscarFaturaMl, period_status==='CLOSED'), então
-     quando ESSA função devolve um f.vencimento é porque é de verdade, confirmado pelo Mercado
-     Livre (o período já fechou). Só cai pra estimativa do ciclo (FATURA_CICLO, confirmado pelo
-     Felipe pra cada uma das 4 lojas) quando o backend não achou nenhum período fechado com dívida
-     - aí sim é estimativa mesmo, e fica rotulada "estimado" na tela. */
-  const cfg=FATURA_CICLO[loja];
-  const vencimentoCiclo=cfg?vencimentoEstimadoFatura(loja,f.dataInicio,f.dataFim):null;
-  const semVencimentoReal=!f.vencimento;
-  const vencimentoEstimado=semVencimentoReal?vencimentoCiclo:null;
-  const dataPagamento=f.vencimento||vencimentoCiclo||hoje();
+  const {semVencimentoReal,vencimentoEstimado,dataPagamento}=_camposVencimentoFatura(loja,f);
   let d=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===f.key);
   if(d){
     snapshot('atualização da fatura do Mercado Livre ('+loja+')');
     d.valor=f.valor; d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
     d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null; d.semVencimentoReal=semVencimentoReal; d.vencimentoEstimado=vencimentoEstimado;
-    if(f.valorPendente===0) d.pago=true;
+    /* CORRIGIDO 25/08: antes só ligava "pago" (if(valorPendente===0) d.pago=true), nunca
+       desligava - então uma fatura que quitou e depois voltou a acumular dívida nova (ou uma
+       fatura que nunca tinha ficado 100% quitada de fato) ficava PRESA como "paga" pra sempre,
+       some do cálculo de custo (ver faturaMlPendenteLoja) mesmo já devendo de novo. Agora sempre
+       reflete o estado atual, pra cima ou pra baixo - bate com o pedido do Felipe (tarefa #55) de
+       isso ser 100% automático, nunca manual. */
+    d.pago=f.valorPendente===0;
   }else{
     snapshot('fatura do Mercado Livre importada ('+loja+')');
     /* periodoDe/periodoAte (pedido do Felipe 24/08): a fatura do ML é filtrada em Despesas pelo
@@ -5513,15 +5525,28 @@ async function puxarFaturaMl(loja){
       itens:f.itens||[],valorTotal:f.valorTotal,itensAviso:f.itensAviso||null,
       periodoDe:f.dataInicio||null,periodoAte:f.dataFim||null,semVencimentoReal,vencimentoEstimado,criadoEm:Date.now()});
   }
-  /* periodosQuitados (pedido do Felipe 24/08, caso da Dor Block): fatura antiga que já foi paga
-     mas deixou de ser "a fatura principal" rastreada (ex: uma cobrança mais nova em aberto tomou
-     o lugar dela na busca acima) nunca virava "Pago" sozinha. O backend manda junto as keys de
-     todo período já quitado (unpaid_amount===0) que ele encontrou nessa mesma consulta - aqui
-     confere se alguma despesa antiga da loja bate com uma dessas keys e marca como paga. */
-  if(Array.isArray(f.periodosQuitados)){
-    f.periodosQuitados.forEach(key=>{
-      const antiga=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===key&&!x.pago);
-      if(antiga) antiga.pago=true;
+  /* outros (pedido do Felipe 25/08): faturas de outros períodos do mesmo lote já buscado pelo
+     backend (a Orbix e a TorvShop tinham a fatura de Agosto, já quitada, sumindo inteira do Doca
+     assim que o período de Setembro virou o "principal" acima - o Doca só olhava pra 1 período
+     por vez). Cria a despesa se ainda não existir (só pra período já FECHADO, pra não criar cedo
+     demais uma fatura que ainda nem fechou) e sempre reconcilia valor/pago/vencimento em
+     qualquer uma que já existia - sem mexer em itens já detalhados manualmente. */
+  if(Array.isArray(f.outros)){
+    f.outros.forEach(per=>{
+      const od=arr.find(x=>x.origem==='ml_fatura'&&x.loja===loja&&x.faturaKey===per.key);
+      const cv=_camposVencimentoFatura(loja,per);
+      if(od){
+        od.valor=per.valor; od.valorTotal=per.valorTotal; od.dataPagamento=cv.dataPagamento;
+        od.periodoDe=per.dataInicio||null; od.periodoAte=per.dataFim||null;
+        od.semVencimentoReal=cv.semVencimentoReal; od.vencimentoEstimado=cv.vencimentoEstimado;
+        od.pago=per.valorPendente===0;
+      }else if(per.status==='CLOSED'){
+        arr.push({id:gerarId('desp'),descricao:'Fatura Mercado Livre — '+loja,valor:per.valor,dataPagamento:cv.dataPagamento,
+          pago:per.valorPendente===0,recorrente:true,loja,origem:'ml_fatura',faturaKey:per.key,origemRecorrenciaId:null,
+          itens:[],valorTotal:per.valorTotal,itensAviso:null,
+          periodoDe:per.dataInicio||null,periodoAte:per.dataFim||null,
+          semVencimentoReal:cv.semVencimentoReal,vencimentoEstimado:cv.vencimentoEstimado,criadoEm:Date.now()});
+      }
     });
   }
   delete financasUltimoErroAuto[loja];

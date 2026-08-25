@@ -2979,19 +2979,32 @@ async function buscarFaturaMl(loja) {
   let p = periodos.find(x => x.period_status === 'CLOSED' && typeof x.unpaid_amount === 'number' && x.unpaid_amount > 0);
   if (!p) p = periodos[0];
   const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key);
-  let vencimento = p.debt_expiration_date || p.expiration_date || null;
-  if (vencimento && !anoRazoavel(vencimento)) vencimento = null;
-  // NAO cai mais pro period.date_to como fallback de vencimento (esse era o bug real, achado no
-  // debug 24/08 com Orbix/TorvShop: pra periodo ainda OPEN, esse date_to e' so' a data em que o
-  // periodo FECHA, nao quando a fatura VENCE - reintroduzia o mesmo bug da TorvStore de outro
-  // jeito. Sem vencimento confirmado de verdade, fica null mesmo - o frontend sabe estimar
-  // certo pelo ciclo de cada loja (FATURA_CICLO) usando dataFim/dataInicio abaixo.
-  // periodosQuitados: pedido do Felipe 24/08 - a Dor Block tinha uma fatura antiga (Agosto) já
-  // paga que nunca virava "Pago" sozinha no Doca, porque uma vez que o período deixa de ser "o
-  // que precisa cobrar agora" (p aqui em cima), o Doca parava de olhar pra ele. Manda a lista de
-  // keys com unpaid_amount===0 pro frontend poder confirmar como paga qualquer despesa antiga
-  // que já bateu com uma dessas, mesmo não sendo mais a fatura "principal" rastreada.
-  const periodosQuitados = periodos.filter(x => x.key && typeof x.unpaid_amount === 'number' && x.unpaid_amount === 0).map(x => x.key);
+  const extrairVencimento = (per) => {
+    // NAO cai pro period.date_to como fallback de vencimento (esse era o bug real, achado no
+    // debug 24/08 com Orbix/TorvShop: pra periodo ainda OPEN, esse date_to e' so' a data em que
+    // o periodo FECHA, nao quando a fatura VENCE). Sem vencimento confirmado de verdade, fica
+    // null mesmo - o frontend sabe estimar certo pelo ciclo de cada loja (FATURA_CICLO) usando
+    // dataFim/dataInicio.
+    let v = per.debt_expiration_date || per.expiration_date || null;
+    if (v && !anoRazoavel(v)) v = null;
+    return v;
+  };
+  const vencimento = extrairVencimento(p);
+  // outros: pedido do Felipe 25/08 - a Orbix e a TorvShop tinham fatura de Agosto ja' quitada
+  // que sumia inteira do Doca (nem aparecia como despesa) assim que o periodo de Setembro virava
+  // o "principal" (p acima) - o Doca so' olhava pra 1 periodo por vez. Manda os OUTROS periodos
+  // do mesmo lote ja' buscado (sem chamada extra na API) pro frontend poder criar/reconciliar a
+  // despesa de cada um, mesmo nao sendo mais o "principal" rastreado agora.
+  const outros = periodos.filter(x => x.key && x.key !== p.key).map(x => ({
+    key: x.key,
+    valor: typeof x.unpaid_amount === 'number' ? x.unpaid_amount : (typeof x.amount === 'number' ? x.amount : null),
+    valorTotal: typeof x.amount === 'number' ? x.amount : null,
+    valorPendente: typeof x.unpaid_amount === 'number' ? x.unpaid_amount : null,
+    dataInicio: (x.period && x.period.date_from) || null,
+    dataFim: (x.period && x.period.date_to && anoRazoavel(x.period.date_to)) ? x.period.date_to : null,
+    vencimento: extrairVencimento(x),
+    status: x.period_status || null
+  }));
   return {
     key: p.key || null,
     valor: typeof p.unpaid_amount === 'number' ? p.unpaid_amount : (typeof p.amount === 'number' ? p.amount : null),
@@ -3001,7 +3014,7 @@ async function buscarFaturaMl(loja) {
     dataFim: (p.period && p.period.date_to && anoRazoavel(p.period.date_to)) ? p.period.date_to : null,
     vencimento,
     status: p.period_status || null,
-    periodosQuitados,
+    outros,
     itens,
     itensAviso
   };
