@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v301</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v303</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3124,7 +3124,7 @@ async function responderPergunta(loja,questionId,itemId,texto){
     });
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao responder (status '+r.status+').'));
-    if(perguntasCarregadas[loja]) perguntasCarregadas[loja]=perguntasCarregadas[loja].filter(q=>q.id!==questionId);
+    if(perguntasCarregadas[loja]) perguntasCarregadas[loja]=perguntasCarregadas[loja].filter(q=>String(q.id)!==String(questionId));
     const p=state.produtos.find(x=>x.mlItemId===itemId);
     if(p&&p.mlPerguntas>0){ p.mlPerguntas--; persist(); }
     toast('Resposta enviada pro Mercado Livre.');
@@ -3240,7 +3240,7 @@ async function responderMensagem(loja,packId,buyerId,texto){
     });
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao responder (status '+r.status+').'));
-    if(mensagensCarregadas[loja]) mensagensCarregadas[loja]=mensagensCarregadas[loja].filter(m=>m.packId!==packId);
+    if(mensagensCarregadas[loja]) mensagensCarregadas[loja]=mensagensCarregadas[loja].filter(m=>String(m.packId)!==String(packId));
     toast('Resposta enviada pro Mercado Livre.');
   }catch(e){ alert('Não foi possível responder: '+e.message); }
   finally{ delete mensagensEnviando[packId]; renderDashboard(); }
@@ -4589,6 +4589,7 @@ function renderNotasFiscais(){
   el.querySelectorAll('[data-nfrec]').forEach(c=>c.onchange=()=>{
     atualizarNotaFiscal(c.dataset.nfrec,{recebida:c.checked});
     toast(c.checked?'Nota fiscal marcada como recebida.':'Nota fiscal marcada como pendente.');
+    renderNotasFiscais();
   });
 }
 /* ================= ADS (Product Ads · Mercado Livre) ================= */
@@ -8542,11 +8543,11 @@ function renderEnvio(){
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totkit="${e.id}|${i.id}"
               title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
             <td><button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
-            ${aberto?grupo.map(g=>{ const pg=prodById(g.produtoId); if(!pg) return ''; return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
+            ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return ''; return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
               <td class="num okv">${fmtInt(g.alocado)}</td><td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
               <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td><td colspan="2" class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td></tr>`; }).join(''):''}`;
           }
-          const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===p.id);
+          const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===i.produtoId);
           return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
             <td class="num okv">${fmtInt(i.alocado)}</td>
             <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
