@@ -5436,6 +5436,14 @@ function editarDespesa(id,{descricao,valor,dataPagamento,loja,recorrente}){
   if(!dataPagamento) return {ok:false,msg:'Informe a data de pagamento.'};
   snapshot('edição da despesa ("'+(d.descricao||'').slice(0,30)+'")');
   d.descricao=descricao.trim(); d.valor=Number(valor); d.dataPagamento=dataPagamento; d.loja=loja||null; d.recorrente=!!recorrente;
+  /* CORRIGIDO 25/08 (3a vez): mesmo depois de não sobrescrever mais valor=0 na sincronização
+     automática (ver puxarFaturaMl), o Felipe ainda via a fatura ML voltar a 0 depois de editar -
+     sinal de que a correção anterior não bastava (algum caminho ainda sobrescrevia). Em vez de
+     tentar prever TODO caso em que o valor vindo do Mercado Livre pode ser 0/estranho, trava de
+     vez: uma vez editado manualmente aqui, essa despesa de fatura ML nunca mais tem o campo
+     "valor" tocado pela sincronização automática (ver checagem "!d.valorEditadoManual" em
+     puxarFaturaMl) - só editando de novo aqui muda de novo. */
+  if(d.origem==='ml_fatura') d.valorEditadoManual=true;
   persist();
   return {ok:true};
 }
@@ -5511,7 +5519,7 @@ async function puxarFaturaMl(loja){
        que faltava um valor > 0, mantém esse último valor conhecido mesmo depois de pago - só
        assim o "Total do mês"/"Já pago" da aba Despesas continua contando o custo real, em vez de
        fingir que a fatura não custou nada só porque já foi quitada. */
-    if(f.valor) d.valor=f.valor;
+    if(f.valor&&!d.valorEditadoManual) d.valor=f.valor;
     d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
     d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null; d.semVencimentoReal=semVencimentoReal; d.vencimentoEstimado=vencimentoEstimado;
     /* CORRIGIDO 25/08: antes só ligava "pago" (if(valorPendente===0) d.pago=true), nunca
@@ -5549,7 +5557,7 @@ async function puxarFaturaMl(loja){
            manual que o Felipe fez em "Editar" (era exatamente esse bug: editava o valor real da
            fatura da Orbix/TorvShop e a sincronização automática seguinte (a cada 20min) zerava
            de novo, "não salvava"). */
-        if(per.valor) od.valor=per.valor;
+        if(per.valor&&!od.valorEditadoManual) od.valor=per.valor;
         od.valorTotal=per.valorTotal; od.dataPagamento=cv.dataPagamento;
         od.periodoDe=per.dataInicio||null; od.periodoAte=per.dataFim||null;
         od.semVencimentoReal=cv.semVencimentoReal; od.vencimentoEstimado=cv.vencimentoEstimado;
