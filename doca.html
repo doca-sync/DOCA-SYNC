@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">build 2026-08-25-f</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">build 2026-08-25-g</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6827,6 +6827,16 @@ function diasNoPeriodoResumo(de,ate){ return Math.max(1,Math.round((new Date(ate
    dividir pelo total de dias do mês dá uma taxa diária estável, sempre a mesma independente do
    dia em que for consultado) */
 function diasNoMesAtual(){ const d=new Date(); return new Date(d.getFullYear(),d.getMonth()+1,0).getDate(); }
+/* último dia do mês (calendário) que contém essa data ISO - usado pra não cortar despesas/fatura
+   ML que vencem depois de "hoje" mas ainda dentro do mesmo mês do período escolhido (pedido do
+   Felipe 25/08: uma despesa lançada pro dia 28 já é um custo de agosto, mesmo que "Mês Corrente"
+   só vá até hoje (dia 25) e ela ainda nem tenha vencido/sido paga - não é uma previsão, é um
+   custo já sabido daquele mês). */
+function fimMesDe(dataIso){
+  const d=new Date(dataIso+'T12:00:00');
+  const ultimo=new Date(d.getFullYear(),d.getMonth()+1,0);
+  return _dataISO(ultimo.getFullYear(),ultimo.getMonth(),ultimo.getDate());
+}
 function calcularMargensResumo(resumo,loja){
   const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -6838,14 +6848,18 @@ function calcularMargensResumo(resumo,loja){
   // Contribuição: despesas do período (despesasPeriodoLoja, que já exclui origem ml_fatura) e a
   // fatura ML pendente (que carrega o Ads dentro dela).
   const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.reembolsosValor;
-  const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
+  // ateCustos: normalmente resumo.periodo.ate, mas nunca corta antes do fim do mês que contém
+  // resumo.periodo.de (ver fimMesDe acima) - assim despesas/fatura ML lançadas mais pro fim do
+  // mês corrente entram no cálculo mesmo quando o período escolhido vai só até "hoje".
+  const ateCustos=fimMesDe(resumo.periodo.de)>resumo.periodo.ate?fimMesDe(resumo.periodo.de):resumo.periodo.ate;
+  const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,ateCustos).reduce((s,d)=>s+(Number(d.valor)||0),0);
   // faturaMlAtual: soma de TUDO que ainda está em aberto agora (sem filtro de período) - usada só
   // pra Margem Líquida (RATEADA), que quer o ciclo AINDA EM ANDAMENTO prorateado (ver mais abaixo,
   // renderResumoFinanceiroResultado). faturaMlPeriodo: a fatura que venceu DENTRO do período
   // selecionado (o mês corrente, por ex.) - é essa que representa o custo real do período, pra
   // Margem Líquida "de custo total" e pro fechamento dos sócios (baseDistribuivelLoja).
   const faturaMlAtual=faturaMlPendenteLoja(loja);
-  const faturaMlPeriodo=faturaMlPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate);
+  const faturaMlPeriodo=faturaMlPeriodoLoja(loja,resumo.periodo.de,ateCustos);
   const margemLiquida=margem-custosPeriodo-faturaMlPeriodo;
   return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,margemLiquida};
 }
