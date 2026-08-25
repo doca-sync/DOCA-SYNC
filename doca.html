@@ -6801,6 +6801,17 @@ function calcularCmvResumo(resumo){
 function despesasPeriodoLoja(loja,de,ate){
   return despesasArr().filter(d=>d.loja===loja&&d.origem!=='ml_fatura'&&d.origem!=='imposto'&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate);
 }
+/* fatura(s) do ML cujo VENCIMENTO cai dentro do período do Resumo (de,ate) - CORRIGIDO 25/08:
+   antes a Margem Líquida usava faturaMlPendenteLoja (soma de tudo que ainda está em aberto, sem
+   olhar período nenhum) - pro caso da Orbix isso significava somar a fatura de SETEMBRO (ainda
+   em andamento, período seguinte) na margem de AGOSTO, e ainda por cima sumir com a fatura de
+   agosto assim que ela fosse marcada como paga (ver faturaMlPendenteLoja, filtra "!pago"). O
+   custo real da operação nesse período é o da fatura QUE VENCEU dentro dele, tenha sido paga ou
+   não - pago só importa pro Fluxo de Caixa, não pra quanto custou de verdade. */
+function faturaMlPeriodoLoja(loja,de,ate){
+  return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate)
+    .reduce((s,d)=>s+(Number(d.valor)||0),0);
+}
 /* margem de contribuição e margem líquida a partir de um resumo (do backend) - função separada
    pra ser reaproveitada tanto no Resumo Financeiro quanto no fechamento dos sócios. */
 /* quantos dias tem o período [de,ate] (inclusive) e quantos dias já se passaram no mês de
@@ -6824,9 +6835,15 @@ function calcularMargensResumo(resumo,loja){
   // fatura ML pendente (que carrega o Ads dentro dela).
   const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.reembolsosValor;
   const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
+  // faturaMlAtual: soma de TUDO que ainda está em aberto agora (sem filtro de período) - usada só
+  // pra Margem Líquida (RATEADA), que quer o ciclo AINDA EM ANDAMENTO prorateado (ver mais abaixo,
+  // renderResumoFinanceiroResultado). faturaMlPeriodo: a fatura que venceu DENTRO do período
+  // selecionado (o mês corrente, por ex.) - é essa que representa o custo real do período, pra
+  // Margem Líquida "de custo total" e pro fechamento dos sócios (baseDistribuivelLoja).
   const faturaMlAtual=faturaMlPendenteLoja(loja);
-  const margemLiquida=margem-custosPeriodo-faturaMlAtual;
-  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida};
+  const faturaMlPeriodo=faturaMlPeriodoLoja(loja,resumo.periodo.de,resumo.periodo.ate);
+  const margemLiquida=margem-custosPeriodo-faturaMlPeriodo;
+  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,margemLiquida};
 }
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
    Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
@@ -6835,7 +6852,7 @@ function calcularMargensResumo(resumo,loja){
    custo/trabalho mas não viraram receita de verdade. */
 let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
-  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,margemLiquida}=calcularMargensResumo(resumo,loja);
+  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,margemLiquida}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
   const margemPosAds=margem-resumo.ads.custo;
   const margemPosAdsPct=resumo.faturamento>0?(margemPosAds/resumo.faturamento*100):0;
@@ -6895,8 +6912,8 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição (${fmtMoney(margem)}) − despesas do período (${fmtMoney(custosPeriodo)}) − fatura ML pendente, valor cheio (${fmtMoney(faturaMlAtual)}) = ${fmtMoney(margemLiquida)}">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
-        <div class="hint" style="margin:2px 0 0">descontado da Margem de Contribuição: despesas ${fmtMoney(custosPeriodo)} + fatura ML ${fmtMoney(faturaMlAtual)}</div>
+        <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição (${fmtMoney(margem)}) − despesas do período (${fmtMoney(custosPeriodo)}) − fatura ML do período, venceu dentro do intervalo selecionado (${fmtMoney(faturaMlPeriodo)}) = ${fmtMoney(margemLiquida)}">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0">descontado da Margem de Contribuição: despesas ${fmtMoney(custosPeriodo)} + fatura ML do período ${fmtMoney(faturaMlPeriodo)}</div>
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
