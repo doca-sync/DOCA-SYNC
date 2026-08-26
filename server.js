@@ -344,20 +344,6 @@ async function salvarLogReclamacao(loja, claimId, patch) {
   );
 }
 
-/* determina se o frete desse pedido foi absorvido pelo vendedor (custo em senders[].cost em
-   /shipments/{id}/costs > 0) - MESMO metodo ja usado e validado em todo o resto do arquivo
-   (Resumo Financeiro, Auditoria) pra calcular o "Frete vendedor". */
-async function freteFoiDoVendedor(accessToken, shippingId) {
-  if (!shippingId) return { absorvidoPeloVendedor: null, valor: null };
-  try {
-    const j = await fetchMLDebug(`https://api.mercadolibre.com/shipments/${shippingId}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    const valor = (j.senders || []).reduce((s, r) => s + (Number(r.cost) || 0), 0);
-    return { absorvidoPeloVendedor: valor > 0, valor };
-  } catch (e) {
-    return { absorvidoPeloVendedor: null, valor: null, erro: e.message };
-  }
-}
-
 async function processarReclamacaoAutomatico(loja, claim, accessToken) {
   const claimId = claim.id;
   const jaResolvido = await pegarLogReclamacao(loja, claimId);
@@ -367,11 +353,9 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     return { claimId, pulado: true, motivo: 'resource != order' };
   }
   const orderId = claim.resource_id;
-  let shippingId = null;
   let valorVenda = null;
   try {
     const pedido = await fetchMLDebug(`https://api.mercadolibre.com/orders/${orderId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    shippingId = pedido.shipping && pedido.shipping.id;
     // preco UNITARIO do produto (nao o total do pedido) - se tiver mais de 1 item no pedido, usa
     // o mais caro deles pra decidir (pedido do Felipe 24/08, corrigido: e' preco do produto, nao
     // total do pedido - um pedido de 3 unidades de R$8 nao deveria cair na regra manual).
@@ -388,13 +372,22 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: `Produto de R$${valorVenda.toFixed(2).replace('.', ',')} (acima de R$20) - fora da regra automática, precisa revisão manual` });
     return { claimId, pulado: true, motivo: 'valor da venda acima de R$20 - revisao manual' };
   }
-  const { absorvidoPeloVendedor, valor, erro: erroFrete } = await freteFoiDoVendedor(accessToken, shippingId);
-  if (absorvidoPeloVendedor === null) {
-    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: 'nao foi possivel determinar o frete desse pedido' + (erroFrete ? ': ' + erroFrete : '') });
-    return { claimId, erro: 'sem frete' };
-  }
   const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
   const acoes = (respondent.available_actions || []).map(a => a.action);
+  /* CORRIGIDO 26/08 de novo (insight do Felipe, apos o erro real da claim 5565994624/R$9,36): a
+     decisao NAO tenta mais PREVER se o frete de devolucao seria gratis (tentativa anterior usava
+     base_cost do shipment - ver historico) - previsao de custo se mostrou pouco confiavel (foi
+     exatamente essa previsao errada que causou o R$9,36 cobrado numa devolucao que deveria ter
+     sido reembolso sem devolucao). O sinal CONFIAVEL e' o proprio Mercado Livre: ele so' oferece a
+     acao formal "allow_return"/"allow_return_label" quando a devolucao gratuita/limpa esta
+     realmente disponivel pra aquele pedido - e' a mesma caixinha de dialogo/botao que aparece pro
+     Felipe manualmente no site quando ele resolve uma reclamacao na mao. Por isso agora:
+       1) allow_return/allow_return_label disponivel -> Mercado Livre esta oferecendo devolucao
+          formalmente -> aplica a devolucao.
+       2) senao, refund disponivel -> reembolso 100% sem devolucao (acao formal).
+       3) senao -> fallback por mensagem, mas a mensagem NUNCA promete devolucao (so' "reembolso
+          100% sem devolucao") - o Mercado Livre nao confirmou formalmente que a devolucao esta
+          disponivel, entao nao faz sentido prometer ela por mensagem. */
   /* fallback (Felipe, 20/08): quando a reclamacao NAO tem o botao formal disponivel - o que ele diz
      ser o caso mais comum na pratica - em vez de so' ficar "pendente de revisao manual" pra sempre,
      manda uma MENSAGEM pro comprador oferecendo "Reembolso de 100% sem devolucao" (mesmo truque que
@@ -418,12 +411,13 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     const candidatos = claim.stage === 'dispute'
       ? [{ acao: 'send_message_to_mediator', role: 'mediator' }, { acao: 'send_message_to_complainant', role: 'complainant' }]
       : [{ acao: 'send_message_to_complainant', role: 'complainant' }, { acao: 'send_message_to_mediator', role: 'mediator' }];
-    /* texto da mensagem depende de qual regra caiu: se o frete foi do vendedor a regra pedia
-       devolucao (so' nao rolou por falta de botao), entao a mensagem tem que OFERECER devolucao
-       junto com o reembolso - "sem devolucao" so' vale quando o frete nao era do vendedor (regra 2).
-       Corrigido em 20/08 a pedido do Felipe - antes mandava sempre "sem devolucao", errado pro caso
-       de frete gratis pro vendedor. */
-    const textoMensagem = absorvidoPeloVendedor ? 'Reembolso de 100% com devolução.' : 'Reembolso de 100% sem devolução.';
+    /* texto da mensagem SEMPRE "sem devolucao" (CORRIGIDO 26/08, 2a vez): so' chega no fallback
+       quando nem allow_return/allow_return_label nem refund estao disponiveis - ou seja, o
+       Mercado Livre NAO confirmou formalmente que a devolucao esta disponivel pra esse pedido.
+       Prometer "com devolucao" por mensagem sem essa confirmacao foi exatamente o que causou o
+       erro real de R$9,36 (claim 5565994624) - a mensagem antiga prometia devolucao baseada numa
+       previsao de custo, nao numa acao formal do ML. */
+    const textoMensagem = 'Reembolso de 100% sem devolução.';
     const disponiveis = candidatos.filter(c => acoes.includes(c.acao));
     if (!disponiveis.length) {
       /* Antes de marcar como "precisa revisao manual": as vezes o vendedor NAO tem mais nenhuma
@@ -463,10 +457,10 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
         } catch (e) { /* nao conseguiu confirmar - segue tratando como pendente mesmo, pra nao esconder um caso real */ }
       }
       if (jaEmAndamento) {
-        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: 'ja respondida (pelo Doca ou pelo proprio Mercado Livre) - aguardando o comprador', sucesso: true, motivo: motivoAcaoIndisponivel + ` - mas ${motivoAndamento}, esperando o comprador agir - nada a fazer da nossa parte` });
+        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, acaoTomada: 'ja respondida (pelo Doca ou pelo proprio Mercado Livre) - aguardando o comprador', sucesso: true, motivo: motivoAcaoIndisponivel + ` - mas ${motivoAndamento}, esperando o comprador agir - nada a fazer da nossa parte` });
         return { claimId, ok: true, acao: 'aguardando-comprador' };
       }
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ` - e nem mensagem pro comprador/mediador esta disponivel nessa reclamacao (estagio: ${claim.stage || '?'}) - precisa revisao manual` });
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: motivoAcaoIndisponivel + ` - e nem mensagem pro comprador/mediador esta disponivel nessa reclamacao (estagio: ${claim.stage || '?'}) - precisa revisao manual` });
       return { claimId, erro: 'acao indisponivel' };
     }
     let ultimoErro = null;
@@ -487,45 +481,42 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
           const brutoMsg = await rMsg.text().catch(() => '');
           throw new Error(`send-message respondeu status ${rMsg.status}${brutoMsg ? ': ' + brutoMsg.slice(0, 300) : ''}`);
         }
-        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, acaoTomada: `mensagem pro ${c.role === 'mediator' ? 'mediador' : 'comprador'}: ${textoMensagem} (sem botão de ação formal disponível)`, sucesso: true, motivo: motivoAcaoIndisponivel + ` - mandada mensagem (estagio: ${claim.stage || '?'}): "${textoMensagem}", no lugar da ação formal` });
+        await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, acaoTomada: `mensagem pro ${c.role === 'mediator' ? 'mediador' : 'comprador'}: ${textoMensagem} (sem botão de ação formal disponível)`, sucesso: true, motivo: motivoAcaoIndisponivel + ` - mandada mensagem (estagio: ${claim.stage || '?'}): "${textoMensagem}", no lugar da ação formal` });
         return { claimId, ok: true, acao: 'mensagem-reembolso' };
       } catch (e) {
         ultimoErro = e;
       }
     }
-    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: absorvidoPeloVendedor, valorFreteVendedor: valor, sucesso: false, motivo: motivoAcaoIndisponivel + ' - falha ao mandar a mensagem de reembolso: ' + (ultimoErro && ultimoErro.message) });
+    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: motivoAcaoIndisponivel + ' - falha ao mandar a mensagem de reembolso: ' + (ultimoErro && ultimoErro.message) });
     return { claimId, erro: ultimoErro && ultimoErro.message };
   }
-  if (absorvidoPeloVendedor) {
-    // regra 1: frete gratis pro vendedor -> devolucao
-    if (!acoes.includes('allow_return') && !acoes.includes('allow_return_label')) {
-      return tentarFallbackMensagem('frete foi do vendedor (deveria virar devolucao), mas a acao "allow_return"/"allow_return_label" ainda nao esta disponivel nessa reclamacao');
-    }
+  if (acoes.includes('allow_return') || acoes.includes('allow_return_label')) {
+    // regra 1: Mercado Livre esta oferecendo a devolucao formalmente -> aplica a devolucao
     try {
       await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/expected-resolutions/allow-return`, {
         method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
       });
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: true, valorFreteVendedor: valor, acaoTomada: 'devolucao (allow-return)', sucesso: true, motivo: 'frete gratis pro vendedor - devolucao oferecida automaticamente' });
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, acaoTomada: 'devolucao (allow-return)', sucesso: true, motivo: 'Mercado Livre ofereceu a acao formal de devolucao (allow_return/allow_return_label) - devolucao aplicada automaticamente' });
       return { claimId, ok: true, acao: 'devolucao' };
     } catch (e) {
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: true, valorFreteVendedor: valor, sucesso: false, motivo: 'falha ao oferecer devolucao: ' + e.message });
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: 'falha ao oferecer devolucao: ' + e.message });
       return { claimId, erro: e.message };
     }
-  } else {
-    // regra 2: frete NAO foi do vendedor -> reembolso 100% sem devolucao
-    if (!acoes.includes('refund')) {
-      return tentarFallbackMensagem('frete nao foi do vendedor (deveria virar reembolso 100%), mas a acao "refund" ainda nao esta disponivel nessa reclamacao');
-    }
+  } else if (acoes.includes('refund')) {
+    // regra 2: devolucao formal nao disponivel, mas reembolso formal esta -> reembolso 100% sem devolucao
     try {
       await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}/expected-resolutions/refund`, {
         method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
       });
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: false, valorFreteVendedor: valor, acaoTomada: 'reembolso 100% (refund)', sucesso: true, motivo: 'frete nao era do vendedor - reembolso 100% aplicado automaticamente, sem devolucao' });
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, acaoTomada: 'reembolso 100% (refund)', sucesso: true, motivo: 'acao formal de devolucao (allow_return/allow_return_label) nao disponivel - reembolso 100% aplicado automaticamente, sem devolucao' });
       return { claimId, ok: true, acao: 'reembolso' };
     } catch (e) {
-      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, freteVendedor: false, valorFreteVendedor: valor, sucesso: false, motivo: 'falha ao aplicar reembolso: ' + e.message });
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: 'falha ao aplicar reembolso: ' + e.message });
       return { claimId, erro: e.message };
     }
+  } else {
+    // regra 3: nem devolucao nem reembolso formal disponiveis ainda -> fallback por mensagem
+    return tentarFallbackMensagem('nem a acao de devolucao (allow_return/allow_return_label) nem a de reembolso (refund) estao disponiveis nessa reclamacao ainda');
   }
 }
 
@@ -621,13 +612,11 @@ app.get('/debug/claims/simular', async (req, res) => {
     if (!claimId) return res.status(400).json({ ok: false, erro: 'Parametro "claimId" obrigatorio.' });
     const accessToken = await tokenValido(loja);
     const claim = await fetchMLDebug(`https://api.mercadolibre.com/post-purchase/v1/claims/${claimId}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    let shippingId = null, orderErro = null, valorVenda = null;
+    let orderErro = null, valorVenda = null;
     try {
       const pedido = await fetchMLDebug(`https://api.mercadolibre.com/orders/${claim.resource_id}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-      shippingId = pedido.shipping && pedido.shipping.id;
       valorVenda = Math.max(0, ...(pedido.order_items || []).map(oi => Number(oi.unit_price) || 0));
     } catch (e) { orderErro = e.message; }
-    const frete = await freteFoiDoVendedor(accessToken, shippingId);
     const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
     const acoes = (respondent.available_actions || []).map(a => a.action);
     let regraAplicavel = null;
@@ -636,9 +625,10 @@ app.get('/debug/claims/simular', async (req, res) => {
     const papelFallback = claim.stage === 'dispute' ? 'mediator' : 'complainant';
     const acaoFallback = claim.stage === 'dispute' ? 'send_message_to_mediator' : 'send_message_to_complainant';
     const temFallbackMensagem = acoes.includes(acaoFallback) || acoes.includes('send_message_to_complainant') || acoes.includes('send_message_to_mediator');
-    // texto do fallback depende do frete: gratis pro vendedor -> oferece devolucao junto; senao -> sem devolucao
-    // (mesma logica de tentarFallbackMensagem la' embaixo, corrigido em 20/08)
-    const textoFallbackSimulado = frete.absorvidoPeloVendedor ? 'reembolso 100% com devolucao' : 'reembolso 100% sem devolucao';
+    // texto do fallback (CORRIGIDO 26/08, 2a vez): sempre "sem devolucao" - o fallback so' e' usado
+    // quando o Mercado Livre NAO ofereceu formalmente allow_return/allow_return_label, entao nao
+    // faz sentido a mensagem prometer devolucao (ver comentario em processarReclamacaoAutomatico)
+    const textoFallbackSimulado = 'reembolso 100% sem devolucao';
     // mesmos 2 sinais de "ja em andamento/ja respondida" usados de verdade em tentarFallbackMensagem
     // (21/08) - so' verifica se cair no caso sem acao nenhuma disponivel, pra nao gastar chamada a toa
     let jaEmAndamento = false, motivoAndamento = '', relatedEntities = null, mensagensClaim = null;
@@ -658,12 +648,13 @@ app.get('/debug/claims/simular', async (req, res) => {
     const fallbackTxt = temFallbackMensagem
       ? `cairia no fallback: mensagem pro ${papelFallback === 'mediator' ? 'mediador' : 'comprador'} "${textoFallbackSimulado}" (estagio: ${claim.stage || '?'})`
       : (jaEmAndamento ? `sem acao/mensagem disponivel, MAS ja em andamento (${motivoAndamento}) - contaria como resolvida, aguardando o comprador` : `fallback de mensagem tambem indisponivel (estagio: ${claim.stage || '?'}) - ficaria pendente de verdade`);
+    const temAllowReturn = acoes.includes('allow_return') || acoes.includes('allow_return_label');
     if (claim.resource !== 'order') regraAplicavel = 'fora da regra (resource != order)';
     else if (valorVenda != null && valorVenda > 20) regraAplicavel = `fora da regra automática - venda de R$${valorVenda.toFixed(2).replace('.', ',')} acima de R$20, precisa revisão manual`;
-    else if (frete.absorvidoPeloVendedor === true) regraAplicavel = (acoes.includes('allow_return') || acoes.includes('allow_return_label')) ? 'devolucao (acao disponivel)' : `devolucao indisponivel - ${fallbackTxt}`;
-    else if (frete.absorvidoPeloVendedor === false) regraAplicavel = acoes.includes('refund') ? 'reembolso 100% (acao disponivel)' : `reembolso indisponivel - ${fallbackTxt}`;
-    else regraAplicavel = 'nao foi possivel determinar o frete';
-    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, valorVenda, stage: claim.stage, orderErro, shippingId, frete, acoesDisponiveisVendedor: acoes, jaEmAndamento, motivoAndamento, mensagensClaim, regraAplicavel, claim });
+    else if (temAllowReturn) regraAplicavel = 'devolucao (Mercado Livre ofereceu allow_return/allow_return_label)';
+    else if (acoes.includes('refund')) regraAplicavel = 'reembolso 100% sem devolucao (acao refund disponivel)';
+    else regraAplicavel = `nem allow_return nem refund disponiveis - ${fallbackTxt}`;
+    res.json({ ok: true, loja, claimId, resource: claim.resource, reasonId: claim.reason_id, orderId: claim.resource_id, valorVenda, stage: claim.stage, orderErro, acoesDisponiveisVendedor: acoes, jaEmAndamento, motivoAndamento, mensagensClaim, regraAplicavel, claim });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
 /* processa de verdade (EXECUTA a acao automatica) todas as reclamacoes abertas da loja - roda
