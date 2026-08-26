@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v310</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v311</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3533,7 +3533,7 @@ function renderDashboard(){
             ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
             :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
               :(r.emGracaEnvio?` — envio confirmado como FULL em ${fmtData(r.dataEnvioConfirmado)}, aguardando o Mercado Livre processar (ver Próximos programados)`
-              :(r.prox&&r.prox.data?` — <b class="pend">🚨 este SKU não está no próximo envio da loja (${fmtData(r.prox.data)}) — inclua ele nesse envio</b>`:` — <b class="pend">🚨 este SKU não tem nenhum FULL programado ainda — crie um envio pra ele</b>`)));
+              :' — <b class="pend">SKU sem FULL programado</b>'));
           return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
         }).join('')}</div></div>`).join('')}</div>`:''}
     ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
