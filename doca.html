@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v304</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v307</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3119,6 +3119,19 @@ async function carregarPerguntas(loja){
     let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
     if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar perguntas (status '+r.status+').'));
     perguntasCarregadas[loja]=j.perguntas||[];
+    // CORRIGIDO 26/08: recalibra a contagem por produto (p.mlPerguntas, só atualizada no /sync
+    // completo) com a lista REAL que acabou de chegar - cobre o caso de responder direto no app
+    // do Mercado Livre em vez de pelo Doca: sem isso, o badge "X sem resposta" na Visão Geral
+    // continuava com o número antigo até rodar Atualizar de novo, mesmo já mostrando aqui embaixo
+    // "nenhuma pergunta sem resposta agora" (a lista real e o badge vinham de fontes diferentes).
+    const contagemReal={};
+    perguntasCarregadas[loja].forEach(q=>{ if(q.itemId) contagemReal[q.itemId]=(contagemReal[q.itemId]||0)+1; });
+    let mudouContagem=false;
+    state.produtos.filter(p=>p.loja===loja).forEach(p=>{
+      const real=contagemReal[p.mlItemId]||0;
+      if((p.mlPerguntas||0)!==real){ p.mlPerguntas=real; mudouContagem=true; }
+    });
+    if(mudouContagem) persist();
     // dispara a sugestao de IA pra cada pergunta nova (mesmo padrao ja usado em carregarMensagens) -
     // faltava essa chamada aqui, por isso a caixa de resposta ficava sem sugestao nenhuma (21/08)
     const lista=perguntasCarregadas[loja];
@@ -6753,7 +6766,10 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     // pedido do Felipe 25/08 pra valer também no fechamento das 4 lojas.
     const faturaMlRateada=(r.m.faturaMlPeriodo/diasNoMesAtual())*diasSel;
     const margemLiquidaRateada=r.m.margem-r.m.custosPeriodo-faturaMlRateada;
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo)};
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo),
+      // guardado só pra mostrar o detalhamento embaixo dos cards (diagnóstico visual - pedido do
+      // Felipe 26/08 pra conseguir ver DE ONDE vem cada dedução sem precisar bater conta manual)
+      custosPeriodo:r.m.custosPeriodo,faturaMlPeriodo:r.m.faturaMlPeriodo,faturaMlRateada,periodoDe:r.resumo.periodo.de,periodoAte:r.resumo.periodo.ate,diasSel};
   });
   // total consolidado por sócio, somando a cota (e subtraindo retirada/reembolso) de TODAS as
   // lojas que ele participa - pedido do Felipe 23/08: "trate como separado e depois subtraia de
@@ -6787,6 +6803,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Líquida (rateada)',fmtMoney(r.margemLiquidaRateada),r.margemLiquidaRateada<0,pctDe(r.margemLiquidaRateada,r.faturamento))}
         ${metrica('Margem Líquida (custo total)',fmtMoney(r.margemLiquidaTotal),r.margemLiquidaTotal<0,pctDe(r.margemLiquidaTotal,r.faturamento))}
       </div>
+      <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição (${esc(r.periodoDe)} a ${esc(r.periodoAte)}, ${r.diasSel} dia(s)): despesas do período <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML do período <b>${fmtMoney(r.faturaMlPeriodo)}</b> (rateada pro dia: <b>${fmtMoney(r.faturaMlRateada)}</b>).</p>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
@@ -8532,7 +8549,7 @@ function renderEnvio(){
           </div>
         </div>
         ${e.itens.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
+          <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th title="Estoque livre pra reservar mais nesse envio, sem contar o que já está reservado aqui">Disponível p/ mandar mais</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
         </tr></thead><tbody>
         ${e.itens.filter(i=>!i.kitDeItemId).map(i=>{
           /* CORRIGIDO 25/08: mostra o SKU REALMENTE escolhido (skuEscolhidoId), não o mestre do
@@ -8555,6 +8572,7 @@ function renderEnvio(){
             <td class="num okv">${fmtInt(al)}</td>
             <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
             <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
+            <td class="muted" title="Kit não tem estoque próprio — veja o disponível de cada componente em detalhar">—</td>
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totkit="${e.id}|${i.id}"
               title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
             <td class="muted" title="Kit não vende como anúncio próprio no Full — veja a projeção de cada componente em detalhar">—</td>
@@ -8562,19 +8580,24 @@ function renderEnvio(){
             <td><button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
             ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return '';
               const pj=projecaoEnvioItem(pg,g.solicitado);
+              const dispG=disponivel(produtoEfetivo(pg));
               return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
               <td class="num okv">${fmtInt(g.alocado)}</td><td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
-              <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td><td class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td>
+              <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td>
+              <td class="num ${dispG>0?'okv':''}">${fmtInt(dispG)}</td>
+              <td class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td>
               <td class="num">${pj.media>0?pj.media.toFixed(2):'—'}</td>
               <td>${pj.diaZero?fmtData(pj.diaZero):(pj.media>0?'—':'sem venda')}</td>
               <td></td></tr>`; }).join(''):''}`;
           }
           const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===i.produtoId);
           const pj=projecaoEnvioItem(p,i.solicitado);
+          const dispMais=disponivel(produtoEfetivo(p));
           return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
             <td class="num okv">${fmtInt(i.alocado)}</td>
             <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
             <td class="num ${i.geradoCompra?'pend':''}">${fmtInt(i.geradoCompra||0)}</td>
+            <td class="num ${dispMais>0?'okv':''}" title="Estoque livre (galpão + comprado aguardando coleta) pra reservar mais nesse envio">${fmtInt(dispMais)}</td>
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totitem="${e.id}|${i.id}"
               title="Altere a quantidade desta programação — o sistema refaz a reserva e a compra">
               ${avisoItem?` <button class="btn sm danger" data-avisofok="${avisoItem.id}" title="${fmtInt(avisoItem.qtd)} un. ${avisoItem.direcao==='adicionar'?'adicionadas aqui':'tiradas daqui'} (${avisoItem.motivo==='manual'?'alterado manualmente':'fornecedor não tem tudo'}) — clique depois de ${avisoItem.direcao==='adicionar'?'adicionar':'retirar'} o mesmo tanto no envio real do Mercado Livre.">${avisoItem.direcao==='adicionar'?'➕ ajustar no ML ↺':'🚨 ajustar no ML ↺'}</button>`:''}</td>
