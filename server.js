@@ -586,6 +586,29 @@ app.get('/debug/claims/buscar', async (req, res) => {
     res.json({ ok: true, loja, total: claims.length, claims });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* rota de diagnostico (so' LE, nao executa nada) - dump CRU (sem nenhum recorte/resumo) do que a
+   API do Mercado Livre devolve pro shipment de uma venda, tanto /shipments/{id} (dados gerais:
+   logistic_type, tipo de envio, etc.) quanto /shipments/{id}/costs (que hoje o Doca so' olha o
+   campo "senders" pra decidir frete do vendedor). Criado 26/08 (Felipe achou um caso real onde a
+   automacao ofereceu devolucao achando que seria de graca pro vendedor, baseado no frete da VENDA
+   original, mas a devolucao de verdade cobrou R$9,36 dele) - objetivo e' achar, com dado real, se
+   existe algum campo que realmente preveja o custo/gratuidade do frete de DEVOLUCAO, em vez de
+   usar o frete da venda como proxy (que se mostrou errado nesse caso). Ex.:
+   /debug/claims/frete-shipment?shippingId=47619274554 */
+app.get('/debug/claims/frete-shipment', async (req, res) => {
+  try {
+    const shippingId = req.query.shippingId;
+    const loja = req.query.loja;
+    if (!shippingId) return res.status(400).json({ ok: false, erro: 'Parametro "shippingId" obrigatorio.' });
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const accessToken = await tokenValido(loja);
+    const [shipment, costs] = await Promise.all([
+      fetchMLDebug(`https://api.mercadolibre.com/shipments/${shippingId}`, { headers: { Authorization: `Bearer ${accessToken}` } }).catch(e => ({ erro: e.message })),
+      fetchMLDebug(`https://api.mercadolibre.com/shipments/${shippingId}/costs`, { headers: { Authorization: `Bearer ${accessToken}` } }).catch(e => ({ erro: e.message }))
+    ]);
+    res.json({ ok: true, shippingId, shipment, costs });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 /* rota de diagnostico (so' LE, nao executa nada) - mostra, pra 1 reclamacao especifica,
    exatamente o que a automacao IRIA decidir (frete do vendedor ou nao, acao disponivel ou nao)
    SEM aplicar nada de verdade - so' simula. Ex.:
