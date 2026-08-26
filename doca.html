@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v308</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v309</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6754,22 +6754,17 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
     const margemPosAds=r.m.margem-gastoAds;
     /* só no relatório de fechamento (não na tela de Finanças) - pedido do Felipe 19/08: mostrar
-       as DUAS versões da Margem Líquida lado a lado. "custo total" é a mesma conta de sempre
-       (r.m.margemLiquida - desconta a fatura ML pendente inteira, o ciclo acumulado até hoje).
-       "rateada" divide essa fatura proporcional aos dias do período escolhido, útil quando o
-       período é curto (ex: "Hoje") e não faz sentido comparar 1 dia de faturamento com o ciclo
-       inteiro de custo acumulado. */
-    const diasSel=diasNoPeriodoResumo(r.resumo.periodo.de,r.resumo.periodo.ate);
-    // CORRIGIDO 25/08: usava r.m.faturaMlAtual (soma de tudo em aberto, incluindo o ciclo
-    // SEGUINTE ainda em andamento) - agora usa r.m.faturaMlPeriodo (a fatura que venceu dentro do
-    // período selecionado), rateada pelos dias - mesma correção já aplicada no Resumo Financeiro,
-    // pedido do Felipe 25/08 pra valer também no fechamento das 4 lojas.
-    const faturaMlRateada=(r.m.faturaMlPeriodo/diasNoMesAtual())*diasSel;
-    const margemLiquidaRateada=r.m.margem-r.m.custosPeriodo-faturaMlRateada;
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo),
+       as DUAS versões da Margem Líquida lado a lado. "custo total" desconta despesas + fatura ML
+       do MÊS INTEIRO em valor cheio. "rateada" pega esse mesmo total e divide pelos dias do mês,
+       multiplicando pelos dias do período - útil quando o período é curto (ex: "Hoje") e não faz
+       sentido comparar 1 dia de faturamento com o custo mensal inteiro. CORRIGIDO 26/08 (2a vez,
+       pedido do Felipe): agora rateia despesas e fatura ML igual (calculado dentro de
+       calcularMargensResumo) - antes só a fatura ML era rateada, então com período "Hoje" uma
+       despesa mensal inteira caía sobre 1 dia de faturamento e dava número sem sentido. */
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada:r.m.margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo),
       // guardado só pra mostrar o detalhamento embaixo dos cards (diagnóstico visual - pedido do
       // Felipe 26/08 pra conseguir ver DE ONDE vem cada dedução sem precisar bater conta manual)
-      custosPeriodo:r.m.custosPeriodo,faturaMlPeriodo:r.m.faturaMlPeriodo,faturaMlRateada,periodoDe:r.resumo.periodo.de,periodoAte:r.resumo.periodo.ate,diasSel};
+      custosPeriodo:r.m.custosPeriodo,faturaMlPeriodo:r.m.faturaMlPeriodo,custosRateado:r.m.custosRateado,faturaMlRateada:r.m.faturaMlRateada,mesDe:r.m.mesDe,mesAte:r.m.mesAte,diasMes:r.m.diasMes,diasSel:r.m.diasSel};
   });
   // total consolidado por sócio, somando a cota (e subtraindo retirada/reembolso) de TODAS as
   // lojas que ele participa - pedido do Felipe 23/08: "trate como separado e depois subtraia de
@@ -6803,7 +6798,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Líquida (rateada)',fmtMoney(r.margemLiquidaRateada),r.margemLiquidaRateada<0,pctDe(r.margemLiquidaRateada,r.faturamento))}
         ${metrica('Margem Líquida (custo total)',fmtMoney(r.margemLiquidaTotal),r.margemLiquidaTotal<0,pctDe(r.margemLiquidaTotal,r.faturamento))}
       </div>
-      <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição (${esc(r.periodoDe)} a ${esc(r.periodoAte)}, ${r.diasSel} dia(s)): despesas do período <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML do período <b>${fmtMoney(r.faturaMlPeriodo)}</b> (rateada pro dia: <b>${fmtMoney(r.faturaMlRateada)}</b>).</p>
+      <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição — mês de ${esc(r.mesDe)} a ${esc(r.mesAte)} (${r.diasMes} dias): despesas <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML <b>${fmtMoney(r.faturaMlPeriodo)}</b> = <b>${fmtMoney(r.custosPeriodo+r.faturaMlPeriodo)}</b> (valor cheio, usado na "custo total"). Rateado pros ${r.diasSel} dia(s) do período selecionado: <b>${fmtMoney(r.custosRateado+r.faturaMlRateada)}</b> (usado na "rateada").</p>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
@@ -6905,6 +6900,19 @@ function fimMesDe(dataIso){
   const ultimo=new Date(d.getFullYear(),d.getMonth()+1,0);
   return _dataISO(ultimo.getFullYear(),ultimo.getMonth(),ultimo.getDate());
 }
+/* primeiro dia do mês (calendário) que contém essa data ISO - par de fimMesDe, usado junto pra
+   sempre pegar o MÊS INTEIRO que contém o período escolhido (ver calcularMargensResumo abaixo). */
+function inicioMesDe(dataIso){
+  const d=new Date(dataIso+'T12:00:00');
+  return _dataISO(d.getFullYear(),d.getMonth(),1);
+}
+/* quantos dias tem o mês (calendário, 28-31) que contém essa data ISO - igual diasNoMesAtual, mas
+   baseado no mês do PERÍODO em vez de sempre "agora" (importa pra Mês Fechado, que olha o mês
+   anterior). */
+function diasNoMesDe(dataIso){
+  const d=new Date(dataIso+'T12:00:00');
+  return new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
+}
 function calcularMargensResumo(resumo,loja){
   const {cmv,unidSemCusto}=calcularCmvResumo(resumo);
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -6916,20 +6924,27 @@ function calcularMargensResumo(resumo,loja){
   // Contribuição: despesas do período (despesasPeriodoLoja, que já exclui origem ml_fatura) e a
   // fatura ML pendente (que carrega o Ads dentro dela).
   const margem=resumo.faturamento-cmv-resumo.tarifas-impostoCalc-(resumo.frete.vendedor||0)-resumo.reembolsosValor;
-  // ateCustos: normalmente resumo.periodo.ate, mas nunca corta antes do fim do mês que contém
-  // resumo.periodo.de (ver fimMesDe acima) - assim despesas/fatura ML lançadas mais pro fim do
-  // mês corrente entram no cálculo mesmo quando o período escolhido vai só até "hoje".
-  const ateCustos=fimMesDe(resumo.periodo.de)>resumo.periodo.ate?fimMesDe(resumo.periodo.de):resumo.periodo.ate;
-  const custosPeriodo=despesasPeriodoLoja(loja,resumo.periodo.de,ateCustos).reduce((s,d)=>s+(Number(d.valor)||0),0);
+  // CORRIGIDO 26/08 (pedido do Felipe): "custo total" agora sempre soma o MÊS INTEIRO (calendário)
+  // que contém o período escolhido - despesas e fatura ML são custo mensal, pagas ou não, não
+  // fatiado por dia. Antes usava só a janela do período em si (esticada até o fim do mês) - com
+  // período "Hoje" isso cortava despesas ANTES de hoje e distorcia tudo. A "rateada" pega esse
+  // mesmo total do mês inteiro e divide pelos dias do mês, multiplicando pelos dias do período
+  // selecionado - MESMA régua pras despesas e pra fatura ML, e pras 4 lojas igual.
+  const mesDe=inicioMesDe(resumo.periodo.de), mesAte=fimMesDe(resumo.periodo.de);
+  const diasMes=diasNoMesDe(resumo.periodo.de);
+  const diasSel=diasNoPeriodoResumo(resumo.periodo.de,resumo.periodo.ate);
+  const custosPeriodo=despesasPeriodoLoja(loja,mesDe,mesAte).reduce((s,d)=>s+(Number(d.valor)||0),0);
   // faturaMlAtual: soma de TUDO que ainda está em aberto agora (sem filtro de período) - usada só
-  // pra Margem Líquida (RATEADA), que quer o ciclo AINDA EM ANDAMENTO prorateado (ver mais abaixo,
-  // renderResumoFinanceiroResultado). faturaMlPeriodo: a fatura que venceu DENTRO do período
-  // selecionado (o mês corrente, por ex.) - é essa que representa o custo real do período, pra
-  // Margem Líquida "de custo total" e pro fechamento dos sócios (baseDistribuivelLoja).
+  // pro card "Fatura Mercado Livre" da Visão Geral (patrimônio). faturaMlPeriodo: a fatura do MÊS
+  // que contém o período selecionado - é essa que representa o custo real do período, pra Margem
+  // Líquida "de custo total" e pro fechamento dos sócios (baseDistribuivelLoja).
   const faturaMlAtual=faturaMlPendenteLoja(loja);
-  const faturaMlPeriodo=faturaMlPeriodoLoja(loja,resumo.periodo.de,ateCustos);
+  const faturaMlPeriodo=faturaMlPeriodoLoja(loja,mesDe,mesAte);
+  const custosRateado=(custosPeriodo/diasMes)*diasSel;
+  const faturaMlRateada=(faturaMlPeriodo/diasMes)*diasSel;
   const margemLiquida=margem-custosPeriodo-faturaMlPeriodo;
-  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,margemLiquida};
+  const margemLiquidaRateada=margem-custosRateado-faturaMlRateada;
+  return {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,custosRateado,faturaMlRateada,margemLiquida,margemLiquidaRateada,diasMes,diasSel,mesDe,mesAte};
 }
 /* monta os cartões de dedução + margem de contribuição a partir do resumo devolvido pelo backend.
    Frete pago pelo COMPRADOR não entra na margem (não sai do seu bolso) - só o frete VENDEDOR
@@ -6938,21 +6953,16 @@ function calcularMargensResumo(resumo,loja){
    custo/trabalho mas não viraram receita de verdade. */
 let resumoRankingAberto=new Set();
 function renderResumoFinanceiroResultado(resumo,loja){
-  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,margemLiquida}=calcularMargensResumo(resumo,loja);
+  const {cmv,unidSemCusto,aliquota,impostoCalc,margem,custosPeriodo,faturaMlAtual,faturaMlPeriodo,custosRateado,faturaMlRateada,margemLiquida,margemLiquidaRateada,diasMes,diasSel}=calcularMargensResumo(resumo,loja);
   const margemPct=resumo.faturamento>0?(margem/resumo.faturamento*100):0;
   const margemPosAds=margem-resumo.ads.custo;
   const margemPosAdsPct=resumo.faturamento>0?(margemPosAds/resumo.faturamento*100):0;
   const margemLiquidaPct=resumo.faturamento>0?(margemLiquida/resumo.faturamento*100):0;
-  /* Margem Líquida (rateada) - pedido do Felipe 19/08: mostrar junto da Margem Líquida "de custo
-     total" (a de cima). Essa aqui divide a fatura proporcional aos dias do período escolhido, pra
-     não afundar o número quando o período é curto (ex: "Hoje") comparado ao mês inteiro.
-     CORRIGIDO 25/08 (2a vez, pedido do Felipe): passou a usar faturaMlPeriodo (a fatura que
-     venceu dentro do mês corrente, mesma usada na Margem Líquida de cima) em vez de faturaMlAtual
-     (que somava o ciclo seguinte ainda em andamento) - só que aqui, em vez do valor cheio, rateia
-     pelos dias do período selecionado. */
-  const diasSelResumo=diasNoPeriodoResumo(resumo.periodo.de,resumo.periodo.ate);
-  const faturaMlRateadaResumo=(faturaMlPeriodo/diasNoMesAtual())*diasSelResumo;
-  const margemLiquidaRateada=margem-custosPeriodo-faturaMlRateadaResumo;
+  /* Margem Líquida (rateada) - pedido do Felipe 19/08, CORRIGIDO 26/08 (2a vez): agora rateia
+     despesas E fatura ML igual, pelos dias do período ÷ dias do mês (calculado em
+     calcularMargensResumo, mesma régua usada no fechamento das 4 lojas) - antes só a fatura ML
+     era rateada e a despesa entrava no valor cheio, o que gerava número sem sentido (ex: descontar
+     uma despesa mensal inteira de 1 dia de faturamento só porque venceu bem naquele dia). */
   const margemLiquidaRateadaPct=resumo.faturamento>0?(margemLiquidaRateada/resumo.faturamento*100):0;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
@@ -6996,13 +7006,13 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA (RATEADA)</div>
         <b style="font-size:22px" class="${margemLiquidaRateada>=0?'okv':'pend'}">${fmtMoney(margemLiquidaRateada)}</b>
-        <div class="hint" style="margin:2px 0 0" title="Fatura ML do mês corrente (${fmtMoney(faturaMlPeriodo)}) ÷ ${diasNoMesAtual()} dias do mês × ${diasSelResumo} dia(s) do período = ${fmtMoney(faturaMlRateadaResumo)} descontada aqui, em vez do valor cheio">${margemLiquidaRateadaPct.toFixed(1)}% do faturamento · fatura ML rateada: ${fmtMoney(faturaMlRateadaResumo)}</div>
+        <div class="hint" style="margin:2px 0 0" title="Despesas do mês (${fmtMoney(custosPeriodo)}) + fatura ML do mês (${fmtMoney(faturaMlPeriodo)}) ÷ ${diasMes} dias do mês × ${diasSel} dia(s) do período = ${fmtMoney(custosRateado+faturaMlRateada)} descontado aqui, em vez do valor cheio">${margemLiquidaRateadaPct.toFixed(1)}% do faturamento · rateado: ${fmtMoney(custosRateado+faturaMlRateada)}</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA</div>
         <b style="font-size:22px" class="${margemLiquida>=0?'okv':'pend'}">${fmtMoney(margemLiquida)}</b>
-        <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição (${fmtMoney(margem)}) − despesas do período (${fmtMoney(custosPeriodo)}) − fatura ML do período, venceu dentro do intervalo selecionado (${fmtMoney(faturaMlPeriodo)}) = ${fmtMoney(margemLiquida)}">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
-        <div class="hint" style="margin:2px 0 0">descontado da Margem de Contribuição: despesas ${fmtMoney(custosPeriodo)} + fatura ML do período ${fmtMoney(faturaMlPeriodo)}</div>
+        <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição (${fmtMoney(margem)}) − despesas do mês (${fmtMoney(custosPeriodo)}) − fatura ML do mês (${fmtMoney(faturaMlPeriodo)}) = ${fmtMoney(margemLiquida)}">${margemLiquidaPct.toFixed(1)}% do faturamento${badge(margemLiquida,margensAnt?margensAnt.margemLiquida:null,false)}</div>
+        <div class="hint" style="margin:2px 0 0">descontado da Margem de Contribuição: despesas ${fmtMoney(custosPeriodo)} + fatura ML do mês ${fmtMoney(faturaMlPeriodo)} (valor cheio, mês inteiro)</div>
       </div>
     </div>
     <div class="form-grid" style="grid-template-columns:${financasResumoPeriodo==='hoje'?'1fr':'1fr 1fr'};gap:10px;margin-top:12px">
