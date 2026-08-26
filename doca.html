@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v307</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v308</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -8549,7 +8549,7 @@ function renderEnvio(){
           </div>
         </div>
         ${e.itens.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th title="Estoque livre pra reservar mais nesse envio, sem contar o que já está reservado aqui">Disponível p/ mandar mais</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
+          <th>SKU</th><th>Código</th><th>A coletar</th><th>Falta comprar</th><th title="Estoque livre pra reservar mais nesse envio, sem contar o que já está reservado aqui">Disponível</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
         </tr></thead><tbody>
         ${e.itens.filter(i=>!i.kitDeItemId).map(i=>{
           /* CORRIGIDO 25/08: mostra o SKU REALMENTE escolhido (skuEscolhidoId), não o mestre do
@@ -8569,7 +8569,6 @@ function renderEnvio(){
             const gc=grupo.reduce((s,g)=>s+(g.geradoCompra||0),0);
             const aberto=envioKitAberto.has(i.id);
             return `<tr><td class="mono">🧩 ${esc(p.sku)} <button class="btn sm" data-envkitdet="${i.id}" style="padding:1px 7px;font-size:11px">${aberto?'▾':'▸'} detalhar</button></td><td>${esc(p.codigo)}</td>
-            <td class="num okv">${fmtInt(al)}</td>
             <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
             <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
             <td class="muted" title="Kit não tem estoque próprio — veja o disponível de cada componente em detalhar">—</td>
@@ -8582,7 +8581,7 @@ function renderEnvio(){
               const pj=projecaoEnvioItem(pg,g.solicitado);
               const dispG=disponivel(produtoEfetivo(pg));
               return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
-              <td class="num okv">${fmtInt(g.alocado)}</td><td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
+              <td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
               <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td>
               <td class="num ${dispG>0?'okv':''}">${fmtInt(dispG)}</td>
               <td class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td>
@@ -8594,7 +8593,6 @@ function renderEnvio(){
           const pj=projecaoEnvioItem(p,i.solicitado);
           const dispMais=disponivel(produtoEfetivo(p));
           return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
-            <td class="num okv">${fmtInt(i.alocado)}</td>
             <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
             <td class="num ${i.geradoCompra?'pend':''}">${fmtInt(i.geradoCompra||0)}</td>
             <td class="num ${dispMais>0?'okv':''}" title="Estoque livre (galpão + comprado aguardando coleta) pra reservar mais nesse envio">${fmtInt(dispMais)}</td>
