@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v309</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v310</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2222,6 +2222,23 @@ function ajustarItemEnvio(envioId,itemId,novoTotal){
   persist();
   return {ok:true,dif};
 }
+/* troca pra qual SKU (dentro do mesmo grupo de estoque compartilhado) um item de envio já
+   programado realmente representa - pedido do Felipe 26/08: programou o Full escolhendo o SKU
+   MESTRE (ex: ALICATE) quando na real era pro anúncio vinculado que estava zerando (ex:
+   ALICATINHO) - sem essa troca, o alerta de ruptura não reconhecia esse envio como cobertura,
+   porque casa por SKU específico (skuEscolhidoId), não pelo mestre. Só mexe em qual anúncio o
+   item representa (skuEscolhidoId) - o estoque físico (i.produtoId, sempre o mestre) não muda. */
+function trocarSkuEnvioItem(envioId,itemId,novoProdutoId){
+  const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
+  const i=e.itens.find(x=>x.id===itemId); if(!i) return {ok:false,msg:'Item não encontrado.'};
+  const novo=prodById(novoProdutoId); if(!novo) return {ok:false,msg:'Produto não encontrado.'};
+  const master=produtoEfetivo(novo);
+  if(master.id!==i.produtoId) return {ok:false,msg:'Esse SKU não compartilha o mesmo estoque físico deste item.'};
+  snapshot(`troca de SKU (${novo.sku}) no envio ${e.nome}`);
+  i.skuEscolhidoId=(novo.id===master.id)?null:novo.id;
+  persist();
+  return {ok:true};
+}
 /* recebe um lote inteiro no galpão */
 function receberLote(produtoId,loteId){
   const p=prodById(produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
@@ -3506,11 +3523,17 @@ function renderDashboard(){
           /* específico por PRODUTO — se esse SKU não está em nenhum envio programado, ou está mas
              ele chega depois da ruptura, não importa se a loja tem outro envio programado com
              OUTROS produtos */
+          // CORRIGIDO 26/08 (pedido do Felipe): antes existiam 2 frases diferentes pra
+          // essencialmente a mesma situação (SKU sem Full cobrindo a tempo) - "não está no
+          // próximo envio, inclua ele" só aparecia se a loja JÁ tivesse um próximo envio com data
+          // marcada; sem isso, caía numa segunda frase genérica ("nenhum FULL programado ainda"),
+          // mesmo quando o motivo de fundo era o mesmo. Unificado: só varia conforme existir ou
+          // não um próximo envio da loja pra sugerir incluir o SKU.
           const envioTxt=r.zeraAntesDoEnvio
             ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
             :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
               :(r.emGracaEnvio?` — envio confirmado como FULL em ${fmtData(r.dataEnvioConfirmado)}, aguardando o Mercado Livre processar (ver Próximos programados)`
-              :(r.foraDoProximoEnvio?` — <b class="pend">🚨 este SKU não está no próximo envio da loja (${fmtData(r.prox.data)}) e vai zerar antes — inclua ele nesse envio</b>`:' — este SKU não tem nenhum FULL programado ainda')));
+              :(r.prox&&r.prox.data?` — <b class="pend">🚨 este SKU não está no próximo envio da loja (${fmtData(r.prox.data)}) — inclua ele nesse envio</b>`:` — <b class="pend">🚨 este SKU não tem nenhum FULL programado ainda — crie um envio pra ele</b>`)));
           return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
         }).join('')}</div></div>`).join('')}</div>`:''}
     ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
@@ -8590,7 +8613,9 @@ function renderEnvio(){
             ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return '';
               const pj=projecaoEnvioItem(pg,g.solicitado);
               const dispG=disponivel(produtoEfetivo(pg));
-              return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
+              const grupoVincG=(()=>{ const m=produtoEfetivo(pg); const filhos=membrosVinculados(m); return filhos.length?[m,...filhos]:null; })();
+              const skuCelG=grupoVincG?`<select class="mono" data-trocarsku="${e.id}|${g.id}" title="Esse componente compartilha estoque físico com outro(s) — escolha pra qual anúncio esse Full é de verdade">${grupoVincG.map(m=>`<option value="${m.id}" ${m.id===pg.id?'selected':''}>${esc(m.sku)}</option>`).join('')}</select>`:esc(pg.sku);
+              return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${skuCelG}</td><td>${esc(pg.codigo)}</td>
               <td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
               <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td>
               <td class="num ${dispG>0?'okv':''}">${fmtInt(dispG)}</td>
@@ -8602,7 +8627,16 @@ function renderEnvio(){
           const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===i.produtoId);
           const pj=projecaoEnvioItem(p,i.solicitado);
           const dispMais=disponivel(produtoEfetivo(p));
-          return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
+          // grupo de estoque compartilhado (mestre + vinculados) - pedido do Felipe 26/08: quando
+          // programou o Full escolhendo o SKU MESTRE (ex: ALICATE) mas na real era pra um SKU
+          // vinculado (ex: ALICATINHO, que é o anúncio que estava zerando), o alerta de ruptura não
+          // reconhecia esse envio como cobertura porque casa por SKU específico (skuEscolhidoId),
+          // não pelo mestre. Em vez de mandar apagar e recriar o item, deixa trocar direto aqui pra
+          // qualquer SKU do mesmo grupo (não mexe no estoque físico, só em qual anúncio esse envio
+          // representa).
+          const grupoVinc=(()=>{ const m=produtoEfetivo(p); const filhos=membrosVinculados(m); return filhos.length?[m,...filhos]:null; })();
+          const skuCel=grupoVinc?`<select class="mono" data-trocarsku="${e.id}|${i.id}" title="Esse SKU compartilha estoque físico com outro(s) — escolha pra qual anúncio esse Full é de verdade">${grupoVinc.map(m=>`<option value="${m.id}" ${m.id===p.id?'selected':''}>${esc(m.sku)}</option>`).join('')}</select>`:`<span class="mono">${esc(p.sku)}</span>`;
+          return `<tr><td>${skuCel}</td><td>${esc(p.codigo)}</td>
             <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
             <td class="num ${i.geradoCompra?'pend':''}">${fmtInt(i.geradoCompra||0)}</td>
             <td class="num ${dispMais>0?'okv':''}" title="Estoque livre (galpão + comprado aguardando coleta) pra reservar mais nesse envio">${fmtInt(dispMais)}</td>
@@ -8655,6 +8689,13 @@ function renderEnvio(){
     if(!r.ok){ alert(r.msg); renderEnvio(); return; }
     if(r.dif>0) toast(`Programação aumentada em ${fmtInt(r.dif)} un. — reserva e compra recalculadas.`);
     else if(r.dif<0) toast(`Programação reduzida em ${fmtInt(-r.dif)} un. — estoque e compra liberados.`);
+  });
+  el.querySelectorAll('[data-trocarsku]').forEach(sel=>sel.onchange=()=>{
+    const [eid,iid]=sel.dataset.trocarsku.split('|');
+    const r=trocarSkuEnvioItem(eid,iid,sel.value);
+    if(!r.ok){ alert(r.msg); renderEnvio(); return; }
+    toast('SKU deste item trocado — o alerta de ruptura e a Previsão já reconhecem esse envio pro novo SKU.');
+    renderEnvio();
   });
   el.querySelectorAll('[data-totkit]').forEach(inp=>inp.onchange=()=>{
     const [eid,iid]=inp.dataset.totkit.split('|');
