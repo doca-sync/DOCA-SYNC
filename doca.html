@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v303</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v304</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -869,6 +869,21 @@ function reservadoDe(p){ return reservadoLocalDe(p)+reservadoColetaDe(p); }
    entrada pendente), em vez de reler campos soltos do produto que não acompanham o programado */
 function fullItemDeProduto(p){
   return state.full.itens.find(x=>x.loja===p.loja&&x.produtoId===p.id)||null;
+}
+/* projeção de 1 linha de envio programado - pedido do Felipe 26/08: mostrar, junto de cada SKU
+   programado pro Full, a média de vendas diária e até quando o estoque dura CONTANDO com esse
+   envio (aptas + em transferência, que já são garantidos, + a quantidade desta programação).
+   Diferente de rupturaCalcComData (que soma em cascata TODOS os envios pendentes do produto até
+   achar quando realmente zera), aqui é só "esse envio específico, olhado isoladamente, ajuda até
+   quando" - mais simples e direto pra decidir linha por linha na tela de Envios. */
+function projecaoEnvioItem(p,qtdEnvio){
+  if(!p) return {media:0,diaZero:null};
+  const fi=fullItemDeProduto(p);
+  const media=fi?fullCalc(fi).media:0;
+  const full=(fi?(fi.aptas||0)+(fi.transf||0):0)+(qtdEnvio||0);
+  const dias=media>0?full/media:(full>0?Infinity:0);
+  const diaZero=(dias===Infinity)?null:new Date(Date.now()+Math.max(0,Math.floor(dias))*864e5).toISOString().slice(0,10);
+  return {media,diaZero};
 }
 /* "entrada pendente" é conceito separado do "Reservado": soma o solicitado inteiro do envio
    programado (não só o que já está alocado/coletado), porque quando o envio é registrado no
@@ -8517,7 +8532,7 @@ function renderEnvio(){
           </div>
         </div>
         ${e.itens.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th>Total do envio</th><th></th>
+          <th>SKU</th><th>Código</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
         </tr></thead><tbody>
         ${e.itens.filter(i=>!i.kitDeItemId).map(i=>{
           /* CORRIGIDO 25/08: mostra o SKU REALMENTE escolhido (skuEscolhidoId), não o mestre do
@@ -8542,12 +8557,20 @@ function renderEnvio(){
             <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totkit="${e.id}|${i.id}"
               title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
+            <td class="muted" title="Kit não vende como anúncio próprio no Full — veja a projeção de cada componente em detalhar">—</td>
+            <td class="muted">—</td>
             <td><button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
-            ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return ''; return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
+            ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return '';
+              const pj=projecaoEnvioItem(pg,g.solicitado);
+              return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
               <td class="num okv">${fmtInt(g.alocado)}</td><td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
-              <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td><td colspan="2" class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td></tr>`; }).join(''):''}`;
+              <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td><td class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td>
+              <td class="num">${pj.media>0?pj.media.toFixed(2):'—'}</td>
+              <td>${pj.diaZero?fmtData(pj.diaZero):(pj.media>0?'—':'sem venda')}</td>
+              <td></td></tr>`; }).join(''):''}`;
           }
           const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===i.produtoId);
+          const pj=projecaoEnvioItem(p,i.solicitado);
           return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
             <td class="num okv">${fmtInt(i.alocado)}</td>
             <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
@@ -8555,6 +8578,8 @@ function renderEnvio(){
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totitem="${e.id}|${i.id}"
               title="Altere a quantidade desta programação — o sistema refaz a reserva e a compra">
               ${avisoItem?` <button class="btn sm danger" data-avisofok="${avisoItem.id}" title="${fmtInt(avisoItem.qtd)} un. ${avisoItem.direcao==='adicionar'?'adicionadas aqui':'tiradas daqui'} (${avisoItem.motivo==='manual'?'alterado manualmente':'fornecedor não tem tudo'}) — clique depois de ${avisoItem.direcao==='adicionar'?'adicionar':'retirar'} o mesmo tanto no envio real do Mercado Livre.">${avisoItem.direcao==='adicionar'?'➕ ajustar no ML ↺':'🚨 ajustar no ML ↺'}</button>`:''}</td>
+            <td class="num" title="Ponderada 7/15/30 dias, igual a Previsão de reposição">${pj.media>0?pj.media.toFixed(2):'—'}</td>
+            <td title="Contando aptas + em transferência + esta programação">${pj.diaZero?fmtData(pj.diaZero):(pj.media>0?'—':'sem venda')}</td>
             <td><button class="btn sm" data-movitem="${e.id}|${i.id}" title="Mover para outro envio já programado, ou criar um FULL de emergência só com este item">↦ Mover</button>
               <button class="btn sm danger-outline" data-remitem="${e.id}|${i.id}">Remover</button></td></tr>`;
         }).join('')}
