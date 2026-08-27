@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v313</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v315</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -982,7 +982,17 @@ function valorEstoqueDetalhado(p){
   const full=itFull?fullCalc(itFull).valor:0;
   return {local,full,total:local+full};
 }
-function capitalGiroComprar(p){ return (p.custo||0)*p.qtd.comprar; }
+/* CORRIGIDO 27/08 (pedido do Felipe): antes multiplicava custo pela quantidade "a comprar" crua
+   (ex: precisa 50, dá R$X×50) - mas na prática só dá pra comprar caixa fechada, então se a caixa
+   vem com 100 (unidPorCaixa cadastrado no SKU), o capital de giro de verdade é custo×100, não
+   custo×50 - senão o capital de giro mostrado fica menor do que o dinheiro que realmente vai sair
+   na hora de comprar. Arredonda a quantidade pra cima até a próxima caixa fechada antes de multiplicar
+   pelo custo; SKU sem "unidades por caixa" cadastrada continua usando a quantidade crua. */
+function capitalGiroComprar(p){
+  const un=Number(p.unidPorCaixa)||0;
+  const qtd=un>0?Math.ceil((p.qtd.comprar||0)/un)*un:(p.qtd.comprar||0);
+  return (p.custo||0)*qtd;
+}
 /* estoque mínimo efetivo: quando o SKU já tem leitura do painel do Full, o mínimo passa a ser
    a média de vendas diária (mesma conta ponderada 7/15/30d da Previsão) x 30 dias de cobertura.
    Sem leitura do Full ainda, usa o valor manual digitado em Produtos. */
@@ -6369,6 +6379,67 @@ function financeiroCalibrado(loja){
     calibrado:jaDeviaTerCaido
   };
 }
+/* achado 27/08 (pedido do Felipe): "geralmente os envios FULL são no meio do mês e no final (15 e
+   30, ou perto disso conforme a data disponível); as compras são programadas logo depois da última
+   coleta, geralmente na segunda-feira seguinte ao último envio FULL, pro envio seguinte". Acha essa
+   segunda-feira "de programação de compra" a partir de uma data-âncora (envio real ou estimado). */
+function segundaFeiraSeguinte(dataIso){
+  const d=new Date(dataIso+'T12:00:00');
+  const dow=d.getDay(); // 0=domingo...6=sábado
+  const add=dow===1?7:((8-dow)%7||7); // já é segunda -> pula pra próxima semana; senão, a próxima segunda
+  d.setDate(d.getDate()+add);
+  return _dataISO(d.getFullYear(),d.getMonth(),d.getDate());
+}
+/* segundas-feiras de programação de compra dentro da janela de projeção, pra 1 loja: a primeira usa
+   o PRÓXIMO envio FULL já agendado (real) se existir, senão o ÚLTIMO envio FULL já confirmado
+   (passado) como âncora - marcada "estimado" nesse 2º caso. As seguintes (ciclo além do que já está
+   agendado) são sempre estimadas a cada ~15 dias a partir dali, só pra não deixar a projeção "cega"
+   nos ciclos futuros ainda não programados. */
+function proximasSegundasDeCompra(loja,dias){
+  const hojeStr=hoje();
+  const limite=_somaDiasISO(hojeStr,dias);
+  const datas=[];
+  const prox=proximoEnvioLoja(loja);
+  let ancora=prox?prox.data:null;
+  let estimado=!prox;
+  if(!ancora){
+    const passados=enviosOrdenados().filter(e=>e.loja===loja&&e.data&&e.data<hojeStr);
+    ancora=passados.length?passados[passados.length-1].data:null;
+  }
+  if(!ancora) return datas;
+  let cursor=segundaFeiraSeguinte(ancora);
+  let cicloEstimado=estimado;
+  let guarda=0;
+  while(cursor<=limite&&guarda<20){
+    if(cursor>=hojeStr) datas.push({data:cursor,estimado:cicloEstimado});
+    ancora=_somaDiasISO(ancora,15);
+    cursor=segundaFeiraSeguinte(ancora);
+    cicloEstimado=true; // a partir do 2º ciclo pra frente, sempre estimado
+    guarda++;
+  }
+  return datas;
+}
+/* estimativa de capital de giro pra próxima compra, ANTES de existir um pedido de compra real pra
+   esse ciclo: CMV dos últimos 15 dias (unidades vendidas no FULL, v15, × custo cadastrado) por SKU,
+   arredondado pra cima até a próxima caixa fechada (unidPorCaixa) quando cadastrada - mesmo
+   raciocínio do capitalGiroComprar, só que projetando pelo histórico de venda em vez da quantidade
+   já pedida (que ainda não existe nesse ponto). Pedido do Felipe 27/08. */
+function previsaoCompraEstimada(loja){
+  return fullItensLoja(loja).reduce((s,i)=>{
+    const p=fullProduto(i);
+    if(!p) return s;
+    const un=Number(p.unidPorCaixa)||0;
+    const unidades=i.v15||0;
+    const qtd=un>0?Math.ceil(unidades/un)*un:unidades;
+    return s+qtd*fullCusto(i);
+  },0);
+}
+/* capital de giro REAL já em pedidos de compra ativos dessa loja (mesmo número que aparece no card
+   de capital de giro da Visão Geral) - assim que existir, substitui a estimativa acima pra próxima
+   segunda de programação de compra. */
+function previsaoCompraReal(loja){
+  return state.produtos.filter(p=>p.loja===loja).reduce((s,p)=>s+capitalGiroComprar(p),0);
+}
 function projecaoCaixaBase(lojas,dias){
   const hojeStr=hoje();
   let saldoInicial=0;
@@ -6388,6 +6459,17 @@ function projecaoCaixaBase(lojas,dias){
     const data=n.dataCompra||hojeStr; if(data<hojeStr) return; /* já é história, o saldo sincronizado já reflete */
     saidas[data]=(saidas[data]||0)+(Number(n.valorTotal)||0);
     (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:`Compra: ${n.sku} (${fmtInt(n.qtd)} un.)`,valor:Number(n.valorTotal)||0});
+  });
+  lojas.forEach(loja=>{
+    proximasSegundasDeCompra(loja,dias).forEach((oc,idx)=>{
+      /* só a ocorrência mais próxima pode ter pedido de compra real já gerado - as seguintes ainda
+         nem chegaram no ciclo de programação, então continuam na estimativa. */
+      const real=idx===0?previsaoCompraReal(loja):0;
+      const valor=real>0?real:previsaoCompraEstimada(loja);
+      if(valor<=0) return;
+      saidas[oc.data]=(saidas[oc.data]||0)+valor;
+      (saidasDetalhe[oc.data]=saidasDetalhe[oc.data]||[]).push({descricao:`Previsão de compra (${loja})${real>0?'':' — estimado pelo CMV dos últimos 15 dias'}`,valor});
+    });
   });
   const dense=[]; let saldo=saldoInicial;
   for(let i=0;i<=dias;i++){
@@ -9125,6 +9207,10 @@ function fullCalc(i,envioOverride){
   /* ruptura: o estoque zera ANTES do envio chegar */
   const rompe=media>0&&cob<D;
   const diaRuptura=rompe?new Date(Date.now()+Math.floor(cob)*864e5).toISOString().slice(0,10):'';
+  /* "aguenta até" (pedido do Felipe 27/08): igual diaRuptura, mas SEMPRE calculado (não só quando
+     rompe) - pra Previsão de Reposição mostrar até quando o estoque atual (aptas + em transferência
+     + próximos programados) aguenta, mesmo quando ele aguenta folgado até depois do envio. */
+  const aguentaAte=(media>0&&cob!==Infinity)?new Date(Date.now()+Math.floor(cob)*864e5).toISOString().slice(0,10):null;
   const vendasIncoer=!mediaPronta&&((i.v7||0)>(i.v15||0)||(i.v15||0)>(i.v30||0));
   /* se esse SKU ja teve um envio confirmado (Criar FULL no Doca) e o envio ainda existe,
      nao sugere mandar de novo — mesmo que a conta de demanda desse outro numero. So volta a
@@ -9132,7 +9218,7 @@ function fullCalc(i,envioOverride){
   const jaEnviado=!!(i.enviado&&envioById(i.enviado.envioId));
   const qtd=i.ajuste!=null?i.ajuste:(jaEnviado?0:enviar);
   return {r7,r15,r30,soma:somaPond,media,mediaPronta,D,full,proximosProgramados,consumo,proj,dem,enviar,qtd,cob,
-    rompe,diaRuptura,vendasIncoer,jaEnviado,custo:fullCusto(i),valor:fullValorBase*fullCusto(i)};
+    rompe,diaRuptura,aguentaAte,vendasIncoer,jaEnviado,custo:fullCusto(i),valor:fullValorBase*fullCusto(i)};
 }
 function fullResumo(loja){
   const l=fullItensLoja(loja).map(i=>({i,k:fullCalc(i)}));
@@ -9556,9 +9642,16 @@ function renderPrevisao(){
     </div>
     ${lv.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>SKU</th><th class="num">Estoque</th><th class="num">Vendas/dia</th>
-      <th class="num">Cobertura</th><th class="num">Comprar</th><th class="num">Coletar</th><th class="num">Disponível</th><th class="num">A enviar</th><th></th></tr></thead><tbody>
+      <th class="num">Cobertura</th><th class="num" title="Até que data o estoque atual (aptas + em transferência + próximos programados) aguenta, no ritmo de venda atual — pra saber se dá tempo até o envio ou se precisa antecipar">Aguenta até</th><th class="num">Comprar</th><th class="num">Coletar</th><th class="num">Disponível</th><th class="num">A enviar</th><th></th></tr></thead><tbody>
       ${lv.map(({i,k})=>{
         const p=fullProduto(i);
+        /* SKU vinculado (compartilha estoque físico com outro SKU, geralmente de outra loja) nunca
+           carrega comprar/coletar/disponível próprios (ficam sempre zerados de propósito - só o SKU
+           mestre carrega isso) - resolve pro mestre aqui, senão essas colunas aparecem 0 mesmo
+           quando já tem compra/coleta em andamento cobrindo esse SKU. Pedido do Felipe 27/08 (achou
+           ALICATINHO, vinculado ao ALICATE, aparecendo 0 em Comprar/Coletar/Disponível). */
+        const pe=p?produtoEfetivo(p):null;
+        const viaVinculo=!!(pe&&p&&pe.id!==p.id);
         const flash=p&&flashFull[p.id]&&(Date.now()-flashFull[p.id]<2600);
         return `<tr class="${k.qtd>0?'l-env':''}${flash?' flash-full':''}">
         <td class="mono">${esc(fullSku(i))}
@@ -9586,11 +9679,12 @@ function renderPrevisao(){
             if(h2.length>1) s+=`<span class="obs">Histórico: ${h2.slice(-6).map(x=>fmtData(x.data).slice(0,5)+' '+x.media.toFixed(1)).join(' · ')}</span>`;
             else s+='<span class="obs">O histórico começa a se formar a partir da segunda leitura do painel.</span>';
             return s;})()}</span></span></td>
-        <td class="num">${k.cob===Infinity?'∞':Math.round(k.cob)+' d'}${(()=>{ if(k.cob===Infinity) return ''; const dz=new Date(Date.now()+Math.max(0,Math.floor(k.cob))*864e5).toISOString().slice(0,10); return ' <small class="muted">('+fmtData(dz)+')</small>'; })()}</td>
-        <td class="num">${p?fmtInt(p.qtd.comprar||0):'<span class="muted">—</span>'}</td>
-        <td class="num">${p?fmtInt(p.qtd.coletar||0):'<span class="muted">—</span>'}</td>
-        <td class="num">${p?fmtInt(disponivel(p)):'<span class="muted">—</span>'}</td>
-        <td>${p&&p.unidPorCaixa?`<div class="hint" style="margin:0 0 2px">${caixasTxt(k.qtd,p.unidPorCaixa)}</div>`:''}<span class="det"><input type="number" min="0" class="qty-acao" data-fq="${i.id}" value="${k.qtd}"><span class="pop">
+        <td class="num">${k.cob===Infinity?'∞':Math.round(k.cob)+' d'}</td>
+        <td class="num">${k.aguentaAte?(()=>{ const antecipa=k.aguentaAte<c.envio; return `<span class="${antecipa?'pend':'okv'}" title="${antecipa?'Estoque atual acaba antes do envio previsto ('+fmtData(c.envio)+') — precisa antecipar':'Estoque atual aguenta até depois do envio previsto ('+fmtData(c.envio)+')'}">${fmtData(k.aguentaAte)}</span>`; })():'<span class="muted">—</span>'}</td>
+        <td class="num">${pe?fmtInt(pe.qtd.comprar||0):'<span class="muted">—</span>'}${viaVinculo?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(pe.sku)} — comprar/coletar/disponível aparecem por lá, não neste SKU">🔗</small>`:''}</td>
+        <td class="num">${pe?fmtInt(pe.qtd.coletar||0):'<span class="muted">—</span>'}</td>
+        <td class="num">${pe?fmtInt(disponivel(pe)):'<span class="muted">—</span>'}</td>
+        <td>${p&&p.unidPorCaixa?`<div class="hint" style="margin:0 0 2px">${caixasTxt(k.qtd,p.unidPorCaixa)}</div>`:''}<span class="det"><input type="number" min="0" class="qty-acao" data-fq="${i.id}" value="${k.qtd}"><span class="i">i</span><span class="pop">
           <span class="ln"><span>Demanda de ${c.cobertura} dias</span><b>${Math.round(k.dem)}</b></span>
           <span class="ln"><span>Estoque FULL hoje</span><b>−${fmtInt(k.full)}</b></span>
           <span class="ln"><span>Consumo em ${k.D} d até o envio</span><b>+${Math.round(k.consumo)}</b></span>
