@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v319</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v322</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5889,6 +5889,10 @@ async function pesquisarResumoFinanceiro(){
 let financasSubAba='resumo'; // 'resumo' | 'despesas' | 'retiradas' - sub-abas dentro de Financas
 let financasFechTodasCarregando=false, financasFechTodasErro=null;
 let financasFechTodasProgresso=null; // {feito,total,etapa} - "feito"/"total" contam lojas (etapa mostra a loja+% dela)
+/* DRE + DFC por loja (27/08, pedido do Felipe: ao lado do fechamento das 4 lojas, um relatório com
+   DRE e DFC de cada loja separado, terminando com análise + sugestão de retirada por sócio). */
+let financasDreDfcCarregando=false, financasDreDfcErro=null;
+let financasDreDfcProgresso=null;
 let auditoriaLoja=STORES[0];
 let auditoriaDe='', auditoriaAte='';
 let auditoriaJobId=null, auditoriaStatus=null, auditoriaProgresso=null, auditoriaResultado=null, auditoriaErro=null;
@@ -6421,8 +6425,12 @@ function proximasSegundasDeCompra(loja,dias){
   let cicloEstimado=estimado;
   let guarda=0;
   while(cursor<=limite&&guarda<20){
-    if(cursor>=hojeStr) datas.push({data:cursor,estimado:cicloEstimado});
-    ancora=_somaDiasISO(ancora,15);
+    // envio que essa compra abastece: ~15 dias depois do envio-âncora do ciclo (mesmo raciocínio
+    // do Felipe - "na segunda programamos a compra pro envio de daqui a uns 15 dias"). Usado pro
+    // alerta de coleta (produto precisa estar coletado até 3 dias antes desse envio).
+    const envioAlvo=_somaDiasISO(ancora,15);
+    if(cursor>=hojeStr) datas.push({data:cursor,estimado:cicloEstimado,envioAlvo});
+    ancora=envioAlvo;
     cursor=segundaFeiraSeguinte(ancora);
     cicloEstimado=true; // a partir do 2º ciclo pra frente, sempre estimado
     guarda++;
@@ -6438,6 +6446,7 @@ function proximasSegundasDeCompra(loja,dias){
    no hover/clique do Fluxo de Caixa, em vez de só o número final). */
 function previsaoCompraEstimada(loja){
   const itens=[]; let total=0;
+  const curva=classificarCurvaLoja(loja);
   fullItensLoja(loja).forEach(i=>{
     const p=fullProduto(i);
     if(!p) return;
@@ -6449,7 +6458,7 @@ function previsaoCompraEstimada(loja){
     const valor=qtd*custo;
     if(valor<=0) return;
     total+=valor;
-    itens.push({sku:p.sku,unidades,unidPorCaixa:un,qtd,custo,valor});
+    itens.push({sku:p.sku,unidades,unidPorCaixa:un,qtd,custo,valor,curva:curva.get(p.id)||null});
   });
   itens.sort((a,b)=>b.valor-a.valor);
   return {total,itens};
@@ -6459,13 +6468,14 @@ function previsaoCompraEstimada(loja){
    segunda de programação de compra. Mesmo detalhe por SKU que a estimativa, pra dar pra comparar. */
 function previsaoCompraReal(loja){
   const itens=[]; let total=0;
+  const curva=classificarCurvaLoja(loja);
   state.produtos.filter(p=>p.loja===loja).forEach(p=>{
     const valor=capitalGiroComprar(p);
     if(valor<=0) return;
     const un=Number(p.unidPorCaixa)||0;
     const qtd=un>0?Math.ceil((p.qtd.comprar||0)/un)*un:(p.qtd.comprar||0);
     total+=valor;
-    itens.push({sku:p.sku,unidades:p.qtd.comprar||0,unidPorCaixa:un,qtd,custo:p.custo||0,valor});
+    itens.push({sku:p.sku,unidades:p.qtd.comprar||0,unidPorCaixa:un,qtd,custo:p.custo||0,valor,curva:curva.get(p.id)||null});
   });
   itens.sort((a,b)=>b.valor-a.valor);
   return {total,itens};
@@ -6511,7 +6521,7 @@ function projecaoCaixaBase(lojas,dias){
       const usarReal=real.total>0;
       const {total:valor,itens}=usarReal?real:previsaoCompraEstimada(loja);
       if(valor<=0) return;
-      previsoesCompra.push({loja,data:oc.data,valor,itens,real:usarReal});
+      previsoesCompra.push({loja,data:oc.data,valor,itens,real:usarReal,envioAlvo:oc.envioAlvo||null});
     });
   });
   previsoesCompra.sort((a,b)=>a.data.localeCompare(b.data));
@@ -6547,16 +6557,56 @@ function projecaoCaixaBase(lojas,dias){
       entradasProjetadas[dataLibera]=(entradasProjetadas[dataLibera]||0)+taxa;
     }
   });
-  const saidasCompraProjetado={};
-  previsoesCompra.forEach(pc=>{ saidasCompraProjetado[pc.data]=(saidasCompraProjetado[pc.data]||0)+pc.valor; });
-  const denseProjetado=[]; let saldoProj=saldoInicial;
+  /* prioridade de Curva na Previsão de Compra (28/08, pedido do Felipe: "se no caixa projetado
+     ficar negativo fazendo a compra total estimada, fazer dividido por prioridade de curva -
+     comprar primeiro os curva A e depois quando o caixa fica positivo comprar o restante"):
+     1) trajetória BASE do Projetado sem NENHUMA compra (garantido + receita projetada) - ponto de
+        partida pra "encaixar" as compras em ordem de prioridade.
+     2) processa as previsões de compra em ordem cronológica: a fatia Curva A de cada uma é
+        SEMPRE lançada na data programada (prioridade - não empurra, igual a aba Comprar já
+        prioriza Curva A pro caixa). A fatia "restante" (B/C/sem curva) só é lançada nessa mesma
+        data se o caixa aguentar sem ficar negativo depois disso (mesma checagem usada em Compras
+        Pendentes/Simulador) - senão, empurra pra primeira data seguinte (dentro da janela) em que
+        aguenta, já considerando a fatia A e as compras anteriores da fila.
+     3) alerta de coleta: os itens precisam estar coletados até 3 dias antes do envio FULL que
+        essa compra abastece (~15 dias depois do envio-âncora do ciclo, ver proximasSegundasDeCompra
+        / envioAlvo). Se o "restante" for empurrado pra depois desse prazo (ou não achar data
+        nenhuma dentro da janela), marca pc.alertaColeta pra avisar na tela. */
+  const denseBase=[]; let saldoBase=saldoInicial;
   for(let i=0;i<=dias;i++){
     const d=_somaDiasISO(hojeStr,i);
     const entrouProj=(entradas[d]||0)+(entradasProjetadas[d]||0);
-    const saiuProj=(saidas[d]||0)+(saidasCompraProjetado[d]||0);
-    saldoProj=saldoProj+entrouProj-saiuProj;
-    denseProjetado.push({data:d,entrou:entrouProj,saiu:saiuProj,saldo:saldoProj,receitaEstimada:entradasProjetadas[d]||0,compraEstimada:saidasCompraProjetado[d]||0});
+    const saiuProj=saidas[d]||0;
+    saldoBase=saldoBase+entrouProj-saiuProj;
+    denseBase.push({data:d,entrou:entrouProj,saiu:saiuProj,saldo:saldoBase,receitaEstimada:entradasProjetadas[d]||0,compraEstimada:0});
   }
+  const denseWork=denseBase.map(x=>({...x}));
+  const aplicarSaidaWorking=(data,valor)=>{
+    denseWork.forEach(x=>{
+      if(x.data===data){ x.saiu=(x.saiu||0)+valor; x.compraEstimada=(x.compraEstimada||0)+valor; }
+      if(x.data>=data) x.saldo-=valor;
+    });
+  };
+  previsoesCompra.forEach(pc=>{
+    const itensA=(pc.itens||[]).filter(it=>it.curva==='A');
+    const itensRestante=(pc.itens||[]).filter(it=>it.curva!=='A');
+    const valorA=Math.round(itensA.reduce((s,it)=>s+it.valor,0)*100)/100;
+    const valorRestante=Math.round(itensRestante.reduce((s,it)=>s+it.valor,0)*100)/100;
+    pc.itensA=itensA; pc.itensRestante=itensRestante; pc.valorA=valorA; pc.valorRestante=valorRestante;
+    pc.dataA=valorA>0?pc.data:null;
+    if(valorA>0) aplicarSaidaWorking(pc.data,valorA);
+    if(valorRestante>0){
+      const janela=denseWork.filter(x=>x.data>=pc.data);
+      const check=janela.length?primeiroDiaComCaixaEmDense(janela,valorRestante):null;
+      pc.dataRestante=check?check.data:null;
+      if(check) aplicarSaidaWorking(check.data,valorRestante);
+    }else{
+      pc.dataRestante=null;
+    }
+    pc.prazoColeta=pc.envioAlvo?_somaDiasISO(pc.envioAlvo,-3):null;
+    pc.alertaColeta=valorRestante>0.01&&!!pc.prazoColeta&&(!pc.dataRestante||pc.dataRestante>pc.prazoColeta);
+  });
+  const denseProjetado=denseWork;
   return {saldoInicial,dense,semSync,previsoesCompra,denseProjetado,semReceita};
 }
 /* primeiro dia dentro da janela em que o saldo projetado aguenta esse valor SEM ficar negativo
@@ -6856,15 +6906,17 @@ function renderFluxoCaixa(){
     </div>`:''}
     ${proj.previsoesCompra.length?`<div class="card" style="margin-top:14px">
       <h3 style="margin-top:0">📦 Previsão de compra (capital de giro por ciclo de FULL)</h3>
-      <p class="hint" style="margin:0 0 10px">NÃO entra no saldo projetado acima. Essa tela só conta o que está garantido (despesas cadastradas, liberações já agendadas) e de propósito não tenta prever venda futura — contar só o custo estimado da próxima compra sem contar a receita que ela mesma vai gerar deixaria o saldo artificialmente mais negativo do que a realidade. Use como referência: compare o valor com o "saldo projetado sem essa compra" pra decidir com juízo.</p>
+      <p class="hint" style="margin:0 0 10px">NÃO entra no saldo garantido acima. Compare com o "saldo projetado sem essa compra" pra decidir com juízo. Quando a compra inteira deixaria o caixa Projetado negativo, o Doca divide por Curva: A entra sempre na data programada (prioridade), o restante (B/C) só entra quando o caixa Projetado aguenta — se isso empurrar o restante pra depois de 3 dias antes do envio (prazo de coleta), aparece um alerta.</p>
+      ${proj.previsoesCompra.some(pc=>pc.alertaColeta)?`<p class="hint" style="color:#e6a23c;margin:0 0 10px">⚠ ${proj.previsoesCompra.filter(pc=>pc.alertaColeta).map(pc=>`${esc(pc.loja)}: o restante (Curva B/C) de ${fmtMoney(pc.valorRestante)} só cabe no caixa ${pc.dataRestante?`em ${fmtData(pc.dataRestante)}`:'em nenhuma data dentro da janela'}, depois do prazo de coleta (${fmtData(pc.prazoColeta)}, 3 dias antes do envio de ${fmtData(pc.envioAlvo)}) — corre o risco de não estar coletado a tempo.`).join(' ')}</p>`:''}
       <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-        <th>Segunda de programação</th><th>Loja</th><th class="num">Valor</th><th>Saldo projetado sem essa compra</th></tr></thead><tbody>
+        <th>Segunda de programação</th><th>Loja</th><th class="num">Curva A</th><th class="num">Restante (B/C)</th><th>Saldo projetado sem essa compra</th></tr></thead><tbody>
         ${proj.previsoesCompra.map(pc=>{
-          const linhas=pc.itens.map(it=>`<span class="ln"><span>${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
-          return `<tr><td>${fmtData(pc.data)}</td><td>${esc(pc.loja)}</td><td class="num"><span class="det">${fmtMoney(pc.valor)}${pc.real?'':' <small class="muted">(estimado)</small>'}<span class="i">i</span><span class="pop">
-            <span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':'estimado pelo CMV dos últimos 15 dias, arredondado por caixa'}</b></span>
-            ${linhas}
-            <span class="ln tot"><span>Total</span><b>${fmtMoney(pc.valor)}</b></span></span></span></td>
+          const linhasA=pc.itensA.map(it=>`<span class="ln"><span>${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
+          const linhasR=pc.itensRestante.map(it=>`<span class="ln"><span>${it.curva?`[${it.curva}] `:''}${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
+          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':'estimado pelo CMV dos últimos 15 dias, arredondado por caixa'}</b></span>`;
+          return `<tr><td>${fmtData(pc.data)}</td><td>${esc(pc.loja)}</td>
+          <td class="num">${pc.valorA>0?`<span class="det">${fmtMoney(pc.valorA)}${pc.real?'':' <small class="muted">(estimado)</small>'}<span class="i">i</span><span class="pop">${calc}${linhasA}<span class="ln tot"><span>Total Curva A</span><b>${fmtMoney(pc.valorA)}</b></span></span></span>`:'<span class="muted">—</span>'}</td>
+          <td class="num">${pc.valorRestante>0?`<span class="det">${fmtMoney(pc.valorRestante)}${pc.real?'':' <small class="muted">(estimado)</small>'}${pc.dataRestante&&pc.dataRestante!==pc.data?` <span class="${pc.alertaColeta?'pend':'muted'}">→ ${fmtData(pc.dataRestante)}</span>`:''}${!pc.dataRestante?' <span class="pend">sem data na janela</span>':''}<span class="i">i</span><span class="pop">${calc}${linhasR}<span class="ln tot"><span>Total restante</span><b>${fmtMoney(pc.valorRestante)}</b></span>${pc.dataRestante&&pc.dataRestante!==pc.data?`<span class="ln"><span>Empurrado pra</span><b>${fmtData(pc.dataRestante)}</b></span>`:''}</span></span>`:'<span class="muted">—</span>'}</td>
           <td class="num"><b class="${pc.saldoSemCompra<pc.valor?'pend':''}">${fmtMoney(pc.saldoSemCompra)}</b></td></tr>`;
         }).join('')}
       </tbody></table></div>
@@ -7131,6 +7183,244 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     ${relatorioShareBoxHtml()}
     <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
     <script>${relatorioShareScript('Fechamento Doca')}<\/script>
+    </body></html>`);
+  win.document.close();
+}
+/* DRE + DFC por loja (27/08, pedido do Felipe) - separado do fechamento das 4 lojas: reaproveita o
+   MESMO resumo/margens (calcularMargensResumo = a base do DRE) e ACRESCENTA:
+   1) DFC (Demonstrativo de Fluxo de Caixa) do período - só dinheiro que REALMENTE já
+      entrou/saiu, não lucro contábil. Entrada: como o Doca não guarda um histórico dia a dia do
+      saldo do Mercado Pago, estima usando um SEGUNDO resumo de vendas deslocado pelo prazo real de
+      liberação da própria loja (ex: prazo 8 dias, período 01-10/09 -> busca vendas de 24/08-02/09,
+      que são as que estariam liberando agora), líquido de tarifa/frete vendedor (mesma dedução que
+      vira SETTLEMENT_NET_AMOUNT no relatório do Mercado Pago). Loja sem prazo sincronizado ainda
+      fica sem essa estimativa (mostra aviso, não inventa número). Saída: despesas MARCADAS COMO
+      PAGAS com vencimento no período (todas as origens — diferente do DRE, que separa fatura
+      ML/imposto pra não descontar 2x) + retiradas de sócio já efetivadas no período. Reembolso NÃO
+      entra aqui — confirmado com o Felipe 27/08: reembolso é uma dívida da empresa com o sócio (ele
+      pagou do próprio bolso) que só vira caixa de verdade quando for de fato devolvido no
+      fechamento, não no dia em que foi lançado.
+   2) Análise: lucro (DRE) x caixa (DFC) do período, mais o mesmo "fôlego" que já existe no Fluxo de
+      Caixa (projecaoCaixaBase Garantido, 60 dias).
+   3) Sugestão de retirada: reaproveita o MESMO ajuste por sócio do fechamento das 4 lojas
+      (cota-retirou+reembolso, pra não divergir de um relatório pro outro) e enfileira contra o
+      Garantido dos próximos 90 dias (mesma função primeiroDiaComCaixaEmDense usada em Compras
+      Pendentes) — cada sócio na fila já considera que o(s) anterior(es) reservaram a fatia deles. */
+async function calcularRelatorioDreDfc(){
+  if(financasDreDfcCarregando) return;
+  mostrarOverlayVideoCarregando();
+  financasDreDfcCarregando=true; financasDreDfcErro=null; financasDreDfcProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
+  try{
+    if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
+    const resultados=[];
+    for(let i=0;i<STORES.length;i++){
+      const loja=STORES[i];
+      let resumo=await fetchResumoJob(loja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{
+        financasDreDfcProgresso={feito:i,total:STORES.length,etapa:`${loja}: ${p&&p.etapa?p.etapa:''} (${p?p.feito:0}%)`};
+        renderFinancas();
+        atualizarOverlayProgresso(((i+(p&&p.feito?p.feito/100:0))/STORES.length)*100);
+      });
+      resumo=await aplicarPrioridadeFechamento(resumo,loja,resumo.periodo.de,resumo.periodo.ate);
+      const m=calcularMargensResumo(resumo,loja);
+      // comparação com o período anterior equivalente (28/08, pedido do Felipe) - mesmo padrão já
+      // usado no Resumo Financeiro (periodoAnteriorEquivalente/badge), só que aqui via fetchResumoJob
+      // (espera o job terminar de verdade) em vez do fetch direto, pra não pegar resultado parcial.
+      let mAnt=null,resumoAnt=null;
+      try{
+        const {de:anDe,ate:anAte}=periodoAnteriorEquivalente(resumo.periodo.de,resumo.periodo.ate);
+        resumoAnt=await fetchResumoJob(loja,'personalizado',anDe,anAte,(p)=>{
+          financasDreDfcProgresso={feito:i,total:STORES.length,etapa:`${loja}: comparando com período anterior (${p?p.feito:0}%)`};
+          renderFinancas();
+        });
+        mAnt=calcularMargensResumo(resumoAnt,loja);
+      }catch(e){ mAnt=null; resumoAnt=null; }
+      // imposto (28/08, pedido do Felipe) - status do imposto JÁ REGISTRADO (base no faturamento do
+      // mês anterior ao período do relatório, vencimento dia 20) + quanto está ACUMULANDO agora pro
+      // próximo (m.impostoCalc, já calculado acima em cima do faturamento deste período mesmo).
+      const refMesImposto=mesAnteriorStr(m.mesDe.slice(0,7));
+      const despesaImposto=despesasArr().find(d=>d.origem==='imposto'&&d.loja===loja&&d.impostoRefMes===refMesImposto)||null;
+      // DFC - entradas estimadas (venda deslocada pelo prazo real de liberação da loja)
+      const prazoDias=finLoja(loja).prazoLiberacaoDias!=null?Number(finLoja(loja).prazoLiberacaoDias):null;
+      let entradasCaixa=null,periodoEntradas=null;
+      if(prazoDias!=null){
+        const deSloc=_somaDiasISO(resumo.periodo.de,-prazoDias), ateSloc=_somaDiasISO(resumo.periodo.ate,-prazoDias);
+        try{
+          const resumoEntradas=await fetchResumoJob(loja,'personalizado',deSloc,ateSloc,(p)=>{
+            financasDreDfcProgresso={feito:i,total:STORES.length,etapa:`${loja}: estimando entrada de caixa (${p?p.feito:0}%)`};
+            renderFinancas();
+          });
+          entradasCaixa=Math.max(0,(resumoEntradas.faturamento||0)-(resumoEntradas.tarifas||0)-((resumoEntradas.frete&&resumoEntradas.frete.vendedor)||0));
+          periodoEntradas={de:deSloc,ate:ateSloc};
+        }catch(e){ entradasCaixa=null; }
+      }
+      // DFC - saídas reais: despesas JÁ PAGAS com vencimento no período (qualquer origem) + retiradas
+      // de sócio já efetivadas no período (reembolso fica de fora - ver comentário acima)
+      const despesasPagas=despesasArr().filter(d=>d.loja===loja&&d.pago&&d.dataPagamento&&d.dataPagamento>=resumo.periodo.de&&d.dataPagamento<=resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
+      let retiradasPeriodo=0;
+      if(PAPEL_CAIXA_LOJA[loja]!=='reserva'){
+        sociosDaLoja(loja).forEach(s=>{
+          (sociosLoja(loja)[s]||[]).forEach(mv=>{
+            if(mv.tipo==='retirada'&&mv.data&&mv.data>=resumo.periodo.de&&mv.data<=resumo.periodo.ate) retiradasPeriodo+=Number(mv.valor)||0;
+          });
+        });
+      }
+      const saidasCaixa=despesasPagas+retiradasPeriodo;
+      const resultadoCaixa=entradasCaixa!=null?(entradasCaixa-saidasCaixa):null;
+      // ajuste por sócio (idêntico ao fechamento das 4 lojas, pra não divergir de um relatório pro outro)
+      let porSocio=null,baseSocios=null;
+      const mesSocios=resumo.periodo.de.slice(0,7);
+      if(PAPEL_CAIXA_LOJA[loja]!=='reserva'){
+        const bd=baseDistribuivelLoja(loja,m.margemLiquida,mesSocios);
+        baseSocios=bd.base;
+        const ownership=OWNERSHIP_LOJA[loja]||{};
+        porSocio=sociosDaLoja(loja).map(s=>{
+          const lista=movimentosSocioMes(loja,s,mesSocios);
+          const retirou=totalPorTipo(lista,'retirada');
+          const reembolso=totalPorTipo(lista,'reembolso');
+          const pct=ownership[s]||0;
+          const cota=baseSocios*(pct/100);
+          const ajuste=cota-retirou+reembolso;
+          return {socio:s,pct,cota,retirou,reembolso,ajuste};
+        });
+      }
+      // sugestão de retirada: fila em ordem decrescente de participação, contra o Garantido de 90 dias
+      let sugestoes=null;
+      if(porSocio){
+        const projLoja=projecaoCaixaBase([loja],90);
+        let denseAjustado=projLoja.dense.map(x=>({...x}));
+        sugestoes=porSocio.filter(p=>p.ajuste>0.01).sort((a,b)=>b.pct-a.pct).map(p=>{
+          const check=primeiroDiaComCaixaEmDense(denseAjustado,p.ajuste);
+          if(check) denseAjustado=denseAjustado.map(x=>x.data>=check.data?{...x,saldo:x.saldo-p.ajuste}:x);
+          return {socio:p.socio,valor:p.ajuste,dataSegura:check?check.data:null};
+        });
+      }
+      // análise: reaproveita o mesmo "fôlego" do Fluxo de Caixa (Garantido, 60 dias)
+      const projLoja60=projecaoCaixaBase([loja],60);
+      const piorSaldoLoja=Math.min(...projLoja60.dense.map(x=>x.saldo));
+      const diaPiorLoja=projLoja60.dense.find(x=>x.saldo===piorSaldoLoja);
+      resultados.push({loja,resumo,m,mAnt,resumoAnt,despesaImposto,entradasCaixa,periodoEntradas,despesasPagas,retiradasPeriodo,saidasCaixa,resultadoCaixa,prazoDias,porSocio,sugestoes,piorSaldoLoja,diaPiorLoja});
+      financasDreDfcProgresso={feito:i+1,total:STORES.length,etapa:`${loja} concluída`};
+      renderFinancas();
+      atualizarOverlayProgresso(((i+1)/STORES.length)*100);
+      await sleep(150);
+    }
+    financasDreDfcCarregando=false; financasDreDfcProgresso=null;
+    imprimirRelatorioDreDfc(resultados);
+    return;
+  }catch(e){
+    financasDreDfcErro=e.message;
+  }
+  financasDreDfcCarregando=false; financasDreDfcProgresso=null; renderFinancas(); esconderOverlayVideoCarregando();
+}
+function imprimirRelatorioDreDfc(resultados){
+  const win=window;
+  const metrica=(lbl,val,neg,pctVal,badgeHtml)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val${neg?' neg':''}">${val}</div>${pctVal!=null?`<div class="pctv">${pctVal.toFixed(1)}% do faturamento</div>`:''}${badgeHtml?`<div class="pctv">${badgeHtml}</div>`:''}</div>`;
+  const pctDe=(v,fat)=>fat>0?(v/fat*100):0;
+  /* mesmo padrão de ▲/▼ do Resumo Financeiro (renderResumoFinanceiroResultado), reaproveitado aqui
+     pra comparar cada loja com o período anterior equivalente (28/08, pedido do Felipe). */
+  const badge=(atual,anteriorValor,inverterBom)=>{
+    if(anteriorValor==null) return '';
+    if(anteriorValor===0) return atual>0?'<span style="color:var(--ok)">▲ novo (era R$ 0,00)</span>':'';
+    const variacao=(atual-anteriorValor)/Math.abs(anteriorValor)*100;
+    const melhorou=inverterBom?variacao<0:variacao>0;
+    const seta=variacao>=0?'▲':'▼';
+    return `<span style="color:${melhorou?'var(--ok)':'var(--danger)'}">${seta} ${Math.abs(variacao).toFixed(1)}% vs. período anterior</span>`;
+  };
+  const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
+  const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
+  const cardLojaDreDfc=r=>{
+    const aliquota=finLoja(r.loja).aliquotaImposto||0;
+    const analiseParagrafos=[];
+    if(r.resultadoCaixa!=null){
+      const diffLucroCaixa=r.m.margemLiquidaRateada-r.resultadoCaixa;
+      if(Math.abs(diffLucroCaixa)>Math.max(30,Math.abs(r.m.margemLiquidaRateada)*0.1)){
+        analiseParagrafos.push(diffLucroCaixa>0
+          ?`Lucro (${fmtMoney(r.m.margemLiquidaRateada)}) maior que o caixa efetivamente movimentado no período (${fmtMoney(r.resultadoCaixa)}) — parte do lucro ainda não virou dinheiro na conta, provavelmente porque parte das vendas mais recentes ainda está no prazo de liberação (${r.prazoDias!=null?r.prazoDias+' dias':'prazo ainda não sincronizado'}).`
+          :`Caixa movimentado no período (${fmtMoney(r.resultadoCaixa)}) maior que o lucro contábil (${fmtMoney(r.m.margemLiquidaRateada)}) — entrou dinheiro de vendas de um período anterior, mais do que o lucro gerado agora. Não é um sinal de piora nem melhora por si só, só timing entre venda e liberação.`);
+      }else{
+        analiseParagrafos.push(`Lucro e caixa do período estão próximos (${fmtMoney(r.m.margemLiquidaRateada)} de lucro, ${fmtMoney(r.resultadoCaixa)} de caixa movimentado) — sem descasamento relevante de timing nesse período.`);
+      }
+    }else{
+      analiseParagrafos.push(`Ainda não dá pra comparar lucro com caixa real — essa loja ainda não sincronizou o prazo de liberação real (sincroniza sozinho; volte a gerar esse relatório depois).`);
+    }
+    analiseParagrafos.push(r.piorSaldoLoja<0
+      ?`⚠ No Fluxo de Caixa (garantido), o saldo dessa loja fica negativo em ${fmtData(r.diaPiorLoja.data)} — antes de retirar qualquer coisa, resolver isso é prioridade.`
+      :`No Fluxo de Caixa (garantido) dos próximos 60 dias, a folga mínima é de ${fmtMoney(r.piorSaldoLoja)} em ${fmtData(r.diaPiorLoja.data)} — é o teto real de segurança pra qualquer retirada.`);
+    const impostoStatus=r.despesaImposto
+      ?(r.despesaImposto.pago
+        ?`<span style="color:var(--ok)">✓ pago</span> — ${fmtMoney(r.despesaImposto.valor)} (base ${mesLabel(r.despesaImposto.impostoRefMes)}, venceu ${fmtData(r.despesaImposto.dataPagamento)})`
+        :`<span style="color:${r.despesaImposto.dataPagamento<hoje()?'var(--danger)':'var(--gold)'}">${r.despesaImposto.dataPagamento<hoje()?'⚠ vencido, não pago':'pendente'}</span> — ${fmtMoney(r.despesaImposto.valor)} (base ${mesLabel(r.despesaImposto.impostoRefMes)}, vence ${fmtData(r.despesaImposto.dataPagamento)})`)
+      :'sem despesa de imposto registrada pra esse mês de referência ainda (sincroniza sozinho, ou alíquota não configurada)';
+    return `<div class="loja-card">
+      <h2>${esc(r.loja)}</h2>
+      <h3 style="font-size:12.5px;margin:0 0 8px;color:var(--violet-l)">DRE — Demonstrativo de Resultado</h3>
+      <div class="metrics">
+        ${metrica('Faturamento',fmtMoney(r.resumo.faturamento),false,null,r.mAnt?badge(r.resumo.faturamento,r.resumoAnt.faturamento,false):'')}
+        ${metrica('CMV',fmtMoney(r.m.cmv),false,pctDe(r.m.cmv,r.resumo.faturamento))}
+        ${metrica('Tarifas (comissão)',fmtMoney(r.resumo.tarifas),false,pctDe(r.resumo.tarifas,r.resumo.faturamento))}
+        ${metrica('Impostos ('+(aliquota||0)+'%)',fmtMoney(r.m.impostoCalc),false,pctDe(r.m.impostoCalc,r.resumo.faturamento))}
+        ${metrica('Ads',fmtMoney(r.resumo.ads.custo),false,pctDe(r.resumo.ads.custo,r.resumo.faturamento))}
+        ${metrica('Frete (vendedor)',fmtMoney(r.resumo.frete.vendedor),false,pctDe(r.resumo.frete.vendedor,r.resumo.faturamento))}
+        ${metrica('Margem de Contribuição',fmtMoney(r.m.margem),r.m.margem<0,pctDe(r.m.margem,r.resumo.faturamento),r.mAnt?badge(r.m.margem,r.mAnt.margem,false):'')}
+        ${metrica('Margem Líquida (rateada)',fmtMoney(r.m.margemLiquidaRateada),r.m.margemLiquidaRateada<0,pctDe(r.m.margemLiquidaRateada,r.resumo.faturamento),r.mAnt?badge(r.m.margemLiquidaRateada,r.mAnt.margemLiquidaRateada,false):'')}
+      </div>
+      ${!r.mAnt?`<p class="vazio">Não deu pra comparar com o período anterior (falha ao buscar).</p>`:''}
+      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Imposto</h3>
+      <p class="vazio">Já registrado (mês vencido/a vencer): ${impostoStatus}. Acumulando agora, ainda não vencido — reserva recomendada pra esse período: <b style="color:var(--text)">${fmtMoney(r.m.impostoCalc)}</b> (vira despesa de imposto no dia 20 do mês seguinte).</p>
+      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">DFC — Demonstrativo de Fluxo de Caixa (caixa real do período)</h3>
+      ${r.entradasCaixa!=null?`<div class="metrics">
+        ${metrica('Entradas (estimada)',fmtMoney(r.entradasCaixa))}
+        ${metrica('Despesas pagas',fmtMoney(r.despesasPagas),true)}
+        ${metrica('Retiradas de sócio',fmtMoney(r.retiradasPeriodo),true)}
+        ${metrica('Resultado de caixa',fmtMoney(r.resultadoCaixa),r.resultadoCaixa<0)}
+      </div>
+      <p class="vazio">Entrada estimada a partir das vendas de ${fmtData(r.periodoEntradas.de)} a ${fmtData(r.periodoEntradas.ate)} (deslocado ${r.prazoDias} dia(s) — o prazo real de liberação medido pra essa loja), líquido de tarifa e frete vendedor. Despesas pagas e retiradas já são valor real, não estimativa.</p>`
+      :`<div class="metrics">
+        ${metrica('Despesas pagas',fmtMoney(r.despesasPagas),true)}
+        ${metrica('Retiradas de sócio',fmtMoney(r.retiradasPeriodo),true)}
+      </div>
+      <p class="vazio">Entrada de caixa não estimada — essa loja ainda não sincronizou o prazo real de liberação (sincroniza sozinho no Fluxo de Caixa).</p>`}
+      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Análise</h3>
+      ${analiseParagrafos.map(p=>`<p class="vazio" style="font-size:12.5px">${p}</p>`).join('')}
+      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sugestão de retirada</h3>
+      ${r.sugestoes?(r.sugestoes.length?`<table><thead><tr><th>Sócio</th><th class="n">Valor sugerido</th><th class="n">Data segura</th></tr></thead><tbody>
+          ${r.sugestoes.map(s=>`<tr><td>${NOME_SOCIO[s.socio]||s.socio}</td><td class="n">${fmtMoney(s.valor)}</td><td class="n">${s.dataSegura?fmtData(s.dataSegura):'sem data em 90 dias que caiba esse valor sem furar o caixa'}</td></tr>`).join('')}
+        </tbody></table>
+        <p class="vazio" style="margin-top:6px">Data é o primeiro dia em que o caixa garantido aguenta essa retirada SEM ficar negativo depois — já considera que os sócios acima na lista reservaram a fatia deles primeiro.</p>`
+        :`<p class="vazio">Nenhum sócio com valor pendente a receber nesse fechamento (já retiraram o que tinham direito, ou ainda devem devolver).</p>`)
+      :`<p class="vazio">Loja de reserva/reinvestimento — sem retirada de sócio.</p>`}
+    </div>`;
+  };
+  const totalFat=resultados.reduce((s,r)=>s+r.resumo.faturamento,0);
+  const totalMargemLiquida=resultados.reduce((s,r)=>s+r.m.margemLiquidaRateada,0);
+  const totalCaixa=resultados.reduce((s,r)=>s+(r.resultadoCaixa||0),0);
+  const totalSugerido=resultados.reduce((s,r)=>s+(r.sugestoes||[]).reduce((s2,x)=>s2+x.valor,0),0);
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DRE + DFC — Todas as Lojas</title>
+    <style>${relatorioDarkCss()}
+      .metrics{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:6px}
+      .metric .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+      .metric .val{font-size:16px;font-weight:700;margin-top:3px;color:var(--ok)}
+      .metric .val.neg{color:var(--danger)}
+      .metric .pctv{font-size:10.5px;color:var(--muted);margin-top:1px}
+      .tot-card h2{border:none;margin-bottom:12px;padding:0;color:var(--violet-l)}
+      @media (min-width:560px){ .metrics{grid-template-columns:repeat(4,1fr)} }
+    </style></head><body>
+    <h1>DRE + DFC — Todas as Lojas</h1>
+    <div class="sub">Período: ${esc(rotuloPeriodo)} · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    ${resultados.map(cardLojaDreDfc).join('')}
+    <div class="tot-card">
+      <h2>Comparativo — Todas as Lojas</h2>
+      <table><thead><tr><th>Loja</th><th class="n">Faturamento</th><th class="n">Margem Líquida</th><th class="n">Caixa do período</th><th class="n">Retirada sugerida</th></tr></thead><tbody>
+        ${resultados.map(r=>`<tr><td>${esc(r.loja)}</td><td class="n">${fmtMoney(r.resumo.faturamento)}</td><td class="n">${fmtMoney(r.m.margemLiquidaRateada)}</td><td class="n">${r.resultadoCaixa!=null?fmtMoney(r.resultadoCaixa):'—'}</td><td class="n">${fmtMoney((r.sugestoes||[]).reduce((s,x)=>s+x.valor,0))}</td></tr>`).join('')}
+        <tr style="font-weight:700"><td>Total</td><td class="n">${fmtMoney(totalFat)}</td><td class="n">${fmtMoney(totalMargemLiquida)}</td><td class="n">${fmtMoney(totalCaixa)}</td><td class="n">${fmtMoney(totalSugerido)}</td></tr>
+      </tbody></table>
+    </div>
+    ${relatorioShareBoxHtml()}
+    <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
+    <script>${relatorioShareScript('DRE + DFC Doca')}<\/script>
     </body></html>`);
   win.document.close();
 }
@@ -7465,12 +7755,18 @@ function renderFinancas(){
       ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
       ${financasResumoCarregando?(financasResumoProgresso&&financasResumoProgresso.total?barraProgresso(financasResumoProgresso.feito,financasResumoProgresso.total,'🔍 '+(financasResumoProgresso.etapa||'Buscando resumo financeiro...')):barraIndeterminada('🔍 Buscando resumo financeiro...')):''}
       ${financasResumoResultado?renderResumoFinanceiroResultado(financasResumoResultado,financasResumoLoja):''}
-      <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px">
+      <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px;flex-wrap:wrap">
         <button class="btn" id="btnFecharTodasLojas" ${financasFechTodasCarregando?'disabled':''}>${financasFechTodasCarregando?'Calculando...':'📋 Calcular fechamento de todas as lojas'}</button>
         <span class="hint" style="margin:0">Gera um relatório pra impressão com o mesmo período escolhido acima, comparando faturamento, margem de contribuição, lucro bruto e margem líquida das ${STORES.length} lojas.</span>
       </div>
       ${financasFechTodasCarregando&&financasFechTodasProgresso?barraProgresso(financasFechTodasProgresso.feito,financasFechTodasProgresso.total,'📋 '+(financasFechTodasProgresso.etapa||'Calculando fechamento...')):''}
       ${financasFechTodasErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasFechTodasErro)}</p>`:''}
+      <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px;flex-wrap:wrap">
+        <button class="btn" id="btnGerarDreDfc" ${financasDreDfcCarregando?'disabled':''}>${financasDreDfcCarregando?'Calculando...':'📐 Gerar DRE + DFC por loja'}</button>
+        <span class="hint" style="margin:0">Relatório separado por loja (mesmo período acima): DRE (com comparação vs período anterior), DFC (caixa real do período), status do imposto (pago/pendente + reserva recomendada), análise e sugestão de valor/data de retirada por sócio sem comprometer o caixa. Demora mais que o fechamento normal (busca resumos extras por loja).</span>
+      </div>
+      ${financasDreDfcCarregando&&financasDreDfcProgresso?barraProgresso(financasDreDfcProgresso.feito,financasDreDfcProgresso.total,'📐 '+(financasDreDfcProgresso.etapa||'Calculando DRE + DFC...')):''}
+      ${financasDreDfcErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasDreDfcErro)}</p>`:''}
     </div>
     `:''}
     ${financasSubAba==='despesas'?`
@@ -7625,6 +7921,8 @@ function renderFinancas(){
   if(frAliquota) frAliquota.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{aliquotaImposto:e.target.value}); renderFinancas(); };
   const btnFecharTodasLojas=document.getElementById('btnFecharTodasLojas');
   if(btnFecharTodasLojas) btnFecharTodasLojas.onclick=calcularFechamentoTodasLojas;
+  const btnGerarDreDfc=document.getElementById('btnGerarDreDfc');
+  if(btnGerarDreDfc) btnGerarDreDfc.onclick=calcularRelatorioDreDfc;
   const audLoja=document.getElementById('audLoja');
   if(audLoja) audLoja.onchange=e=>{ auditoriaLoja=e.target.value; };
   const audPeriodoBtn=document.getElementById('audPeriodoBtn');
