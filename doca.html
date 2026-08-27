@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v315</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v317</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6423,22 +6423,42 @@ function proximasSegundasDeCompra(loja,dias){
    esse ciclo: CMV dos últimos 15 dias (unidades vendidas no FULL, v15, × custo cadastrado) por SKU,
    arredondado pra cima até a próxima caixa fechada (unidPorCaixa) quando cadastrada - mesmo
    raciocínio do capitalGiroComprar, só que projetando pelo histórico de venda em vez da quantidade
-   já pedida (que ainda não existe nesse ponto). Pedido do Felipe 27/08. */
+   já pedida (que ainda não existe nesse ponto). Pedido do Felipe 27/08.
+   Devolve total E o detalhe por SKU (pedido do Felipe 27/08, pra poder mostrar de onde veio a conta
+   no hover/clique do Fluxo de Caixa, em vez de só o número final). */
 function previsaoCompraEstimada(loja){
-  return fullItensLoja(loja).reduce((s,i)=>{
+  const itens=[]; let total=0;
+  fullItensLoja(loja).forEach(i=>{
     const p=fullProduto(i);
-    if(!p) return s;
+    if(!p) return;
     const un=Number(p.unidPorCaixa)||0;
     const unidades=i.v15||0;
+    if(unidades<=0) return;
     const qtd=un>0?Math.ceil(unidades/un)*un:unidades;
-    return s+qtd*fullCusto(i);
-  },0);
+    const custo=fullCusto(i);
+    const valor=qtd*custo;
+    if(valor<=0) return;
+    total+=valor;
+    itens.push({sku:p.sku,unidades,unidPorCaixa:un,qtd,custo,valor});
+  });
+  itens.sort((a,b)=>b.valor-a.valor);
+  return {total,itens};
 }
 /* capital de giro REAL já em pedidos de compra ativos dessa loja (mesmo número que aparece no card
    de capital de giro da Visão Geral) - assim que existir, substitui a estimativa acima pra próxima
-   segunda de programação de compra. */
+   segunda de programação de compra. Mesmo detalhe por SKU que a estimativa, pra dar pra comparar. */
 function previsaoCompraReal(loja){
-  return state.produtos.filter(p=>p.loja===loja).reduce((s,p)=>s+capitalGiroComprar(p),0);
+  const itens=[]; let total=0;
+  state.produtos.filter(p=>p.loja===loja).forEach(p=>{
+    const valor=capitalGiroComprar(p);
+    if(valor<=0) return;
+    const un=Number(p.unidPorCaixa)||0;
+    const qtd=un>0?Math.ceil((p.qtd.comprar||0)/un)*un:(p.qtd.comprar||0);
+    total+=valor;
+    itens.push({sku:p.sku,unidades:p.qtd.comprar||0,unidPorCaixa:un,qtd,custo:p.custo||0,valor});
+  });
+  itens.sort((a,b)=>b.valor-a.valor);
+  return {total,itens};
 }
 function projecaoCaixaBase(lojas,dias){
   const hojeStr=hoje();
@@ -6460,17 +6480,31 @@ function projecaoCaixaBase(lojas,dias){
     saidas[data]=(saidas[data]||0)+(Number(n.valorTotal)||0);
     (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:`Compra: ${n.sku} (${fmtInt(n.qtd)} un.)`,valor:Number(n.valorTotal)||0});
   });
+  /* CORRIGIDO 27/08 (Felipe, direto depois de ver o resultado): a Previsão de Compra NÃO entra
+     no saldo/saídas que viram "Saldo projetado" - fica de fora do mesmo jeito que "Compras
+     pendentes" (aba Comprar) já ficava. Motivo (Felipe: "talvez não adianta ter previsão de
+     comprar sem previsão de vendas também"): essa tela inteira é construída pra só contar o que
+     está GARANTIDO (despesas já cadastradas, liberações já agendadas) - de propósito NÃO tenta
+     prever vendas futuras (ver texto de abertura da Projeção de Saldo). A Previsão de Compra é uma
+     ESTIMATIVA (não um compromisso real como uma despesa cadastrada), e empilhar só o lado do CUSTO
+     estimado em cima de um saldo que já não conta a RECEITA futura correspondente deixa o número
+     artificialmente mais negativo do que a realidade - dá a impressão de que vai faltar caixa,
+     quando na verdade essa compra também vai gerar venda (e portanto liberação) depois. Por isso
+     fica como informação separada (ver previsoesCompra abaixo), junto do saldo projetado NAQUELE
+     dia sem contar essa compra - pra decidir com juízo, não pra virar parte do número "garantido". */
+  const previsoesCompra=[];
   lojas.forEach(loja=>{
     proximasSegundasDeCompra(loja,dias).forEach((oc,idx)=>{
       /* só a ocorrência mais próxima pode ter pedido de compra real já gerado - as seguintes ainda
          nem chegaram no ciclo de programação, então continuam na estimativa. */
-      const real=idx===0?previsaoCompraReal(loja):0;
-      const valor=real>0?real:previsaoCompraEstimada(loja);
+      const real=idx===0?previsaoCompraReal(loja):{total:0,itens:[]};
+      const usarReal=real.total>0;
+      const {total:valor,itens}=usarReal?real:previsaoCompraEstimada(loja);
       if(valor<=0) return;
-      saidas[oc.data]=(saidas[oc.data]||0)+valor;
-      (saidasDetalhe[oc.data]=saidasDetalhe[oc.data]||[]).push({descricao:`Previsão de compra (${loja})${real>0?'':' — estimado pelo CMV dos últimos 15 dias'}`,valor});
+      previsoesCompra.push({loja,data:oc.data,valor,itens,real:usarReal});
     });
   });
+  previsoesCompra.sort((a,b)=>a.data.localeCompare(b.data));
   const dense=[]; let saldo=saldoInicial;
   for(let i=0;i<=dias;i++){
     const d=_somaDiasISO(hojeStr,i);
@@ -6478,7 +6512,8 @@ function projecaoCaixaBase(lojas,dias){
     saldo=saldo+entrou-saiu;
     dense.push({data:d,entrou,saiu,saldo,saidaDetalhe:saidasDetalhe[d]||[]});
   }
-  return {saldoInicial,dense,semSync};
+  previsoesCompra.forEach(pc=>{ const dia=dense.find(x=>x.data===pc.data); pc.saldoSemCompra=dia?dia.saldo:saldoInicial; });
+  return {saldoInicial,dense,semSync,previsoesCompra};
 }
 /* primeiro dia dentro da janela em que o saldo projetado aguenta esse valor SEM ficar negativo
    depois (olha o mínimo do saldo dali até o fim da janela, não só o saldo daquele dia isolado) -
@@ -6688,6 +6723,21 @@ function renderFluxoCaixa(){
         <th>Curva</th><th>SKU</th><th class="num">Qtd</th><th class="num">Valor</th><th>Caixa disponível</th>
       </tr></thead><tbody>
         ${pendentes.map(({p,c,custoTotal,check,curva})=>`<tr><td>${curva?`<span class="curva-badge curva-${curva}" title="Curva ${curva}">${curva}</span>`:'<span class="muted">—</span>'}</td><td class="mono">${esc(p.sku)}</td><td class="num">${fmtInt(c.qtd)}</td><td class="num">${fmtMoney(custoTotal)}</td><td>${check?(check.data===hoje()?'<span class="okv">✓ hoje</span>':`<span class="pend">a partir de ${fmtData(check.data)}</span>`):'<span class="pend">sem caixa nos próximos 60 dias</span>'}</td></tr>`).join('')}
+      </tbody></table></div>
+    </div>`:''}
+    ${proj.previsoesCompra.length?`<div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">📦 Previsão de compra (capital de giro por ciclo de FULL)</h3>
+      <p class="hint" style="margin:0 0 10px">NÃO entra no saldo projetado acima. Essa tela só conta o que está garantido (despesas cadastradas, liberações já agendadas) e de propósito não tenta prever venda futura — contar só o custo estimado da próxima compra sem contar a receita que ela mesma vai gerar deixaria o saldo artificialmente mais negativo do que a realidade. Use como referência: compare o valor com o "saldo projetado sem essa compra" pra decidir com juízo.</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>Segunda de programação</th><th>Loja</th><th class="num">Valor</th><th>Saldo projetado sem essa compra</th></tr></thead><tbody>
+        ${proj.previsoesCompra.map(pc=>{
+          const linhas=pc.itens.map(it=>`<span class="ln"><span>${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
+          return `<tr><td>${fmtData(pc.data)}</td><td>${esc(pc.loja)}</td><td class="num"><span class="det">${fmtMoney(pc.valor)}${pc.real?'':' <small class="muted">(estimado)</small>'}<span class="i">i</span><span class="pop">
+            <span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':'estimado pelo CMV dos últimos 15 dias, arredondado por caixa'}</b></span>
+            ${linhas}
+            <span class="ln tot"><span>Total</span><b>${fmtMoney(pc.valor)}</b></span></span></span></td>
+          <td class="num"><b class="${pc.saldoSemCompra<pc.valor?'pend':''}">${fmtMoney(pc.saldoSemCompra)}</b></td></tr>`;
+        }).join('')}
       </tbody></table></div>
     </div>`:''}
     <div class="card" style="margin-top:14px">
