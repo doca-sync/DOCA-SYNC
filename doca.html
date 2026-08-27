@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v317</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v319</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1174,6 +1174,11 @@ function migrar(){
       if(typeof state.financeiro[l].imposto!=='number') state.financeiro[l].imposto=Number(state.financeiro[l].imposto)||0;
       if(typeof state.financeiro[l].aliquotaImposto!=='number') state.financeiro[l].aliquotaImposto=Number(state.financeiro[l].aliquotaImposto)||0; }
   });
+  /* auditoria de calibração do Fluxo de Caixa (27/08, pedido do Felipe: "como vamos auditar isso
+     pra ver se esta calibrado?") - snapshots diários da projeção Garantido/Projetado pra +7/+15/
+     +30/+60 dias, avaliados contra o saldo real quando a data-alvo chega. Ver
+     garantirSnapshotsProjecaoCaixaHoje/resumoAuditoriaCaixa. */
+  if(!Array.isArray(state.previsaoCaixaHistorico)) state.previsaoCaixaHistorico=[];
   if(!state.listas.length) state.listas=[{id:'lista_geral',nome:'GERAL'}];
   state.tarefas.forEach(t=>{
     if(!t.id) t.id=gerarId('t');
@@ -3803,6 +3808,11 @@ function aplicarSincronizacaoFinanceira(loja,j){
   /* agenda de liberações (pra Fluxo de Caixa, 23/08): datas em que o dinheiro pendente no MP vai
      ficar disponível pra usar - [{data,valor}], já vem ordenada por data do backend. */
   if(Array.isArray(j.agendaLiberacoes)) f.agendaLiberacoes=j.agendaLiberacoes.map(x=>({data:x.data,valor:Number(x.valor)||0}));
+  /* prazo de liberação empírico + receita diária média (27/08, coluna "Projetado" do Fluxo de
+     Caixa) - calculados no backend a partir do relatório real de "dinheiro em conta" da própria
+     loja (ver passoAReceberMp em server.js). */
+  if(j.prazoLiberacaoDias!=null){ f.prazoLiberacaoDias=Number(j.prazoLiberacaoDias)||null; }
+  if(j.receitaDiariaMedia!=null){ f.receitaDiariaMedia=Number(j.receitaDiariaMedia)||null; f.receitaAtualizadoEm=j.receitaAtualizadoEm||null; }
   persist();
 }
 /* aplica os dados de 1 anúncio sincronizado no SKU do Doca que já está vinculado a ele —
@@ -6513,7 +6523,41 @@ function projecaoCaixaBase(lojas,dias){
     dense.push({data:d,entrou,saiu,saldo,saidaDetalhe:saidasDetalhe[d]||[]});
   }
   previsoesCompra.forEach(pc=>{ const dia=dense.find(x=>x.data===pc.data); pc.saldoSemCompra=dia?dia.saldo:saldoInicial; });
-  return {saldoInicial,dense,semSync,previsoesCompra};
+  /* trilha "Projetado" (27/08, pedido do Felipe: "não adianta ter previsão de comprar sem previsão
+     de vendas também" - e ele pediu explicitamente as 2 colunas, igual empresa grande faz: uma
+     "garantido" (a de cima, só compromisso real) e uma "projetado" que soma venda futura estimada
+     E compra futura estimada juntas, nunca uma sem a outra).
+     Receita futura projetada = taxa diária de receita líquida REAL recente de cada loja (calculada
+     no backend a partir do relatório de "dinheiro em conta" - ver aplicarSincronizacaoFinanceira),
+     deslocada pelo prazo de liberação EMPÍRICO da própria loja (idem, calculado do relatório real -
+     medido só nas linhas JÁ liberadas de verdade, não nas pendentes que mostram uma data estimada/
+     conservadora antes da entrega ser confirmada; ver comentário em passoAReceberMp no server.js).
+     Loja sem esses 2 dados ainda sincronizados fica de fora da receita projetada (soma 0), listada
+     em semReceita pra avisar na tela. */
+  const entradasProjetadas={};
+  const semReceita=[];
+  lojas.forEach(loja=>{
+    const f=finLoja(loja);
+    const taxa=Number(f.receitaDiariaMedia)||0;
+    const prazo=f.prazoLiberacaoDias!=null?Number(f.prazoLiberacaoDias):null;
+    if(!(taxa>0)||prazo==null){ semReceita.push(loja); return; }
+    for(let i=0;i<=dias;i++){
+      const dataVenda=_somaDiasISO(hojeStr,i);
+      const dataLibera=_somaDiasISO(dataVenda,prazo);
+      entradasProjetadas[dataLibera]=(entradasProjetadas[dataLibera]||0)+taxa;
+    }
+  });
+  const saidasCompraProjetado={};
+  previsoesCompra.forEach(pc=>{ saidasCompraProjetado[pc.data]=(saidasCompraProjetado[pc.data]||0)+pc.valor; });
+  const denseProjetado=[]; let saldoProj=saldoInicial;
+  for(let i=0;i<=dias;i++){
+    const d=_somaDiasISO(hojeStr,i);
+    const entrouProj=(entradas[d]||0)+(entradasProjetadas[d]||0);
+    const saiuProj=(saidas[d]||0)+(saidasCompraProjetado[d]||0);
+    saldoProj=saldoProj+entrouProj-saiuProj;
+    denseProjetado.push({data:d,entrou:entrouProj,saiu:saiuProj,saldo:saldoProj,receitaEstimada:entradasProjetadas[d]||0,compraEstimada:saidasCompraProjetado[d]||0});
+  }
+  return {saldoInicial,dense,semSync,previsoesCompra,denseProjetado,semReceita};
 }
 /* primeiro dia dentro da janela em que o saldo projetado aguenta esse valor SEM ficar negativo
    depois (olha o mínimo do saldo dali até o fim da janela, não só o saldo daquele dia isolado) -
@@ -6681,13 +6725,85 @@ function analisarFluxoCaixa(proj){
   paragrafos.push(`📚 <b>Fluxo de caixa não é a mesma coisa que lucro:</b> lucro é "quanto sobra no papel" (venda menos custo). Fluxo de caixa é "quando o dinheiro realmente cai e sai da conta". Dá pra estar tendo lucro e mesmo assim ficar apertado num dia específico, só porque uma conta grande (como a fatura do Mercado Livre) venceu antes do dinheiro das vendas correspondentes ter sido liberado pelo Mercado Pago. É exatamente esse descompasso de tempo que essa tela tenta antecipar — não é sobre se a loja é lucrativa, é sobre QUANDO o dinheiro está disponível.`);
   return paragrafos;
 }
+/* Auditoria de calibração Garantido x Projetado (27/08, pedido do Felipe: "como vamos auditar
+   isso pra ver se esta calibrado?"). Ideia: todo dia (dedup por data), guarda um "retrato" do que
+   a projeção dizia pra daqui a 7/15/30/60 dias, pra cada loja + o total das 4. Quando aquela
+   data-alvo chega (ou já passou), compara com o saldo REAL sincronizado naquele momento e grava o
+   erro - assim dá pra ver, com o tempo, se o Projetado (que soma venda e compra futura estimada)
+   está batendo com a realidade ou não, sem precisar confiar de olho. */
+const CHECKPOINTS_PREVISAO_CAIXA=[7,15,30,60];
+function escoposAuditoriaCaixa(){
+  return [{chave:'todas',label:'Todas as lojas'},...STORES.map(l=>({chave:l,label:l}))];
+}
+function garantirSnapshotsProjecaoCaixaHoje(){
+  if(!Array.isArray(state.previsaoCaixaHistorico)) state.previsaoCaixaHistorico=[];
+  const hist=state.previsaoCaixaHistorico;
+  const hojeStr=hoje();
+  let mudou=false;
+  escoposAuditoriaCaixa().forEach(esc=>{
+    if(hist.some(h=>h.feitoEm===hojeStr&&h.escopo===esc.chave)) return;
+    const lojas=esc.chave==='todas'?STORES.slice():[esc.chave];
+    const proj=projecaoCaixaBase(lojas,Math.max(...CHECKPOINTS_PREVISAO_CAIXA));
+    CHECKPOINTS_PREVISAO_CAIXA.forEach(dias=>{
+      const g=proj.dense[dias],p=proj.denseProjetado[dias];
+      if(!g||!p) return;
+      hist.push({feitoEm:hojeStr,escopo:esc.chave,dias,dataAlvo:g.data,saldoGarantido:g.saldo,saldoProjetado:p.saldo,avaliado:false});
+    });
+    mudou=true;
+  });
+  /* avalia snapshots cuja data-alvo já chegou, comparando com o saldo real de HOJE (aproximação -
+     se o Doca só for aberto dias depois da data-alvo, usa o saldo real de quando finalmente
+     avaliar, não o saldo exato daquele dia específico, mas na prática o app roda quase todo dia). */
+  hist.forEach(h=>{
+    if(h.avaliado||h.dataAlvo>hojeStr) return;
+    const lojas=h.escopo==='todas'?STORES.slice():[h.escopo];
+    const real=lojas.reduce((s,l)=>s+financeiroCalibrado(l).mercadoPago,0);
+    h.avaliado=true; h.realNaData=real;
+    h.erroGarantido=real-h.saldoGarantido;
+    h.erroProjetado=real-h.saldoProjetado;
+    mudou=true;
+  });
+  if(hist.length>2000){ state.previsaoCaixaHistorico=hist.slice(-2000); mudou=true; }
+  if(mudou){ saveToLocalStorage(); if(typeof nuvemAuth!=='undefined'&&nuvemAuth&&typeof salvarNaNuvem==='function') salvarNaNuvem(); }
+  return mudou;
+}
+function resumoAuditoriaCaixa(escopoChave){
+  const hist=(state.previsaoCaixaHistorico||[]).filter(h=>h.escopo===escopoChave&&h.avaliado);
+  return CHECKPOINTS_PREVISAO_CAIXA.map(dias=>{
+    const itens=hist.filter(h=>h.dias===dias);
+    if(!itens.length) return {dias,n:0};
+    const mediaErroG=itens.reduce((s,h)=>s+h.erroGarantido,0)/itens.length;
+    const mediaErroP=itens.reduce((s,h)=>s+h.erroProjetado,0)/itens.length;
+    const mediaAbsG=itens.reduce((s,h)=>s+Math.abs(h.erroGarantido),0)/itens.length;
+    const mediaAbsP=itens.reduce((s,h)=>s+Math.abs(h.erroProjetado),0)/itens.length;
+    return {dias,n:itens.length,mediaErroG,mediaErroP,mediaAbsG,mediaAbsP,ultimos:itens.slice(-5).reverse()};
+  });
+}
+function renderAuditoriaCaixa(escopoChave){
+  const linhas=resumoAuditoriaCaixa(escopoChave);
+  const temAlgo=linhas.some(l=>l.n>0);
+  return `
+    <div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">📐 Auditoria de calibração</h3>
+      <p class="hint" style="margin:0 0 10px">Todo dia o Doca guarda o que o Garantido e o Projetado diziam pra daqui 7/15/30/60 dias. Quando essa data chega, compara com o saldo real e mostra o erro médio aqui — assim dá pra ver com o tempo se o Projetado está calibrado (erro perto de zero) ou sistematicamente otimista/pessimista.</p>
+      ${temAlgo?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>Horizonte</th><th class="num">Amostras</th><th class="num">Erro médio — Garantido</th><th class="num">Erro médio — Projetado</th><th class="num">Erro abs. médio — Projetado</th>
+      </tr></thead><tbody>
+        ${linhas.map(l=>l.n?`<tr><td>${l.dias} dias</td><td class="num">${l.n}</td><td class="num">${fmtMoney(l.mediaErroG)}</td><td class="num"><b class="${Math.abs(l.mediaErroP)>Math.abs(l.mediaErroG)?'pend':''}">${fmtMoney(l.mediaErroP)}</b></td><td class="num">${fmtMoney(l.mediaAbsP)}</td></tr>`:`<tr><td>${l.dias} dias</td><td class="num" colspan="4"><span class="muted">ainda sem amostra madura — volte daqui uns ${l.dias} dias</span></td></tr>`).join('')}
+      </tbody></table></div>
+      <p class="hint" style="margin:10px 0 0;font-size:12px">Erro = saldo real − saldo previsto. Positivo = a previsão foi conservadora (realidade veio melhor); negativo = a previsão foi otimista demais (realidade veio pior).</p>`:'<p class="empty-inline">Ainda não tem snapshot avaliado — o primeiro horizonte (7 dias) fica pronto para comparação a partir de uma semana depois que essa versão entrar no ar.</p>'}
+    </div>`;
+}
 function renderFluxoCaixa(){
+  garantirSnapshotsProjecaoCaixaHoje();
   const opts=opcoesAlvoCaixa();
   const lojasAlvo=lojasDoAlvo(fluxoCaixaAlvo);
   const proj=projecaoCaixaBase(lojasAlvo,60);
-  const eventos=proj.dense.filter(x=>x.entrou||x.saiu);
+  const eventos=proj.dense.map((d,i)=>({d,p:proj.denseProjetado[i]})).filter(({d,p})=>d.entrou||d.saiu||(p&&(p.receitaEstimada||p.compraEstimada)));
   const piorSaldo=Math.min(...proj.dense.map(x=>x.saldo));
   const diaPior=proj.dense.find(x=>x.saldo===piorSaldo);
+  const piorSaldoProj=Math.min(...proj.denseProjetado.map(x=>x.saldo));
+  const diaPiorProj=proj.denseProjetado.find(x=>x.saldo===piorSaldoProj);
   const pendentes=comprasPendentesComCaixa(lojasAlvo[0],proj.dense);
   const analise=analisarFluxoCaixa(proj);
   /* fatura ML ainda em período aberto (sem vencimento real) fica de fora da projeção - avisa aqui
@@ -6704,14 +6820,27 @@ function renderFluxoCaixa(){
       </div>
       <div class="form-grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
         <div><span class="muted" style="font-size:11px">SALDO DISPONÍVEL HOJE</span><br><b style="font-size:18px">${fmtMoney(proj.saldoInicial)}</b></div>
-        <div><span class="muted" style="font-size:11px">SALDO PROJETADO MÍNIMO (60 dias)</span><br><b style="font-size:18px" class="${piorSaldo<0?'pend':'okv'}">${fmtMoney(piorSaldo)}</b>${piorSaldo<0&&diaPior?` <span class="pend" style="font-size:12px">— fica negativo em ${fmtData(diaPior.data)}</span>`:''}</div>
+        <div><span class="muted" style="font-size:11px">GARANTIDO — MÍNIMO EM 60 DIAS</span><br><b style="font-size:18px" class="${piorSaldo<0?'pend':'okv'}">${fmtMoney(piorSaldo)}</b>${piorSaldo<0&&diaPior?` <span class="pend" style="font-size:12px">— fica negativo em ${fmtData(diaPior.data)}</span>`:''}</div>
       </div>
       ${eventos.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
-        <th>Data</th><th class="num">Entra</th><th class="num">Sai</th><th class="num">Saldo projetado</th>
+        <th>Data</th><th class="num">Entra</th><th class="num">Sai</th><th class="num">Saldo garantido</th><th class="num">Saldo projetado</th>
       </tr></thead><tbody>
-        ${eventos.map(e=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<span class="muted" style="font-size:11px;font-weight:normal">${esc(e.saidaDetalhe.map(x=>x.descricao).join(', ').toUpperCase())}</span> `:''}${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td></tr>`).join('')}
+        ${eventos.map(({d:e,p})=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<span class="muted" style="font-size:11px;font-weight:normal">${esc(e.saidaDetalhe.map(x=>x.descricao).join(', ').toUpperCase())}</span> `:''}${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td><td class="num"><span class="det"><b class="${p&&p.saldo<0?'pend':''}">${fmtMoney(p?p.saldo:e.saldo)}</b>${p&&(p.receitaEstimada||p.compraEstimada)?`<span class="i">i</span><span class="pop">
+          ${p.receitaEstimada?`<span class="ln"><span>+ receita estimada (venda futura)</span><b>${fmtMoney(p.receitaEstimada)}</b></span>`:''}
+          ${p.compraEstimada?`<span class="ln"><span>− compra estimada (capital de giro)</span><b>${fmtMoney(p.compraEstimada)}</b></span>`:''}
+          <span class="ln tot"><span>Saldo projetado</span><b>${fmtMoney(p.saldo)}</b></span></span>`:''}</span></td></tr>`).join('')}
       </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhuma entrada ou saída conhecida nos próximos 60 dias.</p>'}
     </div>
+    <div class="card" style="margin-top:14px">
+      <h3 style="margin-top:0">🔮 Garantido × Projetado</h3>
+      <p class="hint" style="margin:0 0 10px">"Garantido" (acima) só conta o que já está certo: saldo no Mercado Pago, liberações já agendadas e despesas cadastradas. "Projetado" soma nesse mesmo saldo a receita futura estimada (venda diária média recente de cada loja, deslocada pelo prazo real de liberação da conta) E a compra futura estimada de material — as duas juntas, nunca uma sem a outra, senão o número engana.</p>
+      ${proj.semReceita.length?`<p class="hint" style="color:#e6a23c;margin:0 0 10px">⚠ ${proj.semReceita.map(esc).join(', ')} ainda não tem receita diária média/prazo de liberação sincronizados — entra no projetado só com R$0 de venda futura até o próximo sync.</p>`:''}
+      <div class="form-grid" style="grid-template-columns:1fr 1fr">
+        <div><span class="muted" style="font-size:11px">PROJETADO — MÍNIMO EM 60 DIAS</span><br><b style="font-size:18px" class="${piorSaldoProj<0?'pend':'okv'}">${fmtMoney(piorSaldoProj)}</b>${piorSaldoProj<0&&diaPiorProj?` <span class="pend" style="font-size:12px">— fica negativo em ${fmtData(diaPiorProj.data)}</span>`:''}</div>
+        <div><span class="muted" style="font-size:11px">DIFERENÇA (PROJETADO − GARANTIDO)</span><br><b style="font-size:18px">${fmtMoney(piorSaldoProj-piorSaldo)}</b></div>
+      </div>
+    </div>
+    ${renderAuditoriaCaixa(fluxoCaixaAlvo)}
     ${analise.length?`<div class="card" style="margin-top:14px">
       <h3 style="margin-top:0">🧑‍💼 Análise do fluxo de caixa</h3>
       ${analise.map(p=>`<p class="hint" style="margin:0 0 8px;font-size:13px">${p}</p>`).join('')}

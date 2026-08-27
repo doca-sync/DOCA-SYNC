@@ -256,6 +256,14 @@ app.post('/ml/webhook', async (req, res) => {
    era guardado - a data de cada liberacao pendente era jogada fora. Guarda agora agrupado por
    data, pra dar pra projetar o saldo dia a dia (agenda_liberacoes: [{data,valor}, ...]). */
 pool.query('alter table mp_financeiro add column if not exists agenda_liberacoes jsonb').catch(e => console.error('Falha ao adicionar coluna "agenda_liberacoes":', e.message));
+/* coluna "Projetado" do Fluxo de Caixa (27/08, pedido do Felipe): prazo de liberacao empirico
+   (mediana real de dias entre a venda e o dinheiro cair, calculado do proprio relatorio de
+   "dinheiro em conta" - achado real 27/08: e' D+28 na TorvStore e na Dor Block, nao D+8 como o
+   Felipe lembrava) e receita liquida diaria media dos ultimos 15 dias (mesma fonte, sem precisar
+   cadastrar preco de venda em lugar nenhum). Usados pra projetar receita futura no Fluxo de Caixa. */
+pool.query('alter table mp_financeiro add column if not exists prazo_liberacao_dias numeric').catch(e => console.error('Falha ao adicionar coluna "prazo_liberacao_dias":', e.message));
+pool.query('alter table mp_financeiro add column if not exists receita_diaria_media numeric').catch(e => console.error('Falha ao adicionar coluna "receita_diaria_media":', e.message));
+pool.query('alter table mp_financeiro add column if not exists receita_atualizado_em timestamptz').catch(e => console.error('Falha ao adicionar coluna "receita_atualizado_em":', e.message));
 pool.query('alter table ml_produtos add column if not exists categoria_id text')
   .catch(e => console.error('Falha ao adicionar coluna "categoria_id" em ml_produtos:', e.message));
 pool.query(`create table if not exists ml_mercado_categoria (
@@ -1800,8 +1808,9 @@ async function upsertFinanceiroMp(loja, patch) {
   const linha = { ...base, ...patch, loja };
   await pool.query(
     `insert into mp_financeiro (loja, saldo_disponivel, saldo_atualizado_em, saldo_report_id, saldo_pedido_em,
-        a_receber, a_receber_atualizado_em, areceber_report_id, areceber_pedido_em, agenda_liberacoes)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        a_receber, a_receber_atualizado_em, areceber_report_id, areceber_pedido_em, agenda_liberacoes,
+        prazo_liberacao_dias, receita_diaria_media, receita_atualizado_em)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      on conflict (loja) do update set
        saldo_disponivel = excluded.saldo_disponivel,
        saldo_atualizado_em = excluded.saldo_atualizado_em,
@@ -1811,11 +1820,15 @@ async function upsertFinanceiroMp(loja, patch) {
        a_receber_atualizado_em = excluded.a_receber_atualizado_em,
        areceber_report_id = excluded.areceber_report_id,
        areceber_pedido_em = excluded.areceber_pedido_em,
-       agenda_liberacoes = excluded.agenda_liberacoes`,
+       agenda_liberacoes = excluded.agenda_liberacoes,
+       prazo_liberacao_dias = excluded.prazo_liberacao_dias,
+       receita_diaria_media = excluded.receita_diaria_media,
+       receita_atualizado_em = excluded.receita_atualizado_em`,
     [loja, linha.saldo_disponivel ?? null, linha.saldo_atualizado_em ?? null, linha.saldo_report_id ?? null,
      linha.saldo_pedido_em ?? null, linha.a_receber ?? null, linha.a_receber_atualizado_em ?? null,
      linha.areceber_report_id ?? null, linha.areceber_pedido_em ?? null,
-     linha.agenda_liberacoes != null ? JSON.stringify(linha.agenda_liberacoes) : null]
+     linha.agenda_liberacoes != null ? JSON.stringify(linha.agenda_liberacoes) : null,
+     linha.prazo_liberacao_dias ?? null, linha.receita_diaria_media ?? null, linha.receita_atualizado_em ?? null]
   );
 }
 async function passoSaldoMp(loja, row) {
@@ -1912,10 +1925,73 @@ async function passoAReceberMp(loja, row) {
           const agendaLiberacoes = Object.keys(porData).sort().map(data => ({
             data, valor: Math.round(porData[data] * 100) / 100
           }));
+          /* prazo de liberacao + receita diaria media (27/08, pedido do Felipe - coluna "Projetado"
+             do Fluxo de Caixa) - usa o MESMO relatorio ja baixado acima, sem gastar chamada nova:
+             1) prazo de liberacao empirico da loja: MEDIANA de dias entre TRANSACTION_DATE e
+                MONEY_RELEASE_DATE das linhas SETTLEMENT/SETTLEMENT_SHIPPING.
+                CORRIGIDO 27/08 (2a volta, com prova real do Felipe): a 1a versao usava TODAS as
+                linhas, inclusive as ainda pendentes (IS_RELEASED=false) - e a MONEY_RELEASE_DATE
+                de uma linha pendente e' só uma estimativa/teto conservador (a maioria aparecia
+                cravada em D+28) que o proprio Mercado Pago revisa pra baixo assim que a entrega e'
+                confirmada. O Felipe provou isso com um pedido real: venda 14/08 23:02, entrega
+                19/08 14:54, dinheiro caiu 27/08 - exatamente D+8 apos a ENTREGA, batendo com a
+                regra oficial de reputacao boa (MercadoLider Gold, confirmado) + Full + produto
+                novo. Ou seja, so' as linhas JA LIBERADAS DE VERDADE (IS_RELEASED=true) refletem o
+                prazo real; as pendentes inflavam a mediana pra D+28 por engano. Tambem exclui
+                linhas cujo SOURCE_ID teve uma DISPUTE (essas liberam na hora por causa da disputa
+                resolvida, nao pelo prazo normal de entrega - contaminaria a mediana pro lado
+                curto demais).
+             2) receita liquida diaria media dos ultimos 15 dias (por TRANSACTION_DATE, mesma janela
+                usada no CMV de Previsao de Compra) - essa conta TODAS as linhas (pendente ou nao),
+                porque a venda ja aconteceu independente de quando libera. */
+          const idsComDisputa = new Set();
+          linhas.forEach(l => { if ((l.TRANSACTION_TYPE || '').toUpperCase() === 'DISPUTE' && l.SOURCE_ID) idsComDisputa.add(l.SOURCE_ID); });
+          const diasLag = [];
+          const porDiaReceita = {};
+          let dataMaisRecenteTx = null;
+          linhas.forEach(l => {
+            const tipo = (l.TRANSACTION_TYPE || '').toUpperCase();
+            if (tipo !== 'SETTLEMENT' && tipo !== 'SETTLEMENT_SHIPPING') return;
+            const dtTx = l.TRANSACTION_DATE ? new Date(l.TRANSACTION_DATE) : null;
+            if (!dtTx || isNaN(dtTx.getTime())) return;
+            if (!dataMaisRecenteTx || dtTx > dataMaisRecenteTx) dataMaisRecenteTx = dtTx;
+            const jaLiberada = (l.IS_RELEASED || '').toUpperCase() === 'TRUE';
+            const semDisputa = !l.SOURCE_ID || !idsComDisputa.has(l.SOURCE_ID);
+            if (jaLiberada && semDisputa) {
+              const dtRel = l.MONEY_RELEASE_DATE ? new Date(l.MONEY_RELEASE_DATE) : null;
+              if (dtRel && !isNaN(dtRel.getTime())) {
+                const lag = Math.round((dtRel.getTime() - dtTx.getTime()) / 864e5);
+                if (lag >= 0) diasLag.push(lag);
+              }
+            }
+            const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+            if (!isNaN(v)) {
+              const diaTx = dtTx.toISOString().slice(0, 10);
+              porDiaReceita[diaTx] = (porDiaReceita[diaTx] || 0) + v;
+            }
+          });
+          let prazoLiberacaoDias = null;
+          if (diasLag.length) {
+            const ordenado = diasLag.slice().sort((a, b) => a - b);
+            const meio = Math.floor(ordenado.length / 2);
+            prazoLiberacaoDias = ordenado.length % 2 ? ordenado[meio] : Math.round((ordenado[meio - 1] + ordenado[meio]) / 2);
+          }
+          let receitaDiariaMedia = null;
+          if (dataMaisRecenteTx) {
+            const limite = new Date(dataMaisRecenteTx.getTime() - 15 * 864e5);
+            const diasNoIntervalo = Object.keys(porDiaReceita).filter(d => new Date(d + 'T12:00:00Z') >= limite);
+            if (diasNoIntervalo.length) {
+              const total = diasNoIntervalo.reduce((s, d) => s + porDiaReceita[d], 0);
+              receitaDiariaMedia = Math.round((total / diasNoIntervalo.length) * 100) / 100;
+            }
+          }
           await upsertFinanceiroMp(loja, {
             a_receber: aReceber, a_receber_atualizado_em: new Date(),
             areceber_report_id: null, areceber_pedido_em: null,
-            agenda_liberacoes: agendaLiberacoes
+            agenda_liberacoes: agendaLiberacoes,
+            prazo_liberacao_dias: prazoLiberacaoDias,
+            receita_diaria_media: receitaDiariaMedia,
+            receita_atualizado_em: new Date()
           });
           return;
         }
@@ -1956,7 +2032,10 @@ app.post('/financeiro/mp/sincronizar', async (req, res) => {
       saldoAtualizadoEm: row ? row.saldo_atualizado_em : null,
       aReceber: row ? paraNumero(row.a_receber) : null,
       aReceberAtualizadoEm: row ? row.a_receber_atualizado_em : null,
-      agendaLiberacoes: row && row.agenda_liberacoes ? row.agenda_liberacoes : []
+      agendaLiberacoes: row && row.agenda_liberacoes ? row.agenda_liberacoes : [],
+      prazoLiberacaoDias: row ? paraNumero(row.prazo_liberacao_dias) : null,
+      receitaDiariaMedia: row ? paraNumero(row.receita_diaria_media) : null,
+      receitaAtualizadoEm: row ? row.receita_atualizado_em : null
     });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
