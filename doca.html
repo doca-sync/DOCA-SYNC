@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v312</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v313</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6338,17 +6338,29 @@ function comprasAVistaParaProjecao(lojas){
   return (state.notasFiscais||[]).filter(n=>n.contaPagante&&lojas.includes(n.contaPagante)&&Number(n.valorTotal)>0);
 }
 /* Calibra saldo/a-receber ENTRE sincronizações reais usando a própria agenda de liberações que o
-   Doca já tem salva: qualquer liberação agendada pra hoje ou pra uma data que já passou (e a
-   sincronização periódica - a cada 20min - ainda não pegou) é somada ao saldo e tirada do "a
-   receber" na hora de EXIBIR. Pedido do Felipe 24/08: "conforme for acontecendo os lançamentos
-   vc vai fazendo a soma ou a subtração automaticamente". Não mexe no state salvo (state.financeiro)
-   - é só conta derivada pra mostrar; quando a sincronização real chegar e sobrescrever tudo, volta
-   a bater sozinho, sem risco de somar duas vezes. */
+   Doca já tem salva: qualquer liberação agendada DEPOIS da data do último sync real (mpAtualizadoEm)
+   e até hoje - ou seja, o que aconteceu no "buraco" entre a última sincronização e agora, que a
+   sincronização periódica ainda não pegou - é somada ao saldo e tirada do "a receber" na hora de
+   EXIBIR. Pedido do Felipe 24/08: "conforme for acontecendo os lançamentos vc vai fazendo a soma
+   ou a subtração automaticamente". Não mexe no state salvo (state.financeiro) - é só conta derivada
+   pra mostrar; quando a sincronização real chegar e sobrescrever tudo, volta a bater sozinho, sem
+   risco de somar duas vezes.
+   CORRIGIDO 27/08 (Felipe achou um caso real errado - TorvStore mostrando R$31.066,12 quando o
+   saldo real no app do Mercado Pago era R$26.364,10): antes considerava "ainda não pega pela
+   sincronização" QUALQUER liberação com data <= hoje, mesmo se o último sync real já tivesse
+   acontecido DEPOIS dessa liberação (e portanto já refletisse ela no saldo sincronizado) - dado
+   real confirmado: sync de hoje (27/08) às 11h14 trouxe saldo_disponivel=24.657,51, mas a agenda
+   tinha liberação de 26/08 (3.147,02) E de 27/08 (3.261,59), ambas já tinham caído ANTES desse
+   sync e portanto já estavam dentro dos 24.657,51 - a conta antiga somava elas de novo em cima,
+   dobrando: 24.657,51+3.147,02+3.261,59=31.066,12, batendo exatamente com o valor errado visto.
+   Agora só soma liberação com data ESTRITAMENTE DEPOIS da data do último sync (não só "<=hoje"). */
 function financeiroCalibrado(loja){
   const f=finLoja(loja);
   const hojeStr=hoje();
   const agenda=f.agendaLiberacoes||[];
-  const jaDeviaTerCaido=agenda.filter(x=>x.data<=hojeStr).reduce((s,x)=>s+(Number(x.valor)||0),0);
+  let dataUltimoSync=null;
+  if(f.mpAtualizadoEm){ const d=new Date(f.mpAtualizadoEm); dataUltimoSync=_dataISO(d.getFullYear(),d.getMonth(),d.getDate()); }
+  const jaDeviaTerCaido=agenda.filter(x=>x.data<=hojeStr&&(!dataUltimoSync||x.data>dataUltimoSync)).reduce((s,x)=>s+(Number(x.valor)||0),0);
   return {
     mercadoPago:(f.mercadoPago||0)+jaDeviaTerCaido,
     aReceber:Math.max(0,(f.aReceber||0)-jaDeviaTerCaido),
