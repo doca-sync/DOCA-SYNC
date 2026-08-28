@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v329</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v330</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6489,6 +6489,16 @@ function proximasSegundasDeCompra(loja,dias){
    usar a demanda bruta de 15 dias (i.v15) sem desconto - é a mesma lógica de regime permanente: se
    o ciclo anterior foi comprado certo, por essa altura o estoque já deve estar baixo de novo,
    então uma "demanda de 1 ciclo" é a melhor estimativa disponível sem simular tudo.
+   CORRIGIDO 27/08 (4ª volta, Felipe: "tenho 1193 de SPRAY em estoque, duraria uns 230 dias, e
+   ainda assim apareceu pra comprar"). fullCalc(i).qtd só desconta o estoque que já está NO FULL
+   (aptas + em transferência + próximos programados) - faz sentido pra aba FULL, que pergunta
+   "quanto preciso ENVIAR pro Full" (o estoque Local é justamente de onde sai esse envio, não
+   substitui ele). Mas aqui a pergunta é outra - "preciso COMPRAR mais material?" - e pra essa
+   pergunta o estoque Local TAMBÉM conta (é material que já foi comprado e só está esperando ser
+   enviado, comprar de novo por cima seria dobrar). Por isso o cálculo do ciclo imediato agora
+   desconta local+Full juntos: pega a demanda até o próximo envio + cobertura alvo (k.dem) menos o
+   estoque do Full que vai sobrar até lá (k.proj) menos o estoque Local inteiro - só o que sobrar
+   disso é que precisa ser comprado de verdade.
    Devolve total E o detalhe por SKU (pedido do Felipe 27/08, pra poder mostrar de onde veio a conta
    no hover/clique do Fluxo de Caixa, em vez de só o número final). */
 function previsaoCompraEstimada(loja,imediato){
@@ -6498,7 +6508,14 @@ function previsaoCompraEstimada(loja,imediato){
     const p=fullProduto(i);
     if(!p) return;
     const un=Number(p.unidPorCaixa)||0;
-    const unidades=imediato?(fullCalc(i).qtd||0):(i.v15||0);
+    let unidades;
+    if(imediato){
+      const k=fullCalc(i);
+      const local=Number(p.qtd&&p.qtd.local)||0;
+      unidades=Math.max(0,(k.dem-k.proj)-local);
+    }else{
+      unidades=i.v15||0;
+    }
     if(unidades<=0) return;
     const qtd=un>0?Math.ceil(unidades/un)*un:unidades;
     const custo=fullCusto(i);
@@ -6984,7 +7001,7 @@ function renderFluxoCaixa(){
         ${proj.previsoesCompra.map(pc=>{
           const linhasA=pc.itensA.map(it=>`<span class="ln"><span>${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
           const linhasR=pc.itensRestante.map(it=>`<span class="ln"><span>${it.curva?`[${it.curva}] `:''}${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
-          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':pc.imediato?'sugestão de envio do FULL (demanda até o envio − estoque atual), arredondado por caixa':'demanda de 1 ciclo (CMV dos últimos 15 dias), sem desconto de estoque — ciclo futuro demais pra saber o estoque com precisão'}</b></span>`;
+          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':pc.imediato?'demanda até o envio + cobertura − estoque Local − estoque Full, arredondado por caixa':'demanda de 1 ciclo (CMV dos últimos 15 dias), sem desconto de estoque — ciclo futuro demais pra saber o estoque com precisão'}</b></span>`;
           return `<tr><td>${fmtData(pc.data)}</td><td>${esc(pc.loja)}</td>
           <td class="num">${pc.valorA>0?`<span class="det">${fmtMoney(pc.valorA)}${pc.real?'':' <small class="muted">(estimado)</small>'}<span class="i">i</span><span class="pop">${calc}${linhasA}<span class="ln tot"><span>Total Curva A</span><b>${fmtMoney(pc.valorA)}</b></span></span></span>`:'<span class="muted">—</span>'}</td>
           <td class="num">${pc.valorRestante>0?`<span class="det">${fmtMoney(pc.valorRestante)}${pc.real?'':' <small class="muted">(estimado)</small>'}${pc.dataRestante&&pc.dataRestante!==pc.data?` <span class="${pc.alertaColeta?'pend':'muted'}">→ ${fmtData(pc.dataRestante)}</span>`:''}${!pc.dataRestante?' <span class="pend">sem data na janela</span>':''}<span class="i">i</span><span class="pop">${calc}${linhasR}<span class="ln tot"><span>Total restante</span><b>${fmtMoney(pc.valorRestante)}</b></span>${pc.dataRestante&&pc.dataRestante!==pc.data?`<span class="ln"><span>Empurrado pra</span><b>${fmtData(pc.dataRestante)}</b></span>`:''}</span></span>`:'<span class="muted">—</span>'}</td>
