@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v338</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v339</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2486,6 +2486,29 @@ function ajustarGrupoKitEnvio(envioId,kitItemId,novoTotal){
   if(novoTotal>0) alocarNoEnvio(e,p,novoTotal);
   persist();
   return {ok:true,dif:novoTotal-totalAntes};
+}
+/* move um KIT inteiro (guarda-chuva + todos os componentes explodidos) de um envio pra outro já
+   programado da mesma loja (pedido do Felipe 28/08: "não está aparecendo o botão de mover no kit,
+   caso eu queira antecipar pra outro FULL"). Igual moverItemEnvio, NÃO mexe em reserva/compra
+   (ficariam idênticas) - só transfere a posse das linhas do grupo pro envio de destino, mantendo
+   os vínculos kitDeItemId intactos. Kit move sempre INTEIRO - mover só uma parte mudaria a
+   explosão de cada componente (estoque/coletar/comprar de cada um), o que já se provou seguro
+   só refazendo do zero (ver ajustarGrupoKitEnvio); se precisar dividir, ajuste a quantidade num
+   envio e adicione o kit de novo no outro. */
+function moverGrupoKitEnvio(envioIdOrigem,kitItemId,envioIdDestino){
+  const eo=envioById(envioIdOrigem); if(!eo) return {ok:false,msg:'Envio de origem não encontrado.'};
+  const ed=envioById(envioIdDestino); if(!ed) return {ok:false,msg:'Envio de destino não encontrado.'};
+  if(envioIdOrigem===envioIdDestino) return {ok:false,msg:'Já está neste envio.'};
+  const grupo=itensDoGrupoKit(eo,kitItemId);
+  const kit=grupo.find(i=>i.id===kitItemId); if(!kit) return {ok:false,msg:'Kit não encontrado.'};
+  const p=prodById(kit.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  if(ed.loja!==p.loja) return {ok:false,msg:'O envio de destino é de outra loja.'};
+  snapshot('kit '+p.sku+' movido do envio '+eo.nome+' pro '+ed.nome);
+  const idsGrupo=new Set(grupo.map(i=>i.id));
+  eo.itens=eo.itens.filter(i=>!idsGrupo.has(i.id));
+  grupo.forEach(i=>ed.itens.push(i));
+  persist();
+  return {ok:true,sku:p.sku,qtd:kit.solicitado||0,destinoNome:ed.nome};
 }
 function removerItemEnvio(envioId,itemId){
   const e=envioById(envioId); if(!e) return;
@@ -9464,7 +9487,8 @@ function renderEnvio(){
               title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
             <td class="muted" title="Kit não vende como anúncio próprio no Full — veja a projeção de cada componente em detalhar">—</td>
             <td class="muted">—</td>
-            <td><button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
+            <td><button class="btn sm" data-movkit="${e.id}|${i.id}" title="Mover este kit inteiro (com todos os componentes) pra outro envio programado desta loja">↦ Mover</button>
+              <button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
             ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return '';
               const pj=projecaoEnvioItem(pg,g.solicitado);
               const dispG=disponivel(produtoEfetivo(pg));
@@ -9553,6 +9577,28 @@ function renderEnvio(){
     const id=b.dataset.envkitdet;
     if(envioKitAberto.has(id)) envioKitAberto.delete(id); else envioKitAberto.add(id);
     renderEnvio();
+  });
+  el.querySelectorAll('[data-movkit]').forEach(b=>b.onclick=()=>{
+    const [eid,iid]=b.dataset.movkit.split('|');
+    const e=envioById(eid); if(!e) return;
+    const it=e.itens.find(i=>i.id===iid); if(!it) return;
+    const p=prodById(it.produtoId); if(!p) return;
+    const destinos=state.envios.filter(x=>x.id!==eid&&x.loja===p.loja);
+    if(!destinos.length){ toast('Não há outro envio programado nesta loja pra mover.'); return; }
+    const body=openModal();
+    body.innerHTML=`<h3>↦ Mover kit ${esc(p.sku)}</h3>
+      <p class="hint" style="margin:0 0 12px">${fmtInt(it.solicitado)} un. do kit (com todos os componentes) saem do envio "${esc(e.nome)}" — a reserva e a compra de cada componente acompanham, sem refazer nada. O kit move sempre inteiro; pra dividir, ajuste a quantidade aqui e adicione o kit de novo no outro envio.</p>
+      <label>Envio de destino<select id="mvKitDestino">${destinos.map(d=>`<option value="${d.id}">${esc(d.nome)} · ${fmtData(d.data)}</option>`).join('')}</select></label>
+      <div class="modal-actions"><button class="btn" id="mvKitCanc">Cancelar</button><button class="btn acc" id="mvKitOk">Mover</button></div>`;
+    document.getElementById('mvKitCanc').onclick=closeModal;
+    document.getElementById('mvKitOk').onclick=()=>{
+      const destino=document.getElementById('mvKitDestino').value;
+      const r=moverGrupoKitEnvio(eid,iid,destino);
+      closeModal();
+      if(!r.ok){ alert(r.msg); return; }
+      toast(`Kit ${r.sku} (${fmtInt(r.qtd)} un.) movido pro envio "${r.destinoNome}".`);
+      renderEnvio();
+    };
   });
   el.querySelectorAll('[data-addsku]').forEach(b=>b.onclick=()=>openAddSkuEnvioModal(b.dataset.addsku));
   el.querySelectorAll('[data-editenvio]').forEach(b=>b.onclick=()=>openEnvioModal(b.dataset.editenvio));
