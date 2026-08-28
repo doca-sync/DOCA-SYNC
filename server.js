@@ -1860,9 +1860,25 @@ async function passoSaldoMp(loja, row) {
         const ultima = comData.length ? comData[comData.length - 1] : null;
         const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
         if (!isNaN(saldo)) {
+          /* ACHADO 27/08 (pedido do Felipe: saldo mostrado no Doca nao batia com o saldo real do
+             app do Mercado Pago). Antes gravava saldo_atualizado_em como new Date() (o momento em
+             que O NOSSO SERVIDOR processou o relatorio) - isso MENTE sobre o quao "fresco" o saldo
+             e', porque o release_report e' um relatorio em LOTE que o Mercado Pago gera de tempos
+             em tempos (pra TorvStore, historicamente a cada 10-15h, aceito ate' 20h de idade pela
+             JANELA_FRESCOR_MS acima) - o saldo em si e' de QUANDO O RELATORIO FOI MONTADO, nao de
+             quando o Doca o leu. Ex. real: relatorio criado as 19h49 (BRT), Doca processou as
+             21h27 - o rotulo antigo dizia "atualizado as 21h27", enganando por 1h38 (e podendo ser
+             bem mais, ate' a idade maxima aceita). Agora usa a DATA DA ULTIMA LINHA do proprio
+             relatorio (a transacao mais recente que compoe esse saldo) - se nao tiver, cai pra
+             date_created do relatorio. Nao existe endpoint de saldo "ao vivo" no Mercado Pago
+             (testado /v1/account/balance - 404); o release_report (BALANCE_AMOUNT) e' o mesmo
+             caminho oficial da documentacao "Relatorio de Liberacoes" que o Felipe mandou - so' que
+             ele e' inerentemente um snapshot em lote, nunca vai ser "ao vivo" de verdade. */
+          const dataUltimaLinha = ultima.DATE ? new Date(ultima.DATE) : null;
+          const asOf = (dataUltimaLinha && !isNaN(dataUltimaLinha.getTime())) ? dataUltimaLinha : new Date(maisRecente.date_created);
           await upsertFinanceiroMp(loja, {
             saldo_disponivel: saldo,
-            saldo_atualizado_em: new Date(),
+            saldo_atualizado_em: asOf,
             saldo_report_id: null, saldo_pedido_em: null
           });
           return;

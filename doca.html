@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v322</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v326</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3103,24 +3103,46 @@ async function sincronizarImpostoDespesaMes(loja){
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
   const aliquota=finLoja(loja).aliquotaImposto||0;
   if(!aliquota) return; // sem alíquota configurada ainda - não cria despesa de R$0 à toa
-  const refMes=mesAnteriorStr();
-  const de=`${refMes}-01`;
-  const [anoRef,mmRef]=refMes.split('-').map(Number);
-  const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
-  const r=await fetch(`${base}/financas/faturamento-mes?loja=${encodeURIComponent(loja)}&de=${de}&ate=${ate}`);
-  let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
-  if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o faturamento do mês anterior (status '+r.status+').'));
-  const faturamentoBase=j.faturamento||0;
-  const valor=Math.round(faturamentoBase*(aliquota/100)*100)/100;
-  const vencimento=`${mesAtualStr()}-20`;
-  const arr=despesasArr();
-  let d=arr.find(x=>x.origem==='imposto'&&x.loja===loja&&x.impostoRefMes===refMes);
-  if(d){
-    d.valor=valor; d.dataPagamento=vencimento; d.impostoFaturamentoBase=faturamentoBase; d.impostoAliquota=aliquota;
-  }else{
-    arr.push({id:gerarId('desp'),descricao:`Imposto — ${loja} (base ${mesLabel(refMes)})`,valor,dataPagamento:vencimento,
-      pago:false,recorrente:true,loja,origem:'imposto',faturaKey:null,origemRecorrenciaId:null,
-      impostoRefMes:refMes,impostoFaturamentoBase:faturamentoBase,impostoAliquota:aliquota,criadoEm:Date.now()});
+  /* CORRIGIDO 28/08 (Felipe: "no fluxo de caixa você não está considerando o imposto") - antes só
+     criava a despesa do CICLO ATUAL (vencimento no dia 20 deste mês), então o Fluxo de Caixa ficava
+     "cego" pro imposto do PRÓXIMO mês até alguém abrir o Doca já dentro daquele mês (só aí o ciclo
+     "nascia" como despesa de verdade). Agora roda pra 2 ciclos: o atual (base no faturamento do mês
+     passado, já fechado) e o seguinte (base no faturamento do mês CORRENTE, ainda em andamento -
+     atualiza sozinho a cada sync, foi ficando mais preciso conforme o mês fecha, igual a "reserva
+     recomendada" do relatório DRE+DFC). Cada ciclo casa por loja+impostoRefMes (upsert, não
+     duplica). Se o ciclo seguinte falhar (ex: mês corrente sem venda ainda), não trava o app - só o
+     ciclo atual precisa funcionar de verdade. */
+  let mesVencimento=mesAtualStr();
+  for(let ciclo=0;ciclo<2;ciclo++){
+    const refMes=mesAnteriorStr(mesVencimento);
+    const de=`${refMes}-01`;
+    const [anoRef,mmRef]=refMes.split('-').map(Number);
+    const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
+    try{
+      const r=await fetch(`${base}/financas/faturamento-mes?loja=${encodeURIComponent(loja)}&de=${de}&ate=${ate}`);
+      let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
+      if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar o faturamento do mês '+refMes+' (status '+r.status+').'));
+      const faturamentoBase=j.faturamento||0;
+      if(faturamentoBase>0){
+        const valor=Math.round(faturamentoBase*(aliquota/100)*100)/100;
+        const vencimento=`${mesVencimento}-20`;
+        const arr=despesasArr();
+        let d=arr.find(x=>x.origem==='imposto'&&x.loja===loja&&x.impostoRefMes===refMes);
+        if(d){
+          d.valor=valor; d.dataPagamento=vencimento; d.impostoFaturamentoBase=faturamentoBase; d.impostoAliquota=aliquota;
+        }else{
+          arr.push({id:gerarId('desp'),descricao:`Imposto — ${loja} (base ${mesLabel(refMes)})`,valor,dataPagamento:vencimento,
+            pago:false,recorrente:true,loja,origem:'imposto',faturaKey:null,origemRecorrenciaId:null,
+            impostoRefMes:refMes,impostoFaturamentoBase:faturamentoBase,impostoAliquota:aliquota,criadoEm:Date.now()});
+        }
+      }
+    }catch(e){
+      if(ciclo===0) throw e;
+      console.error('[imposto] falha ao projetar o ciclo seguinte:',loja,e.message);
+    }
+    const [a,m]=mesVencimento.split('-').map(Number);
+    const dNext=new Date(Date.UTC(a,m,1));
+    mesVencimento=`${dNext.getUTCFullYear()}-${String(dNext.getUTCMonth()+1).padStart(2,'0')}`;
   }
   persist();
 }
@@ -3367,7 +3389,8 @@ function renderDashboard(){
               <span class="det"><span class="i">i</span><span class="pop">
                 <span class="ln"><span>Origem</span><b>automático</b></span>
                 <span class="ln"><span>Atualizado</span><b>${t.fin.mpAtualizadoEm?esc(fLidoTxt(new Date(t.fin.mpAtualizadoEm).getTime())):'aguardando 1ª leitura'}</b></span>
-                <span class="obs">Saldo disponível puxado direto do Mercado Pago.</span></span></span></span></div>`
+                ${financeiroCalibrado(t.loja).aindaHoje>0.01?`<span class="ln"><span>Ainda a cair hoje</span><b>${fmtMoney(financeiroCalibrado(t.loja).aindaHoje)}</b></span><span class="ln"><span>Estimativa fim do dia</span><b>${fmtMoney(financeiroCalibrado(t.loja).saldoEstimadoFimDia)}</b></span>`:''}
+                <span class="obs">Saldo disponível puxado direto do Mercado Pago. Não é ao vivo — o Mercado Pago gera esse relatório de tempos em tempos, não na hora.</span></span></span></span></div>`
             :`<div class="valor-manual-row"><span class="muted">Mercado Pago:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-mpago="${esc(t.loja)}" value="${t.fin.mercadoPago?String(t.fin.mercadoPago).replace('.',','):''}"></div>`}
           ${t.fin.mpAutomatico?`<div><span class="muted">A receber:</span> <span class="valor-info"><b>${fmtMoney(t.fin.aReceber||0)}</b>
               <span class="det"><span class="i">i</span><span class="pop">
@@ -6384,13 +6407,26 @@ function financeiroCalibrado(loja){
   const agenda=f.agendaLiberacoes||[];
   let dataUltimoSync=null;
   if(f.mpAtualizadoEm){ const d=new Date(f.mpAtualizadoEm); dataUltimoSync=_dataISO(d.getFullYear(),d.getMonth(),d.getDate()); }
-  const jaDeviaTerCaido=agenda.filter(x=>x.data<=hojeStr&&(!dataUltimoSync||x.data>dataUltimoSync)).reduce((s,x)=>s+(Number(x.valor)||0),0);
+  /* CORRIGIDO 27/08 (2ª volta, ideia do Felipe: "saldo = última atualização + valor liberado hoje -
+     o que já caiu"). O filtro antigo usava data<=hojeStr, o que tinha um buraco: quando o último
+     sync tinha acontecido HOJE (dataUltimoSync===hojeStr), o item da agenda datado de hoje não
+     batia nem "data<=hojeStr && data>dataUltimoSync" (falha porque hoje não é > hoje) nem entrava
+     na agenda futura da tabela (que só pega data>hojeStr) - esse valor simplesmente sumia do saldo
+     mostrado até o próximo sync. Agora separado em 2 buckets sem ambiguidade: jaDeviaTerCaido só
+     conta dias ESTRITAMENTE ANTES de hoje (isso é sempre seguro somar ao saldo "de verdade", já
+     devia ter caído há dias) e aindaHoje conta só o de hoje (ainda incerto quando exatamente cai,
+     por isso fica de fora do saldo "garantido" mercadoPago e vira uma ESTIMATIVA separada de fim de
+     dia - dá pra ver os dois: quanto está confirmado agora e quanto deve entrar ainda hoje). */
+  const jaDeviaTerCaido=agenda.filter(x=>x.data<hojeStr&&(!dataUltimoSync||x.data>dataUltimoSync)).reduce((s,x)=>s+(Number(x.valor)||0),0);
+  const aindaHoje=agenda.filter(x=>x.data===hojeStr).reduce((s,x)=>s+(Number(x.valor)||0),0);
   return {
     mercadoPago:(f.mercadoPago||0)+jaDeviaTerCaido,
-    aReceber:Math.max(0,(f.aReceber||0)-jaDeviaTerCaido),
+    aReceber:Math.max(0,(f.aReceber||0)-jaDeviaTerCaido-aindaHoje),
     agendaLiberacoes:agenda.filter(x=>x.data>hojeStr),
     mpAtualizadoEm:f.mpAtualizadoEm,
-    calibrado:jaDeviaTerCaido
+    calibrado:jaDeviaTerCaido,
+    aindaHoje,
+    saldoEstimadoFimDia:(f.mercadoPago||0)+jaDeviaTerCaido+aindaHoje
   };
 }
 /* achado 27/08 (pedido do Felipe): "geralmente os envios FULL são no meio do mês e no final (15 e
@@ -6856,6 +6892,20 @@ function renderFluxoCaixa(){
   const diaPiorProj=proj.denseProjetado.find(x=>x.saldo===piorSaldoProj);
   const pendentes=comprasPendentesComCaixa(lojasAlvo[0],proj.dense);
   const analise=analisarFluxoCaixa(proj);
+  /* rótulo de "atualizado às" pro saldo do MP (pedido do Felipe 27/08 - saldo mostrado não batia
+     com o saldo real do app do Mercado Pago). O Mercado Pago não tem endpoint de saldo "ao vivo"
+     (testado, não existe) - o que o Doca usa (relatório de Liberações) é um relatório em LOTE que
+     o próprio Mercado Pago gera de tempos em tempos (não é instantâneo), então sempre vai ter uma
+     defasagem em relação ao app. Isso aqui não elimina a defasagem, só deixa claro o quão "fresco"
+     é o número (usa a loja com sync mais antigo entre as exibidas, pra ser conservador). */
+  const datasSyncMp=lojasAlvo.map(l=>finLoja(l).mpAtualizadoEm).filter(Boolean).map(t=>new Date(t).getTime());
+  const syncMpMaisAntigo=datasSyncMp.length?Math.min(...datasSyncMp):null;
+  /* estimativa de fim de dia (pedido do Felipe 27/08): soma o "ainda a cair hoje" de cada loja em
+     cima do saldo garantido - é o saldo que o Mercado Pago deve terminar o dia mostrando, SE tudo
+     que já está agendado pra hoje realmente cair (não conta venda nova que ainda vai acontecer,
+     só o que já está pendente e programado). Fica separado do SALDO DISPONÍVEL HOJE de propósito
+     (esse continua só o garantido/confirmado) - dá pra ver os dois lado a lado. */
+  const aindaHojeTotal=lojasAlvo.reduce((s,l)=>s+financeiroCalibrado(l).aindaHoje,0);
   /* fatura ML ainda em período aberto (sem vencimento real) fica de fora da projeção - avisa aqui
      pra não parecer que ela "sumiu". Pedido do Felipe 24/08. */
   const faturaEmAberto=despesasArr().find(d=>d.origem==='ml_fatura'&&!d.pago&&d.semVencimentoReal&&lojasAlvo.includes(d.loja));
@@ -6868,8 +6918,9 @@ function renderFluxoCaixa(){
       <div class="form-grid" style="grid-template-columns:1fr">
         <label>Ver<select id="fcAlvo">${opts.map(o=>`<option value="${o.valor}" ${o.valor===fluxoCaixaAlvo?'selected':''}>${esc(o.label)}</option>`).join('')}</select></label>
       </div>
-      <div class="form-grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
-        <div><span class="muted" style="font-size:11px">SALDO DISPONÍVEL HOJE</span><br><b style="font-size:18px">${fmtMoney(proj.saldoInicial)}</b></div>
+      <div class="form-grid" style="grid-template-columns:${aindaHojeTotal>0.01?'1fr 1fr 1fr':'1fr 1fr'};margin-top:10px">
+        <div><span class="muted" style="font-size:11px">SALDO DISPONÍVEL HOJE</span><br><b style="font-size:18px">${fmtMoney(proj.saldoInicial)}</b>${syncMpMaisAntigo?`<br><span class="muted" style="font-size:10px">saldo MP ${esc(fLidoTxt(syncMpMaisAntigo))} — não é ao vivo, o Mercado Pago só gera esse relatório de tempos em tempos</span>`:''}</div>
+        ${aindaHojeTotal>0.01?`<div><span class="muted" style="font-size:11px">ESTIMATIVA — FIM DO DIA</span><br><b style="font-size:18px">${fmtMoney(proj.saldoInicial+aindaHojeTotal)}</b><br><span class="muted" style="font-size:10px">+${fmtMoney(aindaHojeTotal)} já agendado pra liberar ainda hoje (se cair até virar amanhã)</span></div>`:''}
         <div><span class="muted" style="font-size:11px">GARANTIDO — MÍNIMO EM 60 DIAS</span><br><b style="font-size:18px" class="${piorSaldo<0?'pend':'okv'}">${fmtMoney(piorSaldo)}</b>${piorSaldo<0&&diaPior?` <span class="pend" style="font-size:12px">— fica negativo em ${fmtData(diaPior.data)}</span>`:''}</div>
       </div>
       ${eventos.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
@@ -7137,13 +7188,13 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       </div>
       <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição — mês de ${esc(r.mesDe)} a ${esc(r.mesAte)} (${r.diasMes} dias): despesas <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML <b>${fmtMoney(r.faturaMlPeriodo)}</b> = <b>${fmtMoney(r.custosPeriodo+r.faturaMlPeriodo)}</b> (valor cheio, usado na "custo total"). Rateado pros ${r.diasSel} dia(s) do período selecionado: <b>${fmtMoney(r.custosRateado+r.faturaMlRateada)}</b> (usado na "rateada").</p>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
-      ${r.produtos.length?`<table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
+      ${r.produtos.length?`<div class="tbl-scroll"><table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
         ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
-      </tbody></table>`:`<p class="vazio">Nenhuma venda no período.</p>`}
+      </tbody></table></div>`:`<p class="vazio">Nenhuma venda no período.</p>`}
       ${r.porSocio?`<h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sócios${r.fonte?` · ${esc(r.fonte)}`:''}</h3>
-        <table><thead><tr><th>Sócio</th><th class="n">Cota</th><th class="n">Retirou</th><th class="n">Reembolso</th></tr></thead><tbody>
+        <div class="tbl-scroll"><table><thead><tr><th>Sócio</th><th class="n">Cota</th><th class="n">Retirou</th><th class="n">Reembolso</th></tr></thead><tbody>
           ${r.porSocio.map(p=>`<tr><td>${NOME_SOCIO[p.socio]} (${p.pct.toFixed(p.pct%1?2:0)}%)</td><td class="n">${fmtMoney(p.cota)}</td><td class="n">${fmtMoney(p.retirou)}</td><td class="n">${fmtMoney(p.reembolso)}</td></tr>`).join('')}
-        </tbody></table>
+        </tbody></table></div>
         <p class="vazio" style="margin-top:6px">Ajuste de pagar/devolver é consolidado no total por sócio, no fim do relatório (soma todas as lojas).</p>`
       :`<p class="vazio" style="margin-top:10px">Loja de reserva/reinvestimento — sem retirada de sócio.</p>`}
     </div>`;
@@ -7291,14 +7342,17 @@ async function calcularRelatorioDreDfc(){
         sugestoes=porSocio.filter(p=>p.ajuste>0.01).sort((a,b)=>b.pct-a.pct).map(p=>{
           const check=primeiroDiaComCaixaEmDense(denseAjustado,p.ajuste);
           if(check) denseAjustado=denseAjustado.map(x=>x.data>=check.data?{...x,saldo:x.saldo-p.ajuste}:x);
-          return {socio:p.socio,valor:p.ajuste,dataSegura:check?check.data:null};
+          // guarda o detalhe do cálculo junto (28/08, pedido do Felipe: "me explique como chegou na
+          // sugestão de retirada") - assim o próprio relatório mostra de onde veio o número, sem
+          // precisar perguntar. Fórmula: ajuste = cota (base do mês × % do sócio) − retirou + reembolso.
+          return {socio:p.socio,pct:p.pct,cota:p.cota,retirou:p.retirou,reembolso:p.reembolso,valor:p.ajuste,dataSegura:check?check.data:null};
         });
       }
       // análise: reaproveita o mesmo "fôlego" do Fluxo de Caixa (Garantido, 60 dias)
       const projLoja60=projecaoCaixaBase([loja],60);
       const piorSaldoLoja=Math.min(...projLoja60.dense.map(x=>x.saldo));
       const diaPiorLoja=projLoja60.dense.find(x=>x.saldo===piorSaldoLoja);
-      resultados.push({loja,resumo,m,mAnt,resumoAnt,despesaImposto,entradasCaixa,periodoEntradas,despesasPagas,retiradasPeriodo,saidasCaixa,resultadoCaixa,prazoDias,porSocio,sugestoes,piorSaldoLoja,diaPiorLoja});
+      resultados.push({loja,resumo,m,mAnt,resumoAnt,despesaImposto,entradasCaixa,periodoEntradas,despesasPagas,retiradasPeriodo,saidasCaixa,resultadoCaixa,prazoDias,porSocio,baseSocios,sugestoes,piorSaldoLoja,diaPiorLoja});
       financasDreDfcProgresso={feito:i+1,total:STORES.length,etapa:`${loja} concluída`};
       renderFinancas();
       atualizarOverlayProgresso(((i+1)/STORES.length)*100);
@@ -7363,7 +7417,9 @@ function imprimirRelatorioDreDfc(resultados){
         ${metrica('Frete (vendedor)',fmtMoney(r.resumo.frete.vendedor),false,pctDe(r.resumo.frete.vendedor,r.resumo.faturamento))}
         ${metrica('Margem de Contribuição',fmtMoney(r.m.margem),r.m.margem<0,pctDe(r.m.margem,r.resumo.faturamento),r.mAnt?badge(r.m.margem,r.mAnt.margem,false):'')}
         ${metrica('Margem Líquida (rateada)',fmtMoney(r.m.margemLiquidaRateada),r.m.margemLiquidaRateada<0,pctDe(r.m.margemLiquidaRateada,r.resumo.faturamento),r.mAnt?badge(r.m.margemLiquidaRateada,r.mAnt.margemLiquidaRateada,false):'')}
+        ${metrica('Margem Líquida (custo total)',fmtMoney(r.m.margemLiquida),r.m.margemLiquida<0,pctDe(r.m.margemLiquida,r.resumo.faturamento),r.mAnt?badge(r.m.margemLiquida,r.mAnt.margemLiquida,false):'')}
       </div>
+      <p class="vazio">"Rateada" divide as despesas/fatura ML do mês pelos dias do período. "Custo total" desconta o mês INTEIRO de despesas de uma vez — é essa que serve de base pra cota de retirada dos sócios abaixo (por isso costuma ficar bem menor no meio do mês, antes do faturamento fechar).</p>
       ${!r.mAnt?`<p class="vazio">Não deu pra comparar com o período anterior (falha ao buscar).</p>`:''}
       <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Imposto</h3>
       <p class="vazio">Já registrado (mês vencido/a vencer): ${impostoStatus}. Acumulando agora, ainda não vencido — reserva recomendada pra esse período: <b style="color:var(--text)">${fmtMoney(r.m.impostoCalc)}</b> (vira despesa de imposto no dia 20 do mês seguinte).</p>
@@ -7383,9 +7439,10 @@ function imprimirRelatorioDreDfc(resultados){
       <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Análise</h3>
       ${analiseParagrafos.map(p=>`<p class="vazio" style="font-size:12.5px">${p}</p>`).join('')}
       <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sugestão de retirada</h3>
-      ${r.sugestoes?(r.sugestoes.length?`<table><thead><tr><th>Sócio</th><th class="n">Valor sugerido</th><th class="n">Data segura</th></tr></thead><tbody>
-          ${r.sugestoes.map(s=>`<tr><td>${NOME_SOCIO[s.socio]||s.socio}</td><td class="n">${fmtMoney(s.valor)}</td><td class="n">${s.dataSegura?fmtData(s.dataSegura):'sem data em 90 dias que caiba esse valor sem furar o caixa'}</td></tr>`).join('')}
-        </tbody></table>
+      ${r.sugestoes?(r.sugestoes.length?`<p class="vazio" style="margin:0 0 8px">Base do mês (Margem Líquida custo total): <b style="color:var(--text)">${fmtMoney(r.baseSocios)}</b>. Cota de cada sócio = base × % de participação. Valor sugerido = cota − o que já retirou este mês + reembolso que a empresa ainda deve a ele.</p>
+        <div class="tbl-scroll"><table><thead><tr><th>Sócio</th><th class="n">%</th><th class="n">Cota</th><th class="n">Já retirou</th><th class="n">Reembolso devido</th><th class="n">Valor sugerido</th><th class="n">Data segura</th></tr></thead><tbody>
+          ${r.sugestoes.map(s=>`<tr><td>${NOME_SOCIO[s.socio]||s.socio}</td><td class="n">${s.pct.toFixed(s.pct%1?2:0)}%</td><td class="n">${fmtMoney(s.cota)}</td><td class="n">${fmtMoney(s.retirou)}</td><td class="n">${fmtMoney(s.reembolso)}</td><td class="n"><b>${fmtMoney(s.valor)}</b></td><td class="n">${s.dataSegura?fmtData(s.dataSegura):'sem data em 90 dias que caiba esse valor sem furar o caixa'}</td></tr>`).join('')}
+        </tbody></table></div>
         <p class="vazio" style="margin-top:6px">Data é o primeiro dia em que o caixa garantido aguenta essa retirada SEM ficar negativo depois — já considera que os sócios acima na lista reservaram a fatia deles primeiro.</p>`
         :`<p class="vazio">Nenhum sócio com valor pendente a receber nesse fechamento (já retiraram o que tinham direito, ou ainda devem devolver).</p>`)
       :`<p class="vazio">Loja de reserva/reinvestimento — sem retirada de sócio.</p>`}
@@ -7413,10 +7470,10 @@ function imprimirRelatorioDreDfc(resultados){
     ${resultados.map(cardLojaDreDfc).join('')}
     <div class="tot-card">
       <h2>Comparativo — Todas as Lojas</h2>
-      <table><thead><tr><th>Loja</th><th class="n">Faturamento</th><th class="n">Margem Líquida</th><th class="n">Caixa do período</th><th class="n">Retirada sugerida</th></tr></thead><tbody>
+      <div class="tbl-scroll"><table><thead><tr><th>Loja</th><th class="n">Faturamento</th><th class="n">Margem Líquida</th><th class="n">Caixa do período</th><th class="n">Retirada sugerida</th></tr></thead><tbody>
         ${resultados.map(r=>`<tr><td>${esc(r.loja)}</td><td class="n">${fmtMoney(r.resumo.faturamento)}</td><td class="n">${fmtMoney(r.m.margemLiquidaRateada)}</td><td class="n">${r.resultadoCaixa!=null?fmtMoney(r.resultadoCaixa):'—'}</td><td class="n">${fmtMoney((r.sugestoes||[]).reduce((s,x)=>s+x.valor,0))}</td></tr>`).join('')}
         <tr style="font-weight:700"><td>Total</td><td class="n">${fmtMoney(totalFat)}</td><td class="n">${fmtMoney(totalMargemLiquida)}</td><td class="n">${fmtMoney(totalCaixa)}</td><td class="n">${fmtMoney(totalSugerido)}</td></tr>
-      </tbody></table>
+      </tbody></table></div>
     </div>
     ${relatorioShareBoxHtml()}
     <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
