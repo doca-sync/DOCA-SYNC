@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v336</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v337</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4139,10 +4139,10 @@ function renderProdutos(){
           <td class="num">${fi?(()=>{const tot=fk.full-(fi.aptas||0); return `<span class="det">${fmtInt(tot)}<span class="i">i</span><span class="pop">
             <span class="ln"><span>Em transferência</span><b>${fmtInt(fi.transf||0)}</b></span>
             ${fk.proximosProgramados?`<span class="ln"><span>Próximos programados</span><b>${fmtInt(fk.proximosProgramados)}</b></span>`:''}
-            ${fk.emProcessamento?`<span class="ln"><span>Em processamento</span><b>${fmtInt(fk.emProcessamento)}</b></span>`:''}
+            ${fk.emProcessamento?`<span class="ln"><span>Entrada pendente</span><b>${fmtInt(fk.emProcessamento)}</b></span>`:''}
             <span class="ln tot"><span>Total</span><b>${fmtInt(tot)}</b></span>
             ${fk.proximosProgramados?`<span class="obs">Próximos programados não entra no Valor estoque — já está contado em Reservado.</span>`:''}
-            ${fk.emProcessamento?`<span class="obs">Em processamento = confirmado como FULL, aguardando o Mercado Livre registrar o recebimento (some sozinho conforme aptas/transferência sobem, ou em até 5 dias).</span>`:''}</span></span>`;})():(p.mlTransferencia!=null?fmtInt(p.mlTransferencia||0):'<span class="muted">—</span>')}</td>
+            ${fk.emProcessamento?`<span class="obs">Entrada pendente = confirmado como FULL, aguardando o Mercado Livre registrar o recebimento (some sozinho conforme o log real de recebimento do ML aparece, ou em até 5 dias).</span>`:''}</span></span>`;})():(p.mlTransferencia!=null?fmtInt(p.mlTransferencia||0):'<span class="muted">—</span>')}</td>
           <td class="num" title="Estoque local e disponível: ${fmtMoney(valorEstoqueDetalhado(p).local)} · No FULL: ${fmtMoney(valorEstoqueDetalhado(p).full)}">${fmtMoney(valorEstoqueDetalhado(p).total)}</td>
           <td><button class="btn sm" data-manage="${p.id}">Gerenciar</button></td>
         </tr>`;}).join(''):`<tr><td colspan="13" class="empty">Nenhum SKU encontrado.</td></tr>`}</tbody>
@@ -10467,10 +10467,10 @@ function renderPrevisao(){
           <span class="ln"><span>Aptas para venda</span><b>${fmtInt(i.aptas)}</b></span>
           <span class="ln"><span>Em transferência</span><b>${fmtInt(i.transf||0)}</b></span>
           ${k.proximosProgramados?`<span class="ln"><span>Próximos programados</span><b>${fmtInt(k.proximosProgramados)}</b></span>`:''}
-          ${k.emProcessamento?`<span class="ln"><span>Em processamento</span><b>${fmtInt(k.emProcessamento)}</b></span>`:''}
+          ${k.emProcessamento?`<span class="ln"><span>Entrada pendente</span><b>${fmtInt(k.emProcessamento)}</b></span>`:''}
           <span class="ln tot"><span>Total</span><b>${fmtInt(k.full)}</b></span>
           ${k.proximosProgramados?`<span class="obs">Próximos programados conta na quantidade acima, mas não entra no valor em R$ da coluna Valor — o dinheiro deles já está contado no estoque Local (Reservado). Sai daqui quando você confirmar o envio como FULL, e volta a aparecer em "Aptas"/"Em transferência" assim que o Mercado Livre receber de verdade.</span>`:''}
-          ${k.emProcessamento?`<span class="obs">Em processamento = confirmado como FULL, aguardando o Mercado Livre registrar (some sozinho conforme Aptas+Em transferência sobem, ou em até 5 dias).</span>`:''}
+          ${k.emProcessamento?`<span class="obs">Entrada pendente = confirmado como FULL, aguardando o Mercado Livre registrar (some sozinho conforme o log real de recebimento do ML aparece, ou em até 5 dias).</span>`:''}
           <span class="obs">7d ${fmtInt(i.v7)} · 15d ${fmtInt(i.v15)} · 30d ${fmtInt(i.v30)} un. vendidas${i.produtoNome?'<br>'+esc(i.produtoNome):''}${i.codigo?'<br>Código ML: '+esc(i.codigo):''}</span></span></span></td>
         <td class="num"><span class="det">${k.media.toFixed(2)}${(()=>{const t=tendencia(i); return t?`<span class="tend ${t.sobe?'up':(t.cai?'dn':'eq')}">${t.sobe?'▲':(t.cai?'▼':'=')}</span>`:'';})()}<span class="i">i</span><span class="pop">
           <span class="ln"><span>7d: ${fmtInt(i.v7)} ÷ 7</span><b>${k.r7.toFixed(2)} × ${c.p7}</b></span>
