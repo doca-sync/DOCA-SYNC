@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v330</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v331</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3045,10 +3045,17 @@ function renderTarefas(){
 /* ---------- visão geral ---------- */
 function finLoja(loja){
   if(!state.financeiro) state.financeiro={};
-  if(!state.financeiro[loja]) state.financeiro[loja]={mercadoPago:0,aReceber:0,imposto:0,aliquotaImposto:0};
+  if(!state.financeiro[loja]) state.financeiro[loja]={mercadoPago:0,aReceber:0,imposto:0,aliquotaImposto:0,pctFaturaMl:9};
   else{
     if(typeof state.financeiro[loja].imposto!=='number') state.financeiro[loja].imposto=Number(state.financeiro[loja].imposto)||0;
     if(typeof state.financeiro[loja].aliquotaImposto!=='number') state.financeiro[loja].aliquotaImposto=Number(state.financeiro[loja].aliquotaImposto)||0;
+    /* % média de fatura ML sobre o faturamento (pedido do Felipe 27/08, pra projetar a fatura em
+       aberto e o imposto do ciclo seguinte em cima da receita PROJETADA, não só a parcial já
+       fechada). Fixo por enquanto (editável aqui, não calculado do histórico) porque o Felipe está
+       ativamente reduzindo Ads - a tendência é essa % cair com o tempo, e ele prefere ajustar na
+       mão conforme isso acontece em vez de uma média histórica que ficaria sempre desatualizada
+       pra trás. Default 9 (número que o Felipe já usa de cabeça hoje). */
+    if(typeof state.financeiro[loja].pctFaturaMl!=='number') state.financeiro[loja].pctFaturaMl=state.financeiro[loja].pctFaturaMl==null?9:(Number(state.financeiro[loja].pctFaturaMl)||0);
   }
   return state.financeiro[loja];
 }
@@ -3059,6 +3066,7 @@ function atualizarFinanceiro(loja,patch){
   if(patch.aReceber!==undefined){ f.aReceber=Math.max(0,parseMoeda(patch.aReceber)); }
   if(patch.imposto!==undefined){ f.imposto=Math.max(0,parseMoeda(patch.imposto)); }
   if(patch.aliquotaImposto!==undefined){ const v=Number(String(patch.aliquotaImposto).replace(',','.')); f.aliquotaImposto=isNaN(v)?0:Math.min(100,Math.max(0,v)); }
+  if(patch.pctFaturaMl!==undefined){ const v=Number(String(patch.pctFaturaMl).replace(',','.')); f.pctFaturaMl=isNaN(v)?0:Math.min(100,Math.max(0,v)); }
   persist();
 }
 /* soma das faturas do Mercado Livre ainda não pagas dessa loja (cadastradas em Finanças, origem
@@ -6544,6 +6552,25 @@ function previsaoCompraReal(loja){
   itens.sort((a,b)=>b.valor-a.valor);
   return {total,itens};
 }
+/* faturamento GROSS ainda por vir no mês corrente, pra projetar a fatura ML em aberto e o imposto
+   do próximo ciclo (pedido do Felipe 27/08: "dá pra projetar em cima do faturamento projetado, tipo
+   9% pra fatura ML"). Reaproveita o impostoFaturamentoBase que sincronizarImpostoDespesaMes já
+   calcula e persiste todo dia pro ciclo em aberto (dado real, vindo da API do Mercado Livre, não é
+   chute) - divide pelos dias já passados do mês pra achar a média diária, multiplica pelos dias que
+   faltam. Só funciona depois que essa despesa já sincronizou uma vez (senão devolve null e quem
+   chamar mantém o valor parcial sem projeção). */
+function faturamentoProjetadoRestanteMes(loja){
+  const mesAtual=mesAtualStr();
+  const dImp=despesasArr().find(d=>d.origem==='imposto'&&d.loja===loja&&d.impostoRefMes===mesAtual);
+  if(!dImp||!(dImp.impostoFaturamentoBase>0)) return null;
+  const hojeStr=hoje();
+  const diasElapsed=Math.max(1,diasEntre(`${mesAtual}-01`,hojeStr)+1);
+  const diasMes=diasNoMesDe(hojeStr);
+  const diasRestantes=Math.max(0,diasMes-diasElapsed);
+  if(diasRestantes<=0) return 0;
+  const mediaDiariaBruta=dImp.impostoFaturamentoBase/diasElapsed;
+  return mediaDiariaBruta*diasRestantes;
+}
 function projecaoCaixaBase(lojas,dias){
   const hojeStr=hoje();
   let saldoInicial=0;
@@ -6561,12 +6588,36 @@ function projecaoCaixaBase(lojas,dias){
      agendado pra HOJE já deveria ter caído de verdade). */
   lojas.forEach(loja=>{ const fc=financeiroCalibrado(loja); if(fc.aindaHoje>0.01) entradas[hojeStr]=(entradas[hojeStr]||0)+fc.aindaHoje; });
   const saidas={}; const saidasDetalhe={};
+  /* pra cada loja, quanto falta faturar no mês (dado real, ver faturamentoProjetadoRestanteMes) -
+     calculado 1x por loja aqui fora do loop de despesa, reaproveitado abaixo pra projetar a fatura
+     ML em aberto e o imposto do ciclo ainda aberto (pedido do Felipe 27/08). Só entra no Projetado
+     (saidasProjetadasExtra), nunca no Garantido (saidas) - o Garantido continua só com o valor
+     parcial real, sem estimativa. */
+  const saidasProjetadasExtra={};
+  const saidasDetalheProjetado={};
+  const faturamentoRestantePorLoja={};
+  lojas.forEach(loja=>{ faturamentoRestantePorLoja[loja]=faturamentoProjetadoRestanteMes(loja); });
   despesasPendentesParaProjecao(lojas).forEach(d=>{
     const estimado=d.origem==='ml_fatura'&&d.semVencimentoReal&&!!d.vencimentoEstimado;
     let data=estimado?d.vencimentoEstimado:(d.dataPagamento||hojeStr);
     if(data<hojeStr) data=hojeStr;
     saidas[data]=(saidas[data]||0)+(Number(d.valor)||0);
     (saidasDetalhe[data]=saidasDetalhe[data]||[]).push({descricao:(d.descricao||'Despesa')+(estimado?' (estimado, valor parcial até agora)':''),valor:Number(d.valor)||0});
+    const faturamentoRestante=faturamentoRestantePorLoja[d.loja];
+    if(faturamentoRestante>0){
+      let extra=0,rotuloExtra='';
+      if(estimado){
+        const pct=finLoja(d.loja).pctFaturaMl||0;
+        if(pct>0){ extra=faturamentoRestante*(pct/100); rotuloExtra=`+ projeção fatura ML (${pct}% do faturamento restante do mês)`; }
+      }else if(d.origem==='imposto'&&d.impostoRefMes===mesAtualStr()){
+        const aliq=finLoja(d.loja).aliquotaImposto||0;
+        if(aliq>0){ extra=faturamentoRestante*(aliq/100); rotuloExtra=`+ projeção imposto (${aliq}% do faturamento restante do mês)`; }
+      }
+      if(extra>0.01){
+        saidasProjetadasExtra[data]=(saidasProjetadasExtra[data]||0)+extra;
+        (saidasDetalheProjetado[data]=saidasDetalheProjetado[data]||[]).push({descricao:rotuloExtra+' — '+d.loja,valor:extra});
+      }
+    }
   });
   comprasAVistaParaProjecao(lojas).forEach(n=>{
     const data=n.dataCompra||hojeStr; if(data<hojeStr) return; /* já é história, o saldo sincronizado já reflete */
@@ -6649,9 +6700,9 @@ function projecaoCaixaBase(lojas,dias){
   for(let i=0;i<=dias;i++){
     const d=_somaDiasISO(hojeStr,i);
     const entrouProj=(entradas[d]||0)+(entradasProjetadas[d]||0);
-    const saiuProj=saidas[d]||0;
+    const saiuProj=(saidas[d]||0)+(saidasProjetadasExtra[d]||0);
     saldoBase=saldoBase+entrouProj-saiuProj;
-    denseBase.push({data:d,entrou:entrouProj,saiu:saiuProj,saldo:saldoBase,receitaEstimada:entradasProjetadas[d]||0,compraEstimada:0});
+    denseBase.push({data:d,entrou:entrouProj,saiu:saiuProj,saldo:saldoBase,receitaEstimada:entradasProjetadas[d]||0,compraEstimada:0,saidaEstimadaExtra:saidasProjetadasExtra[d]||0,saidaEstimadaDetalhe:saidasDetalheProjetado[d]||[]});
   }
   const denseWork=denseBase.map(x=>({...x}));
   const aplicarSaidaWorking=(data,valor)=>{
@@ -6922,7 +6973,7 @@ function renderFluxoCaixa(){
   const opts=opcoesAlvoCaixa();
   const lojasAlvo=lojasDoAlvo(fluxoCaixaAlvo);
   const proj=projecaoCaixaBase(lojasAlvo,60);
-  const eventos=proj.dense.map((d,i)=>({d,p:proj.denseProjetado[i]})).filter(({d,p})=>d.entrou||d.saiu||(p&&(p.receitaEstimada||p.compraEstimada)));
+  const eventos=proj.dense.map((d,i)=>({d,p:proj.denseProjetado[i]})).filter(({d,p})=>d.entrou||d.saiu||(p&&(p.receitaEstimada||p.compraEstimada||p.saidaEstimadaExtra)));
   const piorSaldo=Math.min(...proj.dense.map(x=>x.saldo));
   const diaPior=proj.dense.find(x=>x.saldo===piorSaldo);
   const piorSaldoProj=Math.min(...proj.denseProjetado.map(x=>x.saldo));
@@ -6963,9 +7014,10 @@ function renderFluxoCaixa(){
       ${eventos.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
         <th>Data</th><th class="num">Entra</th><th class="num">Sai</th><th class="num">Saldo garantido</th><th class="num">Saldo projetado</th>
       </tr></thead><tbody>
-        ${eventos.map(({d:e,p})=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<span class="muted" style="font-size:11px;font-weight:normal">${esc(e.saidaDetalhe.map(x=>x.descricao).join(', ').toUpperCase())}</span> `:''}${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td><td class="num"><span class="det"><b class="${p&&p.saldo<0?'pend':''}">${fmtMoney(p?p.saldo:e.saldo)}</b>${p&&(p.receitaEstimada||p.compraEstimada)?`<span class="i">i</span><span class="pop">
+        ${eventos.map(({d:e,p})=>`<tr><td>${fmtData(e.data)}</td><td class="num">${e.entrou?fmtMoney(e.entrou):'—'}</td><td class="num">${(e.saidaDetalhe&&e.saidaDetalhe.length)?`<span class="muted" style="font-size:11px;font-weight:normal">${esc(e.saidaDetalhe.map(x=>x.descricao).join(', ').toUpperCase())}</span> `:''}${e.saiu?fmtMoney(e.saiu):'—'}</td><td class="num"><b class="${e.saldo<0?'pend':''}">${fmtMoney(e.saldo)}</b></td><td class="num"><span class="det"><b class="${p&&p.saldo<0?'pend':''}">${fmtMoney(p?p.saldo:e.saldo)}</b>${p&&(p.receitaEstimada||p.compraEstimada||p.saidaEstimadaExtra)?`<span class="i">i</span><span class="pop">
           ${p.receitaEstimada?`<span class="ln"><span>+ receita estimada (venda futura)</span><b>${fmtMoney(p.receitaEstimada)}</b></span>`:''}
           ${p.compraEstimada?`<span class="ln"><span>− compra estimada (capital de giro)</span><b>${fmtMoney(p.compraEstimada)}</b></span>`:''}
+          ${(p.saidaEstimadaDetalhe||[]).map(x=>`<span class="ln"><span>− ${esc(x.descricao)}</span><b>${fmtMoney(x.valor)}</b></span>`).join('')}
           <span class="ln tot"><span>Saldo projetado</span><b>${fmtMoney(p.saldo)}</b></span></span>`:''}</span></td></tr>`).join('')}
       </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhuma entrada ou saída conhecida nos próximos 60 dias.</p>'}
     </div>
@@ -7845,6 +7897,9 @@ function renderFinancas(){
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">Alíquota de imposto dessa loja (%)
           <input type="text" inputmode="decimal" style="width:60px" id="frAliquota" value="${finLoja(financasResumoLoja).aliquotaImposto?String(finLoja(financasResumoLoja).aliquotaImposto).replace('.',','):''}" placeholder="0,0">
         </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)" title="Usado só pra PROJETAR a fatura ML em aberto e o imposto do próximo ciclo em cima da receita ainda por vir — não muda o valor Garantido/real.">% média de fatura ML sobre o faturamento
+          <input type="text" inputmode="decimal" style="width:60px" id="frPctFaturaMl" value="${finLoja(financasResumoLoja).pctFaturaMl!=null?String(finLoja(financasResumoLoja).pctFaturaMl).replace('.',','):''}" placeholder="9,0">
+        </label>
       </div>
       ${financasResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasResumoErro)}</p>`:''}
       ${financasResumoCarregando?(financasResumoProgresso&&financasResumoProgresso.total?barraProgresso(financasResumoProgresso.feito,financasResumoProgresso.total,'🔍 '+(financasResumoProgresso.etapa||'Buscando resumo financeiro...')):barraIndeterminada('🔍 Buscando resumo financeiro...')):''}
@@ -8012,7 +8067,9 @@ function renderFinancas(){
   const frPesquisar=document.getElementById('frPesquisar');
   if(frPesquisar) frPesquisar.onclick=pesquisarResumoFinanceiro;
   const frAliquota=document.getElementById('frAliquota');
+  const frPctFaturaMl=document.getElementById('frPctFaturaMl');
   if(frAliquota) frAliquota.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{aliquotaImposto:e.target.value}); renderFinancas(); };
+  if(frPctFaturaMl) frPctFaturaMl.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{pctFaturaMl:e.target.value}); renderFinancas(); };
   const btnFecharTodasLojas=document.getElementById('btnFecharTodasLojas');
   if(btnFecharTodasLojas) btnFecharTodasLojas.onclick=calcularFechamentoTodasLojas;
   const btnGerarDreDfc=document.getElementById('btnGerarDreDfc');
