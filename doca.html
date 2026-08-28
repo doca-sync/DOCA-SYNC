@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v326</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v328</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6474,10 +6474,16 @@ function proximasSegundasDeCompra(loja,dias){
   return datas;
 }
 /* estimativa de capital de giro pra próxima compra, ANTES de existir um pedido de compra real pra
-   esse ciclo: CMV dos últimos 15 dias (unidades vendidas no FULL, v15, × custo cadastrado) por SKU,
-   arredondado pra cima até a próxima caixa fechada (unidPorCaixa) quando cadastrada - mesmo
-   raciocínio do capitalGiroComprar, só que projetando pelo histórico de venda em vez da quantidade
-   já pedida (que ainda não existe nesse ponto). Pedido do Felipe 27/08.
+   esse ciclo. Pedido do Felipe 27/08.
+   CORRIGIDO 27/08 (2ª volta, Felipe: "não está considerando o que eu já tenho em estoque") - a 1ª
+   versão usava o CMV bruto dos últimos 15 dias (i.v15) direto como "quantidade a comprar", sem
+   descontar nada do que já está pronto pra vender. Agora reusa fullCalc(i).qtd - a MESMA conta que
+   a aba FULL já usa pra "sugestão de envio" (Previsão FULL): ela projeta a demanda até a data do
+   envio (media×dias) mais a cobertura alvo, e desconta o estoque JÁ DISPONÍVEL (aptas + em
+   transferência + próximos programados já criados no Doca) e o quanto esse estoque ainda vai
+   vender antes do envio chegar - ou seja, um "ponto de reposição" de verdade, não uma demanda bruta
+   ignorando o que já tem. Também respeita ajuste manual (i.ajuste) e não sugere comprar de novo o
+   que já foi confirmado como FULL (jaEnviado), igual a aba FULL já fazia.
    Devolve total E o detalhe por SKU (pedido do Felipe 27/08, pra poder mostrar de onde veio a conta
    no hover/clique do Fluxo de Caixa, em vez de só o número final). */
 function previsaoCompraEstimada(loja){
@@ -6487,7 +6493,7 @@ function previsaoCompraEstimada(loja){
     const p=fullProduto(i);
     if(!p) return;
     const un=Number(p.unidPorCaixa)||0;
-    const unidades=i.v15||0;
+    const unidades=fullCalc(i).qtd||0;
     if(unidades<=0) return;
     const qtd=un>0?Math.ceil(unidades/un)*un:unidades;
     const custo=fullCusto(i);
@@ -6523,6 +6529,15 @@ function projecaoCaixaBase(lojas,dias){
   lojas.forEach(loja=>{ const fc=financeiroCalibrado(loja); saldoInicial+=fc.mercadoPago; if(!fc.mpAtualizadoEm) semSync.push(loja); });
   const entradas={};
   lojas.forEach(loja=>{ financeiroCalibrado(loja).agendaLiberacoes.forEach(x=>{ entradas[x.data]=(entradas[x.data]||0)+x.valor; }); });
+  /* CORRIGIDO 27/08 (Felipe fez a conta na mão e bateu diferente): o "aindaHoje" (ver
+     financeiroCalibrado) ficava só na "ESTIMATIVA — FIM DO DIA" isolada, sem nunca entrar na
+     trilha Garantido dia-a-dia - então a partir de AMANHÃ esse dinheiro simplesmente sumia da
+     tabela pra sempre (nem contava em saldoInicial, nem em nenhuma data futura), fazendo o saldo
+     de amanhã em diante ficar sempre uns R$X a menos do que devia. Agora entra como "entrada" no
+     próprio dia de hoje - assim que passa de hoje pra amanhã, esse valor já está "andando" no
+     saldo garantido igual qualquer outra liberação agendada (o que é correto: por amanhã, algo
+     agendado pra HOJE já deveria ter caído de verdade). */
+  lojas.forEach(loja=>{ const fc=financeiroCalibrado(loja); if(fc.aindaHoje>0.01) entradas[hojeStr]=(entradas[hojeStr]||0)+fc.aindaHoje; });
   const saidas={}; const saidasDetalhe={};
   despesasPendentesParaProjecao(lojas).forEach(d=>{
     const estimado=d.origem==='ml_fatura'&&d.semVencimentoReal&&!!d.vencimentoEstimado;
@@ -6964,7 +6979,7 @@ function renderFluxoCaixa(){
         ${proj.previsoesCompra.map(pc=>{
           const linhasA=pc.itensA.map(it=>`<span class="ln"><span>${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
           const linhasR=pc.itensRestante.map(it=>`<span class="ln"><span>${it.curva?`[${it.curva}] `:''}${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
-          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':'estimado pelo CMV dos últimos 15 dias, arredondado por caixa'}</b></span>`;
+          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':'sugestão de envio do FULL (demanda até o envio − estoque atual), arredondado por caixa'}</b></span>`;
           return `<tr><td>${fmtData(pc.data)}</td><td>${esc(pc.loja)}</td>
           <td class="num">${pc.valorA>0?`<span class="det">${fmtMoney(pc.valorA)}${pc.real?'':' <small class="muted">(estimado)</small>'}<span class="i">i</span><span class="pop">${calc}${linhasA}<span class="ln tot"><span>Total Curva A</span><b>${fmtMoney(pc.valorA)}</b></span></span></span>`:'<span class="muted">—</span>'}</td>
           <td class="num">${pc.valorRestante>0?`<span class="det">${fmtMoney(pc.valorRestante)}${pc.real?'':' <small class="muted">(estimado)</small>'}${pc.dataRestante&&pc.dataRestante!==pc.data?` <span class="${pc.alertaColeta?'pend':'muted'}">→ ${fmtData(pc.dataRestante)}</span>`:''}${!pc.dataRestante?' <span class="pend">sem data na janela</span>':''}<span class="i">i</span><span class="pop">${calc}${linhasR}<span class="ln tot"><span>Total restante</span><b>${fmtMoney(pc.valorRestante)}</b></span>${pc.dataRestante&&pc.dataRestante!==pc.data?`<span class="ln"><span>Empurrado pra</span><b>${fmtData(pc.dataRestante)}</b></span>`:''}</span></span>`:'<span class="muted">—</span>'}</td>
