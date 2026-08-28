@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v332</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v333</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6550,32 +6550,57 @@ function proximasSegundasDeCompra(loja,dias){
    estoque do Full que vai sobrar até lá (k.proj) menos o estoque Local inteiro - só o que sobrar
    disso é que precisa ser comprado de verdade.
    Devolve total E o detalhe por SKU (pedido do Felipe 27/08, pra poder mostrar de onde veio a conta
-   no hover/clique do Fluxo de Caixa, em vez de só o número final). */
-function previsaoCompraEstimada(loja,imediato){
-  const itens=[]; let total=0;
+   no hover/clique do Fluxo de Caixa, em vez de só o número final).
+   CORRIGIDO 28/08 (Felipe: "tenho MUITO SPRAY e CANETAAZUL em estoque, não era pra estar aparecendo
+   aí pela demanda de venda" - reportado num ciclo futuro/"empurrado"). O ciclo imediato (idx 0) já
+   descontava o estoque certo (ver histórico acima), mas os ciclos seguintes (2º em diante) caíam no
+   fallback de demanda bruta de 15 dias (i.v15) SEM olhar pro estoque NENHUMA vez - então um item com
+   estoque parado de 200+ dias (SPRAY: 1193 un., ~230 dias de cobertura) aparecia pra comprar em TODO
+   ciclo futuro, com o mesmo número, como se o estoque de hoje não existisse lá na frente. Agora
+   simula o estoque combinado (Full+Local) DESCENDO ciclo a ciclo (consumo = média diária × dias até
+   o envio-alvo daquele ciclo), encadeado a partir do estoque real de hoje - só sugere comprar quando
+   esse estoque projetado realmente cair abaixo do alvo de cobertura (k.dem), e assume que a compra
+   sugerida repõe até esse alvo pra continuar a cadeia certa nos ciclos seguintes. Pra item parado
+   como o SPRAY, isso zera a sugestão em todos os ciclos até o estoque projetado finalmente furar o
+   alvo, lá na frente. */
+function previsaoCompraEstimadaCiclos(loja,ciclos){
+  const c=fullCfg();
   const curva=classificarCurvaLoja(loja);
+  const porCiclo=ciclos.map(()=>({itens:[],total:0}));
   fullItensLoja(loja).forEach(i=>{
     const p=fullProduto(i);
     if(!p) return;
+    const k=fullCalc(i);
+    if(k.media<=0) return; // sem histórico de venda, não projeta compra futura
     const un=Number(p.unidPorCaixa)||0;
-    let unidades;
-    if(imediato){
-      const k=fullCalc(i);
-      const local=Number(p.qtd&&p.qtd.local)||0;
-      unidades=Math.max(0,(k.dem-k.proj)-local);
-    }else{
-      unidades=i.v15||0;
-    }
-    if(unidades<=0) return;
-    const qtd=un>0?Math.ceil(unidades/un)*un:unidades;
-    const custo=fullCusto(i);
-    const valor=qtd*custo;
-    if(valor<=0) return;
-    total+=valor;
-    itens.push({sku:p.sku,unidades,unidPorCaixa:un,qtd,custo,valor,curva:curva.get(p.id)||null});
+    const local=Number(p.qtd&&p.qtd.local)||0;
+    // ciclo 0 (imediato): mesma conta já validada (desconta Full projetado + Local, ver acima).
+    const needed0=Math.max(0,(k.dem-k.proj)-local);
+    let estoque=Math.max(k.dem,(k.proj+local)); // estoque combinado após reposição do ciclo 0
+    let dataAnterior=c.envio||hoje();
+    ciclos.forEach((oc,idx)=>{
+      let falta;
+      if(idx===0){
+        falta=needed0;
+      }else{
+        const dias=Math.max(0,diasEntre(dataAnterior,oc.envioAlvo));
+        estoque-=k.media*dias;
+        falta=Math.max(0,k.dem-estoque);
+      }
+      dataAnterior=oc.envioAlvo;
+      if(falta>0.01){
+        const qtd=un>0?Math.ceil(falta/un)*un:Math.ceil(falta);
+        const valor=qtd*k.custo;
+        if(valor>0){
+          porCiclo[idx].total+=valor;
+          porCiclo[idx].itens.push({sku:p.sku,unidades:falta,unidPorCaixa:un,qtd,custo:k.custo,valor,curva:curva.get(p.id)||null});
+        }
+        if(idx>0) estoque=Math.max(k.dem,estoque);
+      }
+    });
   });
-  itens.sort((a,b)=>b.valor-a.valor);
-  return {total,itens};
+  porCiclo.forEach(pc=>pc.itens.sort((a,b)=>b.valor-a.valor));
+  return porCiclo;
 }
 /* capital de giro REAL já em pedidos de compra ativos dessa loja (mesmo número que aparece no card
    de capital de giro da Visão Geral) - assim que existir, substitui a estimativa acima pra próxima
@@ -6684,12 +6709,17 @@ function projecaoCaixaBase(lojas,dias){
      dia sem contar essa compra - pra decidir com juízo, não pra virar parte do número "garantido". */
   const previsoesCompra=[];
   lojas.forEach(loja=>{
-    proximasSegundasDeCompra(loja,dias).forEach((oc,idx)=>{
+    const ciclosLoja=proximasSegundasDeCompra(loja,dias);
+    /* uma simulação só por loja, encadeando o estoque projetado ciclo a ciclo (ver
+       previsaoCompraEstimadaCiclos) - não dá pra calcular cada ciclo isolado como antes, porque o
+       estoque do 2º ciclo em diante depende do que sobrou/foi reposto no ciclo anterior. */
+    const estimativas=previsaoCompraEstimadaCiclos(loja,ciclosLoja);
+    ciclosLoja.forEach((oc,idx)=>{
       /* só a ocorrência mais próxima pode ter pedido de compra real já gerado - as seguintes ainda
          nem chegaram no ciclo de programação, então continuam na estimativa. */
       const real=idx===0?previsaoCompraReal(loja):{total:0,itens:[]};
       const usarReal=real.total>0;
-      const {total:valor,itens}=usarReal?real:previsaoCompraEstimada(loja,idx===0);
+      const {total:valor,itens}=usarReal?real:estimativas[idx];
       if(valor<=0) return;
       previsoesCompra.push({loja,data:oc.data,valor,itens,real:usarReal,imediato:idx===0,envioAlvo:oc.envioAlvo||null});
     });
@@ -7105,7 +7135,7 @@ function renderFluxoCaixa(){
         ${proj.previsoesCompra.map(pc=>{
           const linhasA=pc.itensA.map(it=>`<span class="ln"><span>${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
           const linhasR=pc.itensRestante.map(it=>`<span class="ln"><span>${it.curva?`[${it.curva}] `:''}${esc(it.sku)} — ${fmtInt(it.unidades)} un.${it.unidPorCaixa?` → arred. p/ caixa de ${fmtInt(it.unidPorCaixa)} = ${fmtInt(it.qtd)} un.`:''} × ${fmtMoney(it.custo)}</span><b>${fmtMoney(it.valor)}</b></span>`).join('');
-          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':pc.imediato?'demanda até o envio + cobertura − estoque Local − estoque Full, arredondado por caixa':'demanda de 1 ciclo (CMV dos últimos 15 dias), sem desconto de estoque — ciclo futuro demais pra saber o estoque com precisão'}</b></span>`;
+          const calc=`<span class="ln"><span>Cálculo</span><b style="font-weight:600;text-align:right">${pc.real?'real (pedidos de compra já ativos)':pc.imediato?'demanda até o envio + cobertura − estoque Local − estoque Full, arredondado por caixa':'estoque projetado (Full+Local de hoje, descontando venda até esse ciclo, encadeado com os ciclos anteriores) vs. alvo de cobertura, arredondado por caixa'}</b></span>`;
           return `<tr><td>${fmtData(pc.data)}</td><td>${esc(pc.loja)}</td>
           <td class="num">${pc.valorA>0?`<span class="det">${fmtMoney(pc.valorA)}${pc.real?'':' <small class="muted">(estimado)</small>'}<span class="i">i</span><span class="pop">${calc}${linhasA}<span class="ln tot"><span>Total Curva A</span><b>${fmtMoney(pc.valorA)}</b></span></span></span>`:'<span class="muted">—</span>'}</td>
           <td class="num">${pc.valorRestante>0?`<span class="det">${fmtMoney(pc.valorRestante)}${pc.real?'':' <small class="muted">(estimado)</small>'}${pc.dataRestante&&pc.dataRestante!==pc.data?` <span class="${pc.alertaColeta?'pend':'muted'}">→ ${fmtData(pc.dataRestante)}</span>`:''}${!pc.dataRestante?' <span class="pend">sem data na janela</span>':''}<span class="i">i</span><span class="pop">${calc}${linhasR}<span class="ln tot"><span>Total restante</span><b>${fmtMoney(pc.valorRestante)}</b></span>${pc.dataRestante&&pc.dataRestante!==pc.data?`<span class="ln"><span>Empurrado pra</span><b>${fmtData(pc.dataRestante)}</b></span>`:''}</span></span>`:'<span class="muted">—</span>'}</td>
