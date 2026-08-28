@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v337</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v338</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2653,6 +2653,12 @@ function confirmarEnvioFull(envioId,manterCompra){
   const somado=[];
   e.itens.forEach(i=>{
     const p=prodById(i.produtoId); if(!p||!(i.solicitado>0)) return;
+    /* CORRIGIDO 28/08 (junto com o fix do kit travando o Virou FULL): componente explodido de kit
+       (kitDeItemId) não ganha marcador de "Entrada pendente" - o que o Mercado Livre vai registrar
+       chegando é o KIT montado (a linha guarda-chuva, que continua ganhando o marcador normal),
+       nunca o componente solto. Sem isso, os componentes ficavam 5 dias com estoque "chegando"
+       que nunca chega, inflando a projeção deles. */
+    if(i.kitDeItemId) return;
     const fi=state.full.itens.find(x=>x.loja===e.loja&&fullProduto(x)&&fullProduto(x).id===p.id);
     if(fi) fi.ajuste=null;
     /* 21/08 (Felipe): assim que confirma um envio, ele some de "Próximos programados" (de
@@ -9559,7 +9565,13 @@ function renderEnvio(){
   el.querySelectorAll('[data-confirmar]').forEach(b=>b.onclick=()=>{
     const e=envioById(b.dataset.confirmar);
     const a=e.itens.reduce((x,i)=>x+(i.alocado||0),0);
-    const falta=e.itens.reduce((x,i)=>x+Math.max(0,(i.solicitado||0)-(i.alocado||0)),0);
+    /* CORRIGIDO 28/08 (Felipe: "não está deixando virar FULL, acho que por causa do KITPET"):
+       a linha guarda-chuva de um kit carrega o solicitado total (ex.: 43) mas alocado sempre 0 -
+       de propósito, os números reais moram nos COMPONENTES explodidos (ver alocarNoEnvio). Somar
+       o guarda-chuva aqui fazia a conta sempre achar que faltavam essas unidades, travando a
+       confirmação pra sempre em qualquer envio com kit. Os componentes continuam contando - se um
+       deles realmente estiver incompleto, o alerta ainda pega. */
+    const falta=e.itens.filter(i=>!i.kitGuardaChuva).reduce((x,i)=>x+Math.max(0,(i.solicitado||0)-(i.alocado||0)),0);
     if(falta>0){ alert(`Não dá pra finalizar: faltam ${fmtInt(falta)} un. para completar este envio.`); return; }
     confirmAction(`Confirmar o envio "${e.nome}" (${fmtData(e.data)} · ${e.loja}) com ${fmtInt(a)} unidade(s) como FULL no Mercado Livre? Isso remove o envio do controle. Dá pra reverter no botão Desfazer.`,()=>{
       confirmarEnvioFull(b.dataset.confirmar,true); toast('Envio confirmado como FULL.');
