@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v333</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v335</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2666,7 +2666,23 @@ function confirmarEnvioFull(envioId,manterCompra){
        não SUBIR (prova de que o ML já processou algo) e o prazo de segurança não vencer, o
        alerta "não está no próximo envio" fica suspenso pra esse SKU - o resto do cálculo
        (zera em X dias, etc) continua 100% real, sem gerar número congelado. */
-    p.ultimoEnvioConfirmado={data:hoje(),baselineFull:fi?((fi.aptas||0)+(fi.transf||0)):0};
+    /* CORRIGIDO 28/08 (Felipe: "próximos programados vira 'em processamento', espera os mesmos 5
+       dias, e conforme o que já chegou vai descontando desse total" - em vez de um corte binário em
+       10%, decai PROPORCIONAL: cada unidade que aparecer em aptas+transf acima do baseline é uma
+       unidade a menos ainda "em processamento", até chegar a zero ou vencer o prazo de 5 dias - ver
+       fullCalc/mlAtualizarFullDoSinc).
+       CORRIGIDO 28/08 (2ª volta, Felipe: "existe possibilidade melhor?"): 1 marcador único por
+       produto quebrava se confirmasse 2 envios do mesmo SKU dentro da mesma janela de 5 dias (ex.:
+       programado + emergência) - o 2º sobrescrevia o 1º e perdia o rastro do que ainda faltava
+       chegar dele. Agora é uma FILA (p.filaProcessamento[]): cada confirmação empilha sua própria
+       quantidade, e os aumentos reais de aptas+transf (delta desde p.filaBaseline, atualizado a
+       cada sincronização - ver mlAtualizarFullDoSinc) descontam da entrada MAIS ANTIGA primeiro
+       (FIFO), sobrando pra próxima quando zerar. p.filaBaseline só é (re)ancorado quando a fila
+       estava vazia - se já tinha algo em processamento, o baseline current já está sendo
+       acompanhado sync a sync, não reseta. */
+    if(!p.filaProcessamento) p.filaProcessamento=[];
+    if(!p.filaProcessamento.length) p.filaBaseline=fi?((fi.aptas||0)+(fi.transf||0)):0;
+    p.filaProcessamento.push({data:hoje(),qtdRestante:i.solicitado||0});
     somado.push(p.sku);
     flashFull[p.id]=Date.now();
   });
@@ -3785,15 +3801,26 @@ function mlAtualizarFullDoSinc(p,item,loja){
   fi.confirmadoNaoVerificado=0;
   fi.movido=null;
   state.full.lidoEm[loja]=Date.now();
-  // limpa o marcador de "envio confirmado, aguardando o ML registrar" (ver confirmarEnvioFull)
-  // assim que o real aptas+transf subir em relação ao que era no momento da confirmação - é o
-  // sinal de que o Mercado Livre já processou (nem que seja só uma parte) o que foi enviado.
-  // Prazo de segurança: 5 dias (Felipe, 21/08 - normalmente leva 2 dias úteis pra constar no
-  // estoque; 5 dias cobre folga de fim de semana sem deixar passar tempo demais se algo travar).
-  if(p.ultimoEnvioConfirmado){
+  // consome a fila de "envios confirmados, aguardando o ML registrar" (ver confirmarEnvioFull) -
+  // prazo de segurança de 5 dias por entrada (Felipe, 21/08: normalmente leva 2 dias úteis pra
+  // constar no estoque; 5 dias cobre folga de fim de semana). CORRIGIDO 28/08 (2ª volta): fila
+  // FIFO em vez de marcador único, pra não perder o rastro se tiver mais de 1 envio do mesmo SKU
+  // confirmado dentro da mesma janela (ex.: programado + emergência) - ver comentário completo em
+  // confirmarEnvioFull. O delta real desde o último sync (aptas+transf subindo) desconta da
+  // entrada mais antiga primeiro, sobrando pra próxima quando ela zerar.
+  if(p.filaProcessamento&&p.filaProcessamento.length){
     const atual=(fi.aptas||0)+(fi.transf||0);
-    const diasDesde=(Date.now()-Date.parse(p.ultimoEnvioConfirmado.data+'T00:00:00-03:00'))/864e5;
-    if(atual>p.ultimoEnvioConfirmado.baselineFull||diasDesde>5) p.ultimoEnvioConfirmado=null;
+    let delta=Math.max(0,atual-(p.filaBaseline!=null?p.filaBaseline:atual));
+    p.filaProcessamento.forEach(entrada=>{
+      if(delta<=0) return;
+      const consome=Math.min(delta,entrada.qtdRestante);
+      entrada.qtdRestante-=consome; delta-=consome;
+    });
+    p.filaProcessamento=p.filaProcessamento.filter(entrada=>{
+      const diasDesde=(Date.now()-Date.parse(entrada.data+'T00:00:00-03:00'))/864e5;
+      return entrada.qtdRestante>0.5&&diasDesde<=5;
+    });
+    p.filaBaseline=p.filaProcessamento.length?atual:null;
   }
 }
 /* chama o backend hospedado: primeiro manda sincronizar (POST /sync), depois busca o resultado (GET /data) */
@@ -4085,8 +4112,10 @@ function renderProdutos(){
           <td class="num">${fi?(()=>{const tot=fk.full-(fi.aptas||0); return `<span class="det">${fmtInt(tot)}<span class="i">i</span><span class="pop">
             <span class="ln"><span>Em transferência</span><b>${fmtInt(fi.transf||0)}</b></span>
             ${fk.proximosProgramados?`<span class="ln"><span>Próximos programados</span><b>${fmtInt(fk.proximosProgramados)}</b></span>`:''}
+            ${fk.emProcessamento?`<span class="ln"><span>Em processamento</span><b>${fmtInt(fk.emProcessamento)}</b></span>`:''}
             <span class="ln tot"><span>Total</span><b>${fmtInt(tot)}</b></span>
-            ${fk.proximosProgramados?`<span class="obs">Próximos programados não entra no Valor estoque — já está contado em Reservado.</span>`:''}</span></span>`;})():(p.mlTransferencia!=null?fmtInt(p.mlTransferencia||0):'<span class="muted">—</span>')}</td>
+            ${fk.proximosProgramados?`<span class="obs">Próximos programados não entra no Valor estoque — já está contado em Reservado.</span>`:''}
+            ${fk.emProcessamento?`<span class="obs">Em processamento = confirmado como FULL, aguardando o Mercado Livre registrar o recebimento (some sozinho conforme aptas/transferência sobem, ou em até 5 dias).</span>`:''}</span></span>`;})():(p.mlTransferencia!=null?fmtInt(p.mlTransferencia||0):'<span class="muted">—</span>')}</td>
           <td class="num" title="Estoque local e disponível: ${fmtMoney(valorEstoqueDetalhado(p).local)} · No FULL: ${fmtMoney(valorEstoqueDetalhado(p).full)}">${fmtMoney(valorEstoqueDetalhado(p).total)}</td>
           <td><button class="btn sm" data-manage="${p.id}">Gerenciar</button></td>
         </tr>`;}).join(''):`<tr><td colspan="13" class="empty">Nenhum SKU encontrado.</td></tr>`}</tbody>
@@ -9910,7 +9939,22 @@ function fullCalc(i,envioOverride){
      contar de novo aqui duplicaria o dinheiro. */
   const proximosProgramados=entradaPendenteDe(i.produtoId||(fullProduto(i)?fullProduto(i).id:null));
   const fullValorBase=(i.aptas||0)+(i.transf||0);
-  const full=fullValorBase+proximosProgramados;   /* quantidade, pra Total/cobertura/sugestão */
+  /* "em processamento" (CORRIGIDO 28/08, pedido do Felipe): a quantidade de um envio que acabou
+     de ser confirmado como FULL, mas que o Mercado Livre ainda não processou de verdade (aptas/
+     transf ainda não subiram) - ver confirmarEnvioFull/mlAtualizarFullDoSinc. Antes, assim que
+     confirmava, esse número simplesmente sumia (saía de "próximos programados" e ainda não tinha
+     entrado em aptas/transf), fazendo o Doca sugerir enviar de novo algo que já tinha ido, se o
+     próximo planejamento caísse dentro da janela de até 5 dias que o ML leva pra processar. Decai
+     PROPORCIONAL conforme aptas+transf sobe de verdade (cada unidade que chega é uma a menos "em
+     processamento"), até zerar (chegou tudo) ou vencer os 5 dias - nunca um número congelado.
+     CORRIGIDO 28/08 (2ª volta): soma a FILA inteira (p.filaProcessamento), não só 1 marcador - ver
+     comentário completo em confirmarEnvioFull/mlAtualizarFullDoSinc sobre por que virou fila. */
+  const emProcessamento=(()=>{
+    const p=fullProduto(i);
+    if(!p||!p.filaProcessamento||!p.filaProcessamento.length) return 0;
+    return p.filaProcessamento.reduce((s,e)=>s+(e.qtdRestante||0),0);
+  })();
+  const full=fullValorBase+proximosProgramados+emProcessamento;   /* quantidade, pra Total/cobertura/sugestão */
   const consumo=media*D, proj=full-consumo, dem=media*(c.cobertura||30);
   const bruto=dem-proj, enviar=bruto>0?Math.ceil(bruto):0;
   const cob=media>0?full/media:(full>0?Infinity:0);   /* dias que o estoque do Full aguenta */
@@ -9927,7 +9971,7 @@ function fullCalc(i,envioOverride){
      sugerir se o envio for excluido ou se voce ajustar manualmente. */
   const jaEnviado=!!(i.enviado&&envioById(i.enviado.envioId));
   const qtd=i.ajuste!=null?i.ajuste:(jaEnviado?0:enviar);
-  return {r7,r15,r30,soma:somaPond,media,mediaPronta,D,full,proximosProgramados,consumo,proj,dem,enviar,qtd,cob,
+  return {r7,r15,r30,soma:somaPond,media,mediaPronta,D,full,proximosProgramados,emProcessamento,consumo,proj,dem,enviar,qtd,cob,
     rompe,diaRuptura,aguentaAte,vendasIncoer,jaEnviado,custo:fullCusto(i),valor:fullValorBase*fullCusto(i)};
 }
 function fullResumo(loja){
@@ -10034,33 +10078,53 @@ function criarFullDaPrevisao(loja,data,localColeta){
   });
   return {ok:true,envio,criados,alocado:alo,aCaminho:cam,gerado:ger,itens:l.length};
 }
+/* quanto dá pra enviar AGORA de um produto sem precisar comprar - só o que já está fisicamente
+   no galpão (produtoEfetivo pra resolver SKU vinculado, estoque compartilhado mora no mestre).
+   Pra kit, é o gargalo: o componente que permite montar menos unidades limita quantos kits dá
+   pra montar. Usado só na emergência (ver criarFullEmergencia) - pedido do Felipe 28/08: "separe
+   somente o produto que precisa ser enviado e considere a quantidade disponível no galpão pra
+   envio, porque senão vai precisar comprar, aí não dá pra enviar com urgência". */
+function disponivelUrgenteEnvio(p){
+  if(!p) return 0;
+  const comps=componentesDe(p);
+  if(comps.length){
+    return comps.reduce((min,c)=>{
+      const comp=prodById(c.produtoId); if(!comp) return 0;
+      const disp=Math.floor(disponivelUrgenteEnvio(comp)/(c.qtdPorUnidade||1));
+      return Math.min(min,disp);
+    },Infinity);
+  }
+  return produtoEfetivo(p).qtd.local||0;
+}
 /* Cria um envio separado (marcado como emergência) só com os SKUs que vão zerar
-   antes da data prevista — usado quando não dá pra antecipar o envio já programado. */
+   antes da data prevista — usado quando não dá pra antecipar o envio já programado.
+   CORRIGIDO 28/08 (Felipe): antes usava a quantidade "ideal" (k.qtd, a mesma da Previsão normal,
+   que pode incluir uma parte a comprar) - numa emergência isso não ajuda, porque enviar de
+   verdade fica esperando a compra chegar. Agora capa pelo que já está disponível no galpão
+   (disponivelUrgenteEnvio) e deixa de fora quem não tem NADA físico disponível agora (sem produto
+   cadastrado também fica de fora, já que sem cadastro não dá pra saber o estoque real). */
 function criarFullEmergencia(loja,data,localColeta){
-  const l=fullItensLoja(loja).map(i=>({i,k:fullCalc(i)})).filter(x=>x.k.rompe);
-  if(!l.length) return {ok:false,msg:'Nenhum produto em risco de ruptura nesta loja.'};
-  let criados=0,ger=0,cam=0,alo=0;
+  const l=fullItensLoja(loja).map(i=>({i,k:fullCalc(i),p:fullProduto(i)})).filter(x=>x.k.rompe)
+    .filter(x=>x.p&&disponivelUrgenteEnvio(x.p)>0);
+  if(!l.length) return {ok:false,msg:'Nenhum produto em risco de ruptura nesta loja com estoque disponível no galpão pra enviar agora — enviar exigiria comprar primeiro, o que não resolve a urgência.'};
+  let ger=0,cam=0,alo=0;
   const nome='FULL DE EMERGÊNCIA · '+fmtData(data);
   let envio=null;
   batch('criação do envio de emergência '+nome,()=>{
     envio=criarEnvio(nome,data,loja,'',localColeta||LOCAIS_COLETA[0]);
     envio.origem='emergencia';
     envio.medias={};
-    l.forEach(({i,k})=>{
-      let p=fullProduto(i);
-      const qtd=Math.max(k.qtd,1);
-      if(!p){
-        p=addProduto({loja,sku:(i.sku||i.codigo||'').toUpperCase(),codigo:(i.codigo||'').toUpperCase(),
-          fornecedor:'',custo:0,estoqueMinimo:0,qtd:{comprar:0,coletar:0,local:0},lotes:[],pedidos:[],obsCompra:''});
-        criados++;
-      } else if(!p.codigo&&i.codigo) p.codigo=String(i.codigo).toUpperCase();
+    l.forEach(({i,k,p})=>{
+      const disp=disponivelUrgenteEnvio(p);
+      const qtd=Math.min(Math.max(k.qtd,1),disp);
+      if(!p.codigo&&i.codigo) p.codigo=String(i.codigo).toUpperCase();
       const r=alocarNoEnvio(envio,p,qtd);
       alo+=r.alocado; cam+=r.aCaminho; ger+=r.gerado;
       envio.medias[p.id]={media:k.media,full:k.full,lidoEm:state.full.lidoEm[loja]||Date.now()};
       i.enviado={qtd,envioId:envio.id,envio:nome,em:Date.now()};
     });
   });
-  return {ok:true,envio,criados,alocado:alo,aCaminho:cam,gerado:ger,itens:l.length};
+  return {ok:true,envio,criados:0,alocado:alo,aCaminho:cam,gerado:ger,itens:l.length};
 }
 /* recalcula um envio da Previsão para uma nova data — só calcula, não altera */
 function recalcularEnvioPorData(envioId,novaData){
@@ -10174,38 +10238,40 @@ function modalCriarFull(l0,c){
 /* Sugestão de emergência: quando algum produto vai zerar antes do envio já previsto,
    oferece criar um envio separado (menor, focado só no que está em risco) em vez de
    mexer no envio já programado. */
+/* CORRIGIDO 28/08 (Felipe): só entra no modal quem TEM estoque físico no galpão pra mandar agora
+   (ver disponivelUrgenteEnvio/criarFullEmergencia) - quem está em risco mas sem estoque disponível
+   fica de fora e é avisado separado, porque incluir geraria compra, e compra não resolve urgência. */
 function abrirCriarFullEmergencia(){
-  const c=fullCfg(), l=fullItensLoja().map(i=>({i,k:fullCalc(i)})).filter(x=>x.k.rompe);
-  if(!l.length){ toast('Nenhum produto em risco de ruptura nesta loja no momento.'); return; }
+  const c=fullCfg();
+  const todos=fullItensLoja().map(i=>({i,k:fullCalc(i),p:fullProduto(i)})).filter(x=>x.k.rompe);
+  if(!todos.length){ toast('Nenhum produto em risco de ruptura nesta loja no momento.'); return; }
+  const l=todos.filter(x=>x.p&&disponivelUrgenteEnvio(x.p)>0);
+  if(!l.length){ toast('Os produtos em risco de ruptura não têm estoque disponível no galpão agora — enviar exigiria comprar primeiro, o que não resolve uma emergência.'); return; }
   const jaCriados=l.filter(x=>x.i.enviado&&envioById(x.i.enviado.envioId));
   if(jaCriados.length===l.length){
     const nomes=[...new Set(jaCriados.map(x=>x.i.enviado.envio))].join(', ');
     toast(`Os produtos em risco já estão no envio ${nomes}.`);
     return;
   }
-  modalCriarFullEmergencia(l,c);
+  modalCriarFullEmergencia(l,c,todos.length-l.length);
 }
-function modalCriarFullEmergencia(l,c){
+function modalCriarFullEmergencia(l,c,semEstoqueCount){
   const jaCriados=l.filter(x=>x.i.enviado&&envioById(x.i.enviado.envioId));
-  const semCad=l.filter(x=>!fullProduto(x.i)).length;
   const hj=hoje();
   const body=openModal(true);
   body.innerHTML=`<h3>🚨 Criar FULL de emergência</h3>
-    <p class="hint" style="margin:0 0 12px">${l.length} produto(s) vão zerar no FULL antes de ${fmtData(c.envio)} · loja <b>${esc(c.loja)}</b>. Este envio fica <b>separado</b> do que já está programado — use quando não der para antecipar o envio existente.</p>
+    <p class="hint" style="margin:0 0 12px">${l.length} produto(s) com estoque disponível no galpão vão zerar no FULL antes de ${fmtData(c.envio)} · loja <b>${esc(c.loja)}</b>. Este envio fica <b>separado</b> do que já está programado — manda só o que já está fisicamente no galpão, sem gerar compra (senão não resolve a urgência).</p>
     <div class="form-grid">
       <label>Data deste envio de emergência<input id="cfeData" type="date" value="${esc(hj)}"></label>
       <label>Local da coleta<select id="cfeColeta">${optsColeta(LOCAIS_COLETA[0])}</select></label>
     </div>
-    ${semCad?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${semCad} SKU(s) ainda não estão cadastrados — serão criados com custo R$ 0,00. Ajuste depois em Produtos.</span></div>`:''}
-    ${jaCriados.length?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${jaCriados.length} destes já entraram em outro envio. Confirmar aqui reserva e compra de novo para eles.</span></div>`:''}
-    <div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Zera em</th><th class="num">A enviar</th><th>De onde sai</th></tr></thead><tbody>
-    ${l.map(({i,k})=>{const p=fullProduto(i);
-      const qtd=Math.max(k.qtd,1);
-      const doLocal=p?Math.min(qtd,p.qtd.local):0;
-      const doCol=p?Math.min(qtd-doLocal,coletarLivre(p)):0;
-      const comprar=qtd-doLocal-doCol;
-      return `<tr><td class="mono">${esc(fullSku(i))}</td><td class="pend">${fmtData(k.diaRuptura)}</td><td class="num">${fmtInt(qtd)}</td>
-        <td>${[doLocal?fmtInt(doLocal)+' do galpão':'',doCol?fmtInt(doCol)+' do coletar':'',comprar?'<b>'+fmtInt(comprar)+' a comprar</b>':''].filter(Boolean).join(' · ')||'—'}</td></tr>`;}).join('')}
+    ${semEstoqueCount?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${semEstoqueCount} produto(s) em risco de ruptura ficaram de fora por não terem estoque no galpão agora (enviar exigiria comprar primeiro). Veja em Ruptura pra decidir uma compra urgente separada.</span></div>`:''}
+    ${jaCriados.length?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${jaCriados.length} destes já entraram em outro envio. Confirmar aqui reserva de novo para eles.</span></div>`:''}
+    <div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Zera em</th><th class="num">A enviar</th><th class="num">Disponível no galpão</th></tr></thead><tbody>
+    ${l.map(({i,k,p})=>{
+      const disp=disponivelUrgenteEnvio(p);
+      const qtd=Math.min(Math.max(k.qtd,1),disp);
+      return `<tr><td class="mono">${esc(fullSku(i))}</td><td class="pend">${fmtData(k.diaRuptura)}</td><td class="num">${fmtInt(qtd)}</td><td class="num">${fmtInt(disp)}${qtd<k.qtd?` <span class="muted" title="O ideal seria ${fmtInt(k.qtd)}, mas só ${fmtInt(disp)} está disponível no galpão agora">⚠ parcial</span>`:''}</td></tr>`;}).join('')}
     </tbody></table></div>
     <div class="modal-actions"><button class="btn" id="cfeCanc">Cancelar</button><button class="btn danger" id="cfeOk">🚨 Criar envio de emergência</button></div>`;
   document.getElementById('cfeCanc').onclick=closeModal;
@@ -10214,10 +10280,7 @@ function modalCriarFullEmergencia(l,c){
     const r=criarFullEmergencia(c.loja,data,document.getElementById('cfeColeta').value);
     closeModal();
     if(!r.ok){ alert(r.msg); return; }
-    let m=`Envio de emergência "${fmtData(data)}" criado com ${r.itens} produto(s).`;
-    if(r.criados) m+=` ${r.criados} SKU(s) novos cadastrados.`;
-    if(r.gerado) m+=` ${fmtInt(r.gerado)} un. foram para Comprar.`;
-    toast(m);
+    toast(`Envio de emergência "${fmtData(data)}" criado com ${r.itens} produto(s), tudo do estoque já disponível no galpão.`);
     irParaAba('previsao');
   };
 }
@@ -10374,8 +10437,10 @@ function renderPrevisao(){
           <span class="ln"><span>Aptas para venda</span><b>${fmtInt(i.aptas)}</b></span>
           <span class="ln"><span>Em transferência</span><b>${fmtInt(i.transf||0)}</b></span>
           ${k.proximosProgramados?`<span class="ln"><span>Próximos programados</span><b>${fmtInt(k.proximosProgramados)}</b></span>`:''}
+          ${k.emProcessamento?`<span class="ln"><span>Em processamento</span><b>${fmtInt(k.emProcessamento)}</b></span>`:''}
           <span class="ln tot"><span>Total</span><b>${fmtInt(k.full)}</b></span>
           ${k.proximosProgramados?`<span class="obs">Próximos programados conta na quantidade acima, mas não entra no valor em R$ da coluna Valor — o dinheiro deles já está contado no estoque Local (Reservado). Sai daqui quando você confirmar o envio como FULL, e volta a aparecer em "Aptas"/"Em transferência" assim que o Mercado Livre receber de verdade.</span>`:''}
+          ${k.emProcessamento?`<span class="obs">Em processamento = confirmado como FULL, aguardando o Mercado Livre registrar (some sozinho conforme Aptas+Em transferência sobem, ou em até 5 dias).</span>`:''}
           <span class="obs">7d ${fmtInt(i.v7)} · 15d ${fmtInt(i.v15)} · 30d ${fmtInt(i.v30)} un. vendidas${i.produtoNome?'<br>'+esc(i.produtoNome):''}${i.codigo?'<br>Código ML: '+esc(i.codigo):''}</span></span></span></td>
         <td class="num"><span class="det">${k.media.toFixed(2)}${(()=>{const t=tendencia(i); return t?`<span class="tend ${t.sobe?'up':(t.cai?'dn':'eq')}">${t.sobe?'▲':(t.cai?'▼':'=')}</span>`:'';})()}<span class="i">i</span><span class="pop">
           <span class="ln"><span>7d: ${fmtInt(i.v7)} ÷ 7</span><b>${k.r7.toFixed(2)} × ${c.p7}</b></span>
@@ -10474,7 +10539,10 @@ function rupturaCalcComData(i){
   const produtoId=i.produtoId||(fullProduto(i)?fullProduto(i).id:null);
   const pendentes=pendentesPorData(produtoId);
   const diaCalc=full=>k.media>0?full/k.media:(full>0?Infinity:0);
-  let full=(i.aptas||0)+(i.transf||0);
+  /* CORRIGIDO 28/08: inclui k.emProcessamento (envio confirmado como FULL, aguardando o ML
+     processar - ver fullCalc) na base, senão o alerta de ruptura dispara à toa logo depois de
+     confirmar um envio, antes da API mostrar o recebimento de verdade. */
+  let full=(i.aptas||0)+(i.transf||0)+(k.emProcessamento||0);
   let cob=diaCalc(full);
   let diaZero=cob===Infinity?null:new Date(Date.now()+Math.max(0,Math.floor(cob))*864e5).toISOString().slice(0,10);
   const usados=new Set();
@@ -10556,9 +10624,11 @@ function rupturaLojaLista(loja,diasLimite){
       // não mostrou movimento real (ver mlAtualizarFullDoSinc/confirmarEnvioFull), suspende só o
       // aviso "não está no próximo envio" - ele ficaria fora de lugar (material já foi, só falta
       // o ML processar). O resto do alerta (cobDias/diaZero) continua real, sem mexer.
-      const emGracaEnvio=!!(x.p&&x.p.ultimoEnvioConfirmado);
+      // CORRIGIDO 28/08 (2ª volta): agora olha a fila (p.filaProcessamento) em vez de 1 marcador -
+      // ver comentário completo em confirmarEnvioFull.
+      const emGracaEnvio=!!(x.p&&x.p.filaProcessamento&&x.p.filaProcessamento.length);
       const foraDoProximoEnvio=!emGracaEnvio&&!proximoFullProduto&&!!prox&&!!prox.data&&diaZero<=prox.data;
-      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero,foraDoProximoEnvio,emGracaEnvio,dataEnvioConfirmado:emGracaEnvio?x.p.ultimoEnvioConfirmado.data:null};
+      return {...x,k:kr,cobDias,zeraAntesDoEnvio,proximoFullProduto,diaZero,foraDoProximoEnvio,emGracaEnvio,dataEnvioConfirmado:emGracaEnvio?x.p.filaProcessamento[0].data:null};
     })
     .filter(x=>x.cobDias<=diasLimite||x.zeraAntesDoEnvio||x.foraDoProximoEnvio)
     .sort((a,b)=>a.cobDias-b.cobDias)
