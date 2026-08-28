@@ -152,6 +152,14 @@ table.tbl-produtos td.num{text-align:right;font-family:'IBM Plex Mono';font-weig
 table.tbl-produtos th.num{text-align:right}
 table.tbl-produtos tbody tr:hover{background:rgba(163,163,163,.07)}
 table.tbl-produtos tr.row-baixo{background:rgba(251,191,36,.07)}
+/* tabela de Ads tem colunas demais (Campanha + 11 métricas) pra caber sem rolar no desktop -
+   o nome da campanha + as etiquetas (lucro>ads, sugestão de ROAS etc) formavam uma linha só
+   enorme (white-space:nowrap herdado de tbl-produtos), empurrando a tabela toda pra fora da
+   tela. Deixa só a 1ª coluna quebrar linha (nome+etiquetas empilham) e aperta um pouco o
+   padding/fonte - assim cabe tudo sem precisar rolar. */
+table.tbl-ads{font-size:12.5px}
+table.tbl-ads th,table.tbl-ads td{padding:8px 9px}
+table.tbl-ads td:first-child{white-space:normal;min-width:190px;line-height:1.6}
 .loja-tag{font-size:10.5px;font-weight:700;background:rgba(163,163,163,.18);color:var(--violet-l);padding:3px 8px;border-radius:99px;white-space:nowrap;border:1px solid rgba(163,163,163,.3)}
 .qty-acao{font:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:88px;background:var(--bg2);color:var(--text)}
 .obs-input{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;width:100%;min-width:240px;background:var(--bg2);color:var(--text)}
@@ -461,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v339</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v341</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5412,13 +5420,14 @@ function renderAds(){
         <span style="flex:1;font-size:12.5px;color:var(--muted)">${personalizado?'':(dados.atualizadoEm?'Última atualização: '+new Date(dados.atualizadoEm).toLocaleString('pt-BR'):'Ainda não sincronizado nesta loja.')}</span>
       </div>
       ${adsLucroErro?`<p class="hint" style="color:#e66;margin-top:6px">⚠ ${esc(adsLucroErro)}</p>`:''}
+      ${!adsLucroErro&&adsLucroResultado&&(adsLucroResultado.avisos||[]).some(a=>/ads/i.test(a))?`<p class="hint" style="color:#e6a23c;margin-top:6px">${(adsLucroResultado.avisos||[]).filter(a=>/ads/i.test(a)).map(a=>'⚠ '+esc(a)).join('<br>')}</p>`:''}
       ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
       ${adsLucroCarregando?(adsLucroProgresso&&adsLucroProgresso.total?barraProgresso(adsLucroProgresso.feito,adsLucroProgresso.total,'💰 '+(adsLucroProgresso.etapa||'Calculando custo/lucro do período...')):barraIndeterminada('💰 Calculando custo/lucro do período...')):''}
       ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
     </div>
-    ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+    ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos tbl-ads"><thead><tr>
       <th>Campanha</th>
       <th class="num">Margem Bruta</th><th class="num">Gasto Ads</th><th class="num">Margem Líquida</th>
       <th class="num">TACOS Meta</th><th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
@@ -5430,22 +5439,22 @@ function renderAds(){
         const tacosComp=comp?calcTacos(comp):null;
         const tacosAlto=tacos>c.margemPct;
         const av=avalAtual.get(camp.id);
-        const notaRoas=av?` <span style="margin-left:0.5cm" class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" style="font-size:11.5px;font-weight:700" title="${[
+        const notaRoas=av?` <span style="margin-left:8px;display:inline-block;font-size:11.5px;font-weight:700" class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" title="${[
           ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
           `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
         ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
-        const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
+        const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
         const sugCampTag=(()=>{
           const sug=adsSugestaoRoasArr()[c.loja];
           const dc=sug&&sug.porCampanha[camp.id];
           if(!dc) return '';
           if(!dc.melhor){
-            return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Nenhum ROAS testado com amostra suficiente ficou dentro da meta de TACOS de ${dc.metaTolerada.toFixed(1)}% (1/3 da margem + tolerância) nos últimos 90 dias">⚠ sem ROAS dentro da meta de TACOS</span>`;
+            return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Nenhum ROAS testado com amostra suficiente ficou dentro da meta de TACOS de ${dc.metaTolerada.toFixed(1)}% (1/3 da margem + tolerância) nos últimos 90 dias">⚠ sem ROAS dentro da meta de TACOS</span>`;
           }
-          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:0.5cm" title="Melhor cenário dentro da meta de TACOS de ${dc.metaTolerada.toFixed(1)}%, calculado nos últimos 90 dias. Clique em ▼ pra ver o ranking completo.">💡 sugestão: ${dc.melhor.faixa}x</span>`;
+          return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Melhor cenário dentro da meta de TACOS de ${dc.metaTolerada.toFixed(1)}%, calculado nos últimos 90 dias. Clique em ▼ pra ver o ranking completo.">💡 sugestão: ${dc.melhor.faixa}x</span>`;
         })();
         return `<tr>
-          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:0.5cm" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
+          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:8px;display:inline-block" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
           <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
           <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${(margemContrib>0&&custoAdsCalc<=margemContrib/3)?' <span class="okv" title="Gasto em Ads dentro da meta de TACOS (1/3 da Margem Bruta/Contribuição)">✓</span>':''}`:'<span class="muted">—</span>'}</td>
@@ -5540,11 +5549,14 @@ function renderAds(){
     try{
       await adsSincronizarLoja(c.loja);
       toast('Ads atualizado.');
-      /* recalcula o Lucro Bruto e dispara a Sugestão de ROAS (90 dias, todas as campanhas) -
-         essa segunda parte roda em background e não trava o Atualizar (a barra de progresso
-         aparece sozinha na tela enquanto ela roda). */
-      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
-      iniciarSugestaoRoasLoja(c.loja);
+      /* recalcula o Lucro Bruto e SÓ DEPOIS dispara a Sugestão de ROAS (90 dias, todas as
+         campanhas) - essa segunda parte roda em background e não trava o Atualizar (a barra de
+         progresso aparece sozinha na tela enquanto ela roda). Antes os dois disparavam juntos
+         (sem esperar um terminar) e batiam na API de Ads do Mercado Livre ao mesmo tempo pra
+         mesma loja - isso derrubava um dos dois silenciosamente (Gasto Ads/Margem Bruta ficavam
+         em branco sem erro nenhum, ou a Sugestão de ROAS vinha com "Resposta inválida do
+         backend"). Agora roda em fila: 1) Lucro, 2) Sugestão de ROAS. */
+      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>iniciarSugestaoRoasLoja(c.loja));
     }
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
@@ -5562,8 +5574,7 @@ function renderAds(){
        precisa disparar aqui, porque o botão "Atualizar" (que normalmente dispara ela) fica
        escondido quando o período é personalizado. */
     adsBuscarPersonalizado(c.loja);
-    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi);
-    iniciarSugestaoRoasLoja(c.loja);
+    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>iniciarSugestaoRoasLoja(c.loja));
   };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
