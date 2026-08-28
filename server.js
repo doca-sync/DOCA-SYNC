@@ -266,6 +266,14 @@ pool.query('alter table mp_financeiro add column if not exists receita_diaria_me
 pool.query('alter table mp_financeiro add column if not exists receita_atualizado_em timestamptz').catch(e => console.error('Falha ao adicionar coluna "receita_atualizado_em":', e.message));
 pool.query('alter table ml_produtos add column if not exists categoria_id text')
   .catch(e => console.error('Falha ao adicionar coluna "categoria_id" em ml_produtos:', e.message));
+/* "Entrada Pendente 2.0" (28/08, pedido do Felipe): guarda o LOG REAL de recebimento no galpao do
+   Full (endpoint /stock/fulfillment/operations/search, type=inbound_reception), pra' o Doca (front)
+   conseguir saber com precisao quanto de um envio confirmado ja' foi recebido de verdade pelo ML -
+   em vez de inferir por delta de aptas+transferencia (que se confunde com venda/ajuste no meio do
+   caminho). So' e' preenchido quando o item esta' na lista "pendentes" que o front manda no /sync
+   (ver rota /sync abaixo) - assim nao gasta chamada de API a toa pra item sem nada em processamento. */
+pool.query('alter table ml_produtos add column if not exists recebimentos_full jsonb')
+  .catch(e => console.error('Falha ao adicionar coluna "recebimentos_full" em ml_produtos:', e.message));
 pool.query(`create table if not exists ml_mercado_categoria (
   id serial primary key,
   loja text not null,
@@ -2458,6 +2466,31 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
     return null;
   }
 }
+/* "Entrada Pendente 2.0" (28/08, pedido do Felipe: "existe possibilidade melhor?" depois de eu
+   ter implementado uma estimativa por delta de aptas+transferencia). Achado real 28/08: o Mercado
+   Livre TEM um endpoint de log de operacoes de estoque do Full
+   (/stock/fulfillment/operations/search, documentado em developers.mercadolivre.com.br/en_us/
+   fulfillment), incluindo o tipo inbound_reception - "entrada de estoque" de verdade, com data e
+   quantidade, sem se confundir com venda/ajuste no meio do caminho (diferente de so' olhar o total
+   de aptas+transferencia subir/descer, que mistura tudo). So' chama pra itens que o front avisa que
+   tem algo "em processamento" pendente (ver pendentes= no /sync) - pra nao gastar chamada de API
+   (e tempo de sync) em item sem nada esperando confirmacao. Retorna [{data:'YYYY-MM-DD', qtd}]. */
+async function buscarRecebimentosFull(accessToken, sellerId, inventoryId, diasAtras) {
+  try {
+    const hj = new Date();
+    const de = new Date(hj.getTime() - (diasAtras || 6) * 864e5);
+    const fmt = d => d.toISOString().slice(0, 10);
+    const url = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${sellerId}&inventory_id=${inventoryId}&date_from=${fmt(de)}&date_to=${fmt(hj)}&type=inbound_reception`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j.results || [])
+      .map(op => ({ data: (op.date_created || '').slice(0, 10), qtd: (op.detail && op.detail.available_quantity) || 0 }))
+      .filter(x => x.data && x.qtd > 0);
+  } catch (e) {
+    return null;
+  }
+}
 app.get('/debug/full/estoque', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -3836,6 +3869,13 @@ const loja = req.query.loja || req.body?.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
     return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
   }
+  /* "Entrada Pendente 2.0" (28/08): lista de ml_item_id que o front avisa terem algo "em
+     processamento" (envio confirmado como FULL, aguardando o ML mostrar o recebimento - ver
+     confirmarEnvioFull/fullCalc no doca.html). So' pra esses e' que vale a pena gastar uma
+     chamada extra pro log real de recebimento (buscarRecebimentosFull) - resto do catalogo fica
+     sem nada em processamento na maior parte do tempo, gastar a chamada a toa so' deixa o /sync
+     mais lento sem necessidade. */
+  const pendentesSet = new Set(String(req.query.pendentes || req.body?.pendentes || '').split(',').map(s => s.trim()).filter(Boolean));
   let logId = null;
   try {
     const logInsert = await pool.query(
@@ -3876,11 +3916,15 @@ const loja = req.query.loja || req.body?.loja;
       if (it.inventory_id) {
         transferenciaFull = await buscarTransferenciaFull(accessToken, conta.ml_user_id, it.inventory_id);
       }
+      let recebimentosFull = null;
+      if (it.inventory_id && pendentesSet.has(it.id)) {
+        recebimentosFull = await buscarRecebimentosFull(accessToken, conta.ml_user_id, it.inventory_id, 6);
+      }
       const vendas = mapaVendas.get(it.id) || { v7: 0, v15: 0, v30: 0 };
       console.log(`[sync-item] id=${it.id} sku=${extrairSku(it)} titulo="${(it.title||'').slice(0,30)}" vendas=${JSON.stringify(vendas)}`);
       await pool.query(
-        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, categoria_id, atualizado_em)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now())
+        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, categoria_id, recebimentos_full, atualizado_em)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
          on conflict (loja, ml_item_id) do update set
            sku = excluded.sku, titulo = excluded.titulo,
            quantidade_disponivel = excluded.quantidade_disponivel,
@@ -3890,7 +3934,9 @@ const loja = req.query.loja || req.body?.loja;
            concorrencia_preco = excluded.concorrencia_preco,
            perguntas_sem_resposta = excluded.perguntas_sem_resposta,
            vendas_7d = excluded.vendas_7d, vendas_15d = excluded.vendas_15d, vendas_30d = excluded.vendas_30d,
-           transferencia_full = excluded.transferencia_full, categoria_id = excluded.categoria_id, atualizado_em = now()`,
+           transferencia_full = excluded.transferencia_full, categoria_id = excluded.categoria_id,
+           recebimentos_full = coalesce(excluded.recebimentos_full, ml_produtos.recebimentos_full),
+           atualizado_em = now()`,
         [
           loja, it.id,
           extrairSku(it),
@@ -3904,7 +3950,8 @@ const loja = req.query.loja || req.body?.loja;
           mapaPerguntas.get(it.id) || 0,
           vendas.v7, vendas.v15, vendas.v30,
           transferenciaFull,
-          it.category_id || null
+          it.category_id || null,
+          recebimentosFull ? JSON.stringify(recebimentosFull) : null
         ]
       );
     }
@@ -3951,7 +3998,7 @@ app.get('/data', async (req, res) => {
   try {
     const conta = await pegarConta(loja);
     const produtos = await pool.query(
-      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, recebimentos_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
       [loja]
     );
     res.json({

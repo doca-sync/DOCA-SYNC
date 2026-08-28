@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v335</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v336</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2680,9 +2680,12 @@ function confirmarEnvioFull(envioId,manterCompra){
        (FIFO), sobrando pra próxima quando zerar. p.filaBaseline só é (re)ancorado quando a fila
        estava vazia - se já tinha algo em processamento, o baseline current já está sendo
        acompanhado sync a sync, não reseta. */
+    /* CORRIGIDO 28/08 (3ª volta, "Entrada Pendente 2.0"): não guarda mais baseline nenhum aqui - a
+       conta de "quanto já chegou" agora vem do log real de operações do ML
+       (buscarRecebimentosFull no server.js), não de comparar aptas+transf antes/depois (que se
+       confundia com venda no meio do caminho) - ver filaProcessamentoComRestante. */
     if(!p.filaProcessamento) p.filaProcessamento=[];
-    if(!p.filaProcessamento.length) p.filaBaseline=fi?((fi.aptas||0)+(fi.transf||0)):0;
-    p.filaProcessamento.push({data:hoje(),qtdRestante:i.solicitado||0});
+    p.filaProcessamento.push({data:hoje(),qtdOriginal:i.solicitado||0});
     somado.push(p.sku);
     flashFull[p.id]=Date.now();
   });
@@ -3783,6 +3786,30 @@ function concorrenciaLabel(s){
    um dado 100% real, mantido pelo próprio Doca. Assim que um envio é confirmado como FULL, ele
    sai da programação e some do cálculo até a próxima sincronização mostrar ele em aptas/transf
    de verdade — sem precisar adivinhar o estado intermediário. */
+/* "Entrada Pendente 2.0" (28/08, pedido do Felipe depois de perguntar "existe possibilidade
+   melhor?" da estimativa por delta): calcula, AO VIVO (sem nada guardado/mutado - sempre
+   recalculado do zero), quanto ainda falta chegar de cada entrada da fila de "em processamento"
+   de um produto (ver confirmarEnvioFull). Antes (v334/v335) isso vinha de comparar o total de
+   aptas+transferência subindo desde a última sincronização - funcionava, mas se confundia com
+   venda/ajuste acontecendo no meio do caminho (uma venda reduz aptas ao mesmo tempo que uma
+   chegada aumenta, mascarando o quanto realmente chegou). Agora usa p.recebimentosFull - o LOG
+   REAL de recebimento do galpão Full, vindo direto do Mercado Livre (endpoint
+   /stock/fulfillment/operations/search, type=inbound_reception - ver buscarRecebimentosFull no
+   server.js), datado e sem ambiguidade nenhuma com venda. Soma os eventos reais desde a data da
+   entrada mais antiga da fila, e desconta em ordem (mais antiga primeiro, igual antes). */
+function filaProcessamentoComRestante(p){
+  const fila=(p&&p.filaProcessamento)||[];
+  if(!fila.length) return [];
+  const dataMaisAntiga=fila[0].data;
+  const eventos=(p.recebimentosFull||[]).filter(e=>e.data>=dataMaisAntiga);
+  let recebido=eventos.reduce((s,e)=>s+(Number(e.qtd)||0),0);
+  return fila.map(entrada=>{
+    const qtdOriginal=entrada.qtdOriginal!=null?entrada.qtdOriginal:(entrada.qtdRestante||0);
+    const consumido=Math.min(recebido,qtdOriginal);
+    recebido-=consumido;
+    return {data:entrada.data,qtdOriginal,qtdRestante:Math.max(0,qtdOriginal-consumido)};
+  });
+}
 function mlAtualizarFullDoSinc(p,item,loja){
   let fi=state.full.itens.find(x=>x.loja===loja&&fullProduto(x)&&fullProduto(x).id===p.id);
   if(!fi){
@@ -3801,33 +3828,33 @@ function mlAtualizarFullDoSinc(p,item,loja){
   fi.confirmadoNaoVerificado=0;
   fi.movido=null;
   state.full.lidoEm[loja]=Date.now();
-  // consome a fila de "envios confirmados, aguardando o ML registrar" (ver confirmarEnvioFull) -
-  // prazo de segurança de 5 dias por entrada (Felipe, 21/08: normalmente leva 2 dias úteis pra
-  // constar no estoque; 5 dias cobre folga de fim de semana). CORRIGIDO 28/08 (2ª volta): fila
-  // FIFO em vez de marcador único, pra não perder o rastro se tiver mais de 1 envio do mesmo SKU
-  // confirmado dentro da mesma janela (ex.: programado + emergência) - ver comentário completo em
-  // confirmarEnvioFull. O delta real desde o último sync (aptas+transf subindo) desconta da
-  // entrada mais antiga primeiro, sobrando pra próxima quando ela zerar.
+  // "Entrada Pendente 2.0" (28/08, 3ª volta): guarda o log real de recebimento (só vem preenchido
+  // quando esse item estava na lista "pendentes" do /sync - ver mlSincronizarLoja) e poda a fila de
+  // "envios confirmados, aguardando o ML registrar" (ver confirmarEnvioFull) por prazo de segurança
+  // - 5 dias (Felipe, 21/08) - ou por já ter chegado tudo de verdade (ver filaProcessamentoComRestante,
+  // que faz a conta real agora sem se confundir com venda no meio do caminho, ao contrário da
+  // versão anterior por delta de aptas+transferência).
+  if(Array.isArray(item.recebimentos_full)) p.recebimentosFull=item.recebimentos_full;
   if(p.filaProcessamento&&p.filaProcessamento.length){
-    const atual=(fi.aptas||0)+(fi.transf||0);
-    let delta=Math.max(0,atual-(p.filaBaseline!=null?p.filaBaseline:atual));
-    p.filaProcessamento.forEach(entrada=>{
-      if(delta<=0) return;
-      const consome=Math.min(delta,entrada.qtdRestante);
-      entrada.qtdRestante-=consome; delta-=consome;
-    });
-    p.filaProcessamento=p.filaProcessamento.filter(entrada=>{
-      const diasDesde=(Date.now()-Date.parse(entrada.data+'T00:00:00-03:00'))/864e5;
-      return entrada.qtdRestante>0.5&&diasDesde<=5;
-    });
-    p.filaBaseline=p.filaProcessamento.length?atual:null;
+    p.filaProcessamento=filaProcessamentoComRestante(p)
+      .filter(entrada=>{
+        const diasDesde=(Date.now()-Date.parse(entrada.data+'T00:00:00-03:00'))/864e5;
+        return entrada.qtdRestante>0.5&&diasDesde<=5;
+      })
+      .map(({data,qtdOriginal})=>({data,qtdOriginal}));
   }
 }
 /* chama o backend hospedado: primeiro manda sincronizar (POST /sync), depois busca o resultado (GET /data) */
 async function mlSincronizarLoja(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (ex: https://doca-sync.onrender.com).');
-  const rSync=await fetch(`${base}/sync?loja=${encodeURIComponent(loja)}`,{method:'POST'});
+  /* "Entrada Pendente 2.0" (28/08): avisa o backend quais produtos têm algo "em processamento"
+     (envio confirmado como FULL, aguardando o ML - ver confirmarEnvioFull) pra ele só gastar a
+     chamada extra do log real de recebimento (buscarRecebimentosFull) nesses - resto do catálogo
+     não tem nada pendente na maior parte do tempo, não faz sentido consultar sempre. */
+  const pendentes=state.produtos.filter(p=>p.loja===loja&&p.mlItemId&&p.filaProcessamento&&p.filaProcessamento.length).map(p=>p.mlItemId);
+  const qsPendentes=pendentes.length?`&pendentes=${encodeURIComponent(pendentes.join(','))}`:'';
+  const rSync=await fetch(`${base}/sync?loja=${encodeURIComponent(loja)}${qsPendentes}`,{method:'POST'});
   let jSync; try{ jSync=await rSync.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+rSync.status+'). Confira a URL.'); }
   if(!rSync.ok||!jSync.ok) throw new Error(jSync.erro||('Falha ao sincronizar (status '+rSync.status+').'));
   const rData=await fetch(`${base}/data?loja=${encodeURIComponent(loja)}`);
@@ -9948,11 +9975,14 @@ function fullCalc(i,envioOverride){
      PROPORCIONAL conforme aptas+transf sobe de verdade (cada unidade que chega é uma a menos "em
      processamento"), até zerar (chegou tudo) ou vencer os 5 dias - nunca um número congelado.
      CORRIGIDO 28/08 (2ª volta): soma a FILA inteira (p.filaProcessamento), não só 1 marcador - ver
-     comentário completo em confirmarEnvioFull/mlAtualizarFullDoSinc sobre por que virou fila. */
+     comentário completo em confirmarEnvioFull/mlAtualizarFullDoSinc sobre por que virou fila.
+     CORRIGIDO 28/08 (3ª volta, "Entrada Pendente 2.0"): em vez de decair por delta de aptas+transf
+     (que se confundia com venda no meio do caminho), usa o log real de recebimento do ML - ver
+     filaProcessamentoComRestante. */
   const emProcessamento=(()=>{
     const p=fullProduto(i);
-    if(!p||!p.filaProcessamento||!p.filaProcessamento.length) return 0;
-    return p.filaProcessamento.reduce((s,e)=>s+(e.qtdRestante||0),0);
+    if(!p) return 0;
+    return filaProcessamentoComRestante(p).reduce((s,e)=>s+(e.qtdRestante||0),0);
   })();
   const full=fullValorBase+proximosProgramados+emProcessamento;   /* quantidade, pra Total/cobertura/sugestão */
   const consumo=media*D, proj=full-consumo, dem=media*(c.cobertura||30);
