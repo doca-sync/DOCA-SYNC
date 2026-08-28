@@ -461,7 +461,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v331</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v332</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3397,7 +3397,7 @@ function renderDashboard(){
               <span class="det"><span class="i">i</span><span class="pop">
                 <span class="ln"><span>Origem</span><b>automático</b></span>
                 <span class="ln"><span>Atualizado</span><b>${t.fin.mpAtualizadoEm?esc(fLidoTxt(new Date(t.fin.mpAtualizadoEm).getTime())):'aguardando 1ª leitura'}</b></span>
-                ${financeiroCalibrado(t.loja).aindaHoje>0.01?`<span class="ln"><span>Ainda a cair hoje</span><b>${fmtMoney(financeiroCalibrado(t.loja).aindaHoje)}</b></span><span class="ln"><span>Estimativa fim do dia</span><b>${fmtMoney(financeiroCalibrado(t.loja).saldoEstimadoFimDia)}</b></span>`:''}
+                ${financeiroCalibrado(t.loja).aindaHoje>0.01?`<span class="ln"><span>Ainda a cair hoje</span><b>${fmtMoney(financeiroCalibrado(t.loja).aindaHoje)}</b></span>${financeiroCalibrado(t.loja).saldoEstimadoFimDia!=null?`<span class="ln"><span>Estimativa fim do dia</span><b>${fmtMoney(financeiroCalibrado(t.loja).saldoEstimadoFimDia)}</b></span>`:`<span class="ln"><span>Estimativa fim do dia</span><b>ainda sem fechamento de ontem</b></span>`}`:''}
                 <span class="obs">Saldo disponível puxado direto do Mercado Pago. Não é ao vivo — o Mercado Pago gera esse relatório de tempos em tempos, não na hora.</span></span></span></span></div>`
             :`<div class="valor-manual-row"><span class="muted">Mercado Pago:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-mpago="${esc(t.loja)}" value="${t.fin.mercadoPago?String(t.fin.mercadoPago).replace('.',','):''}"></div>`}
           ${t.fin.mpAutomatico?`<div><span class="muted">A receber:</span> <span class="valor-info"><b>${fmtMoney(t.fin.aReceber||0)}</b>
@@ -3834,7 +3834,30 @@ function aplicarSincronizacaoFinanceira(loja,j){
   /* Number(...) aqui é proposital: o backend pode devolver esses valores como texto
      (coluna "numeric" do Postgres vira string), e "3310"+"2716.3" em JS gruda os dígitos
      em vez de somar, gerando um patrimônio absurdo. Nunca confiar que a API manda number. */
-  if(j.saldoDisponivel!=null){ f.mercadoPago=Number(j.saldoDisponivel)||0; f.mpAtualizadoEm=j.saldoAtualizadoEm||null; }
+  if(j.saldoDisponivel!=null){
+    /* fechamento diário do saldo MP (28/08, pedido do Felipe - calibrado com extrato real da
+       TorvStore de 27/08). Antes a "Estimativa — Fim do Dia" somava a agenda de hoje em cima do
+       saldo sincronizado HOJE - mas esse saldo pode já incluir PARTE do movimento de hoje (o
+       relatório de saldo e o de agenda saem do Mercado Pago em horários diferentes), contando a
+       mesma liberação 2x. Erro medido nesse dia real: R$1.991 (6,8%). Guardando aqui o ÚLTIMO
+       saldo conhecido de CADA dia (antes de virar o dia seguinte), a estimativa passa a somar a
+       agenda de hoje em cima do FECHAMENTO DE ONTEM - que por construção nunca tem nada de hoje
+       dentro, então não tem como dar dupla contagem. Validado no mesmo dia real: erro caiu pra
+       R$24 (0,08%). Guarda só os últimos 14 dias (só precisa de ontem, o resto é peso morto). */
+    if(f.mpAtualizadoEm){
+      const dOld=new Date(f.mpAtualizadoEm);
+      const diaOld=_dataISO(dOld.getFullYear(),dOld.getMonth(),dOld.getDate());
+      let diaNovo=hoje();
+      if(j.saldoAtualizadoEm){ const dN=new Date(j.saldoAtualizadoEm); if(!isNaN(dN.getTime())) diaNovo=_dataISO(dN.getFullYear(),dN.getMonth(),dN.getDate()); }
+      if(diaOld<diaNovo){
+        if(!f.fechamentoDiario) f.fechamentoDiario={};
+        f.fechamentoDiario[diaOld]=f.mercadoPago;
+        const limite=_somaDiasISO(diaNovo,-14);
+        Object.keys(f.fechamentoDiario).forEach(d=>{ if(d<limite) delete f.fechamentoDiario[d]; });
+      }
+    }
+    f.mercadoPago=Number(j.saldoDisponivel)||0; f.mpAtualizadoEm=j.saldoAtualizadoEm||null;
+  }
   if(j.aReceber!=null){ f.aReceber=Number(j.aReceber)||0; f.aReceberAtualizadoEm=j.aReceberAtualizadoEm||null; }
   /* agenda de liberações (pra Fluxo de Caixa, 23/08): datas em que o dinheiro pendente no MP vai
      ficar disponível pra usar - [{data,valor}], já vem ordenada por data do backend. */
@@ -6427,14 +6450,33 @@ function financeiroCalibrado(loja){
      dia - dá pra ver os dois: quanto está confirmado agora e quanto deve entrar ainda hoje). */
   const jaDeviaTerCaido=agenda.filter(x=>x.data<hojeStr&&(!dataUltimoSync||x.data>dataUltimoSync)).reduce((s,x)=>s+(Number(x.valor)||0),0);
   const aindaHoje=agenda.filter(x=>x.data===hojeStr).reduce((s,x)=>s+(Number(x.valor)||0),0);
+  const mercadoPagoCalibrado=(f.mercadoPago||0)+jaDeviaTerCaido;
+  /* CORRIGIDO 28/08 (Felipe mandou o extrato real da TorvStore de 27/08 pra calibrar): somar
+     aindaHoje em cima do saldo sincronizado HOJE dava conta errada porque esse saldo pode já
+     incluir PARTE do movimento de hoje (o relatório de saldo e o de agenda saem em horários
+     diferentes do Mercado Pago) - validado no extrato real: erro de R$1.991 (6,8%). A correção,
+     também validada no mesmo extrato (erro caiu pra R$24, 0,08%): somar aindaHoje em cima do
+     FECHAMENTO DE ONTEM (ver fechamentoDiario em aplicarSincronizacaoFinanceira) em vez do saldo
+     de hoje - fechamento de ontem por construção nunca tem nada de hoje dentro, não tem como
+     contar 2x. Só calcula quando já existe o fechamento de ontem guardado (precisa 1 sync no dia
+     anterior); sem isso fica null e a tela avisa em vez de mostrar um número não confiável. */
+  const ontemStr=_somaDiasISO(hojeStr,-1);
+  const fechamentoOntem=(f.fechamentoDiario&&f.fechamentoDiario[ontemStr]!=null)?Number(f.fechamentoDiario[ontemStr]):null;
+  const saldoEstimadoFimDia=fechamentoOntem!=null?(fechamentoOntem+aindaHoje):null;
   return {
-    mercadoPago:(f.mercadoPago||0)+jaDeviaTerCaido,
+    mercadoPago:mercadoPagoCalibrado,
     aReceber:Math.max(0,(f.aReceber||0)-jaDeviaTerCaido-aindaHoje),
     agendaLiberacoes:agenda.filter(x=>x.data>hojeStr),
     mpAtualizadoEm:f.mpAtualizadoEm,
     calibrado:jaDeviaTerCaido,
     aindaHoje,
-    saldoEstimadoFimDia:(f.mercadoPago||0)+jaDeviaTerCaido+aindaHoje
+    fechamentoOntem,
+    saldoEstimadoFimDia,
+    /* delta que ainda falta somar HOJE na trilha Garantido/Projetado (projecaoCaixaBase) - quando
+       tem fechamento de ontem, é só a diferença entre a estimativa calibrada e o saldo de hoje
+       (evita somar aindaHoje inteiro em cima de um saldo que já pode ter parte dele dentro); sem
+       fechamento de ontem, cai pro comportamento antigo (aindaHoje inteiro, melhor que nada). */
+    deltaHojeProjecao:fechamentoOntem!=null?Math.max(0,saldoEstimadoFimDia-mercadoPagoCalibrado):aindaHoje
   };
 }
 /* achado 27/08 (pedido do Felipe): "geralmente os envios FULL são no meio do mês e no final (15 e
@@ -6586,7 +6628,11 @@ function projecaoCaixaBase(lojas,dias){
      próprio dia de hoje - assim que passa de hoje pra amanhã, esse valor já está "andando" no
      saldo garantido igual qualquer outra liberação agendada (o que é correto: por amanhã, algo
      agendado pra HOJE já deveria ter caído de verdade). */
-  lojas.forEach(loja=>{ const fc=financeiroCalibrado(loja); if(fc.aindaHoje>0.01) entradas[hojeStr]=(entradas[hojeStr]||0)+fc.aindaHoje; });
+  /* CORRIGIDO 28/08: usa deltaHojeProjecao (não aindaHoje inteiro) - ver financeiroCalibrado.
+     Quando tem fechamento de ontem calibrado, isso evita repetir aqui a mesma dupla contagem que
+     foi corrigida na Estimativa — Fim do Dia (o saldo de hoje já pode ter parte da agenda de hoje
+     dentro). */
+  lojas.forEach(loja=>{ const fc=financeiroCalibrado(loja); if(fc.deltaHojeProjecao>0.01) entradas[hojeStr]=(entradas[hojeStr]||0)+fc.deltaHojeProjecao; });
   const saidas={}; const saidasDetalhe={};
   /* pra cada loja, quanto falta faturar no mês (dado real, ver faturamentoProjetadoRestanteMes) -
      calculado 1x por loja aqui fora do loop de despesa, reaproveitado abaixo pra projetar a fatura
@@ -6988,12 +7034,18 @@ function renderFluxoCaixa(){
      é o número (usa a loja com sync mais antigo entre as exibidas, pra ser conservador). */
   const datasSyncMp=lojasAlvo.map(l=>finLoja(l).mpAtualizadoEm).filter(Boolean).map(t=>new Date(t).getTime());
   const syncMpMaisAntigo=datasSyncMp.length?Math.min(...datasSyncMp):null;
-  /* estimativa de fim de dia (pedido do Felipe 27/08): soma o "ainda a cair hoje" de cada loja em
-     cima do saldo garantido - é o saldo que o Mercado Pago deve terminar o dia mostrando, SE tudo
-     que já está agendado pra hoje realmente cair (não conta venda nova que ainda vai acontecer,
-     só o que já está pendente e programado). Fica separado do SALDO DISPONÍVEL HOJE de propósito
+  /* estimativa de fim de dia (pedido do Felipe 27/08, CALIBRADA 28/08 com extrato real - ver
+     financeiroCalibrado): soma o fechamento de ontem de cada loja + o "ainda a cair hoje" - é o
+     saldo que o Mercado Pago deve terminar o dia mostrando, SE tudo que já está agendado pra hoje
+     realmente cair. Só entra na soma a loja que já tem fechamento de ontem calibrado (senão o
+     número fica não confiável - ver comentário em financeiroCalibrado); as que ainda não têm
+     ficam de fora e avisadas separadamente. Fica separado do SALDO DISPONÍVEL HOJE de propósito
      (esse continua só o garantido/confirmado) - dá pra ver os dois lado a lado. */
-  const aindaHojeTotal=lojasAlvo.reduce((s,l)=>s+financeiroCalibrado(l).aindaHoje,0);
+  const calibradosHoje=lojasAlvo.map(l=>({loja:l,fc:financeiroCalibrado(l)}));
+  const comEstimativa=calibradosHoje.filter(x=>x.fc.saldoEstimadoFimDia!=null&&x.fc.aindaHoje>0.01);
+  const semFechamentoOntem=calibradosHoje.filter(x=>x.fc.saldoEstimadoFimDia==null&&x.fc.aindaHoje>0.01).map(x=>x.loja);
+  const estimativaFimDiaTotal=comEstimativa.reduce((s,x)=>s+x.fc.saldoEstimadoFimDia,0)+lojasAlvo.filter(l=>!comEstimativa.find(x=>x.loja===l)&&!semFechamentoOntem.includes(l)).reduce((s,l)=>s+financeiroCalibrado(l).mercadoPago,0);
+  const aindaHojeCalibradoTotal=comEstimativa.reduce((s,x)=>s+x.fc.aindaHoje,0);
   /* fatura ML ainda em período aberto (sem vencimento real) fica de fora da projeção - avisa aqui
      pra não parecer que ela "sumiu". Pedido do Felipe 24/08. */
   const faturaEmAberto=despesasArr().find(d=>d.origem==='ml_fatura'&&!d.pago&&d.semVencimentoReal&&lojasAlvo.includes(d.loja));
@@ -7006,9 +7058,9 @@ function renderFluxoCaixa(){
       <div class="form-grid" style="grid-template-columns:1fr">
         <label>Ver<select id="fcAlvo">${opts.map(o=>`<option value="${o.valor}" ${o.valor===fluxoCaixaAlvo?'selected':''}>${esc(o.label)}</option>`).join('')}</select></label>
       </div>
-      <div class="form-grid" style="grid-template-columns:${aindaHojeTotal>0.01?'1fr 1fr 1fr':'1fr 1fr'};margin-top:10px">
+      <div class="form-grid" style="grid-template-columns:${(comEstimativa.length||semFechamentoOntem.length)?'1fr 1fr 1fr':'1fr 1fr'};margin-top:10px">
         <div><span class="muted" style="font-size:11px">SALDO DISPONÍVEL HOJE</span><br><b style="font-size:18px">${fmtMoney(proj.saldoInicial)}</b>${syncMpMaisAntigo?`<br><span class="muted" style="font-size:10px">saldo MP ${esc(fLidoTxt(syncMpMaisAntigo))} — não é ao vivo, o Mercado Pago só gera esse relatório de tempos em tempos</span>`:''}</div>
-        ${aindaHojeTotal>0.01?`<div><span class="muted" style="font-size:11px">ESTIMATIVA — FIM DO DIA</span><br><b style="font-size:18px">${fmtMoney(proj.saldoInicial+aindaHojeTotal)}</b><br><span class="muted" style="font-size:10px">+${fmtMoney(aindaHojeTotal)} já agendado pra liberar ainda hoje (se cair até virar amanhã)</span></div>`:''}
+        ${comEstimativa.length?`<div><span class="muted" style="font-size:11px">ESTIMATIVA — FIM DO DIA</span><br><b style="font-size:18px">${fmtMoney(estimativaFimDiaTotal)}</b><br><span class="muted" style="font-size:10px">fechamento de ontem + ${fmtMoney(aindaHojeCalibradoTotal)} agendado pra liberar ainda hoje${semFechamentoOntem.length?` — ${semFechamentoOntem.map(esc).join(', ')} de fora (sem fechamento de ontem ainda)`:''}</span></div>`:(semFechamentoOntem.length?`<div><span class="muted" style="font-size:11px">ESTIMATIVA — FIM DO DIA</span><br><span class="hint" style="font-size:11px">ainda sem fechamento de ontem calibrado pra ${semFechamentoOntem.map(esc).join(', ')} — calibra sozinho a partir de amanhã</span></div>`:'')}
         <div><span class="muted" style="font-size:11px">GARANTIDO — MÍNIMO EM 60 DIAS</span><br><b style="font-size:18px" class="${piorSaldo<0?'pend':'okv'}">${fmtMoney(piorSaldo)}</b>${piorSaldo<0&&diaPior?` <span class="pend" style="font-size:12px">— fica negativo em ${fmtData(diaPior.data)}</span>`:''}</div>
       </div>
       ${eventos.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
