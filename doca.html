@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v352</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v353</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -638,6 +638,12 @@ let ultimaAtividadeLocal=0;
 let ultimaVerificacao=null;
 let nuvemAuth=localStorage.getItem('estoque_nuvem_auth')||null;  /* "usuario:senha" em base64 - presença = nuvem ligada */
 let nuvemAtualizadoEm=0;      /* "atualizado_em" (epoch ms) da última leitura/gravação conhecida na nuvem */
+let ultimoSincronizado=null;  /* CORRIGIDO 31/08 (2ª volta - Felipe: mudança no computador sumiu com o
+   celular aberto): foto do state exatamente como estava na última vez que bateu com o servidor
+   (depois de carregar ou salvar com sucesso). Usada em mesclarPorId pra saber se ESTE aparelho
+   de fato editou um item, ou só tem uma cópia parada dele - sem isso, "local ganha em empate"
+   fazia qualquer aparelho com dados desatualizados sobrescrever edições reais do outro só por
+   tentar salvar algo, mesmo sem ter mexido naquele item específico. */
 let nuvemGravando=false, nuvemGravarDeNovo=false;
 /* ---------- helpers ---------- */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -1730,28 +1736,45 @@ async function conectarNuvem(usuario,senha){
    MESMO item ao mesmo tempo (aí fica a versão local, que é rara e sem solução melhor sem
    histórico campo a campo). Financeiro/config (full.cfg, ads.cfg etc) continuam ficando com a
    versão local, por serem preferências de tela, não listas de itens. */
-function mesclarPorId(local,remoto){
+/* CORRIGIDO 31/08 (2ª volta - Felipe: "atualizei o computador com o celular aberto, sumiu a
+   última alteração"): antes, em caso de empate de id, o local ganhava sempre - mas "local" é a
+   lista INTEIRA deste aparelho, não só o que ele mudou. Um aparelho com dados desatualizados na
+   memória, ao salvar qualquer coisa (mesmo sem mexer naquele item), tinha sua cópia PARADA NO
+   TEMPO de cada item sobrescrevendo a edição real e mais nova do outro aparelho. Agora só deixa
+   o local ganhar se ele realmente mudou aquele item desde a última sincronização (comparando com
+   ultimoSincronizado) - se está igual ao que já tinha antes, quem não mexeu cede pra versão de
+   quem mexeu. */
+function mesclarPorId(local,remoto,baseline){
   const porId={};
   (Array.isArray(remoto)?remoto:[]).forEach(x=>{ if(x&&x.id!=null) porId[x.id]=x; });
-  (Array.isArray(local)?local:[]).forEach(x=>{ if(x&&x.id!=null) porId[x.id]=x; }); /* local ganha em empate - é quem está tentando salvar agora */
+  const baseById={};
+  (Array.isArray(baseline)?baseline:[]).forEach(x=>{ if(x&&x.id!=null) baseById[x.id]=x; });
+  (Array.isArray(local)?local:[]).forEach(x=>{
+    if(!x||x.id==null) return;
+    const base=baseById[x.id];
+    if(base&&JSON.stringify(base)===JSON.stringify(x)) return; /* não mudou aqui - mantém a versão de lá */
+    porId[x.id]=x; /* novo aqui, ou realmente editado aqui - este aparelho ganha */
+  });
   return Object.values(porId);
 }
 function mesclarEstados(local,remoto){
   if(!remoto||typeof remoto!=='object') return local;
+  const base=ultimoSincronizado||{};
   return {...local,
-    envios:mesclarPorId(local.envios,remoto.envios),
-    produtos:mesclarPorId(local.produtos,remoto.produtos),
-    tarefas:mesclarPorId(local.tarefas,remoto.tarefas),
-    listas:mesclarPorId(local.listas,remoto.listas),
-    notasFiscais:mesclarPorId(local.notasFiscais,remoto.notasFiscais),
-    despesas:mesclarPorId(local.despesas,remoto.despesas),
-    avisosFornecedor:mesclarPorId(local.avisosFornecedor,remoto.avisosFornecedor),
-    full:{...local.full,itens:mesclarPorId(local.full&&local.full.itens,remoto.full&&remoto.full.itens)}
+    envios:mesclarPorId(local.envios,remoto.envios,base.envios),
+    produtos:mesclarPorId(local.produtos,remoto.produtos,base.produtos),
+    tarefas:mesclarPorId(local.tarefas,remoto.tarefas,base.tarefas),
+    listas:mesclarPorId(local.listas,remoto.listas,base.listas),
+    notasFiscais:mesclarPorId(local.notasFiscais,remoto.notasFiscais,base.notasFiscais),
+    despesas:mesclarPorId(local.despesas,remoto.despesas,base.despesas),
+    avisosFornecedor:mesclarPorId(local.avisosFornecedor,remoto.avisosFornecedor,base.avisosFornecedor),
+    full:{...local.full,itens:mesclarPorId(local.full&&local.full.itens,remoto.full&&remoto.full.itens,base.full&&base.full.itens)}
   };
 }
 function aplicarEstadoNuvem(d,atualizadoEmIso){
   state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
   migrar(); saveToLocalStorage();
+  ultimoSincronizado=JSON.parse(JSON.stringify(state));
   nuvemAtualizadoEm=atualizadoEmIso?new Date(atualizadoEmIso).getTime():Date.now();
   alteracaoLocal=false; undoStack=[];
 }
@@ -1813,6 +1836,7 @@ async function salvarNaNuvem(tentativaMerge){
       nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime();
     } while(nuvemGravarDeNovo);
     alteracaoLocal=false;
+    ultimoSincronizado=JSON.parse(JSON.stringify(state));
     return true;
   }catch(e){
     console.error('Falha ao salvar na nuvem:',e.message); alteracaoLocal=true;
