@@ -2125,6 +2125,23 @@ app.post('/estado', exigirLogin, async (req, res) => {
     const dados = req.body && req.body.dados;
     if (!dados || typeof dados !== 'object') return res.status(400).json({ ok: false, erro: 'Corpo precisa ter { dados: {...} }.' });
     const anterior = await pegarEstadoNuvem();
+    /* CORRIGIDO 31/08 (Felipe: envios FULL programados sumiram - varios aparelhos abertos ao
+       mesmo tempo, o mais antigo gravou por cima do mais novo sem avisar): antes so' o LADO DE
+       LEITURA (verificarNuvem, no front) checava se outro aparelho tinha salvo algo mais novo -
+       o lado de GRAVACAO nunca checava nada, entao um aparelho com a tela aberta ha' horas podia
+       sobrescrever silenciosamente o que outro aparelho salvou depois. Agora o front manda junto
+       o "seAtualizadoEm" (o timestamp que ELE acha que e' o mais recente, de quando carregou/
+       salvou pela ultima vez) - se bater com o que esta' no banco agora, grava normal; se NAO
+       bater, e' porque alguem gravou no meio do caminho - devolve 409 com os dados atuais do
+       banco em vez de sobrescrever, e o front pergunta pra pessoa o que fazer (mesmo padrao de
+       aviso que ja existia do lado da leitura). */
+    if (anterior && req.body && req.body.seAtualizadoEm) {
+      const doBanco = anterior.atualizado_em ? new Date(anterior.atualizado_em).getTime() : null;
+      const doCliente = new Date(req.body.seAtualizadoEm).getTime();
+      if (doBanco && !isNaN(doCliente) && doBanco !== doCliente) {
+        return res.status(409).json({ ok: false, conflito: true, erro: 'Outro aparelho salvou dados mais novos nesse meio tempo.', dados: anterior.dados, atualizadoEm: anterior.atualizado_em });
+      }
+    }
     if (anterior && anterior.dados) {
       await fazerBackupAntesDeGravar(anterior.dados, anterior.atualizado_em);
     }

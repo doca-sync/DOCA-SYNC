@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v347</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v349</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -615,6 +615,7 @@ let confirmarLojaAtual='todas';
 let envioKitAberto=new Set(); // ids de item "guarda-chuva" de kit com o detalhe dos componentes expandido, na tela de Envios FULL
 let envioForcarLiberado=new Set(); // ids de envio com o botão "Virou FULL" liberado antes da data programada (ver renderEnvio) - só dura a sessão, de propósito
 let pendingConfirm=null;
+let pendingCancel=null; /* callback opcional pro botão "Cancelar" do confirmAction - ver confirmAction */
 let pdfPreview=null;
 let undoStack=[];
 let batchDepth=0;
@@ -1341,7 +1342,7 @@ async function restaurarVersao(nome){
     const d=JSON.parse(await (await (await bdir.getFileHandle(nome)).getFile()).text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('arquivo inválido');
     snapshot('restauração de backup');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
     migrar(); persist();
     toast('Restaurado o backup '+nome+'.');
   }catch(e){ alert('Não consegui restaurar: '+e.message); }
@@ -1358,6 +1359,24 @@ async function saveToFile(){
   try{
     do{
       gravarDeNovo=false;
+      /* CORRIGIDO 31/08 (mesmo problema do lado da nuvem - ver salvarNaNuvem): checa se o
+         arquivo mudou desde a última vez que ESTE computador leu, ANTES de gravar por cima -
+         antes só o lado de leitura (verificarArquivo) checava isso, a gravação nunca. Só dá pra
+         checar com arquivo único (fileHandle); gravação numa pasta inteira (dirHandle) continua
+         sem essa checagem antes de escrever (mais raro dar 2 computadores usando a mesma pasta
+         Dropbox ao mesmo tempo do que 2 abas/celular na nuvem, que foi o caso real). */
+      if(fileHandle&&ultimoMod){
+        let modAtual=null;
+        try{ modAtual=(await fileHandle.getFile()).lastModified; }catch(e){}
+        if(modAtual&&modAtual>ultimoMod+800){
+          gravando=false; updateFileStatus();
+          if(usuarioDigitando()) return false; /* tenta de novo sozinho na próxima alteração, sem interromper quem tá digitando */
+          confirmAction('Este arquivo foi alterado em outro computador bem na hora em que você editava aqui. Se continuar, a alteração que você acabou de fazer sobrescreve a de lá. Cancelar carrega a versão de lá agora (você perde só o que fez agora nesta tela).',
+            async()=>{ alteracaoLocal=true; try{ ultimoMod=(await fileHandle.getFile()).lastModified; }catch(e){} saveToFile(); },
+            ()=>{ carregarDoArquivo(); });
+          return false;
+        }
+      }
       if(dirHandle) await salvarNaPasta();
       else{
         await escrever(fileHandle,JSON.stringify(state,null,2));
@@ -1398,7 +1417,7 @@ async function carregarDoArquivo(silencioso){
     const f=await fileHandle.getFile();
     const d=JSON.parse(await f.text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('conteúdo inválido');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
     migrar(); saveToLocalStorage();
     ultimoMod=f.lastModified; alteracaoLocal=false; undoStack=[];
     renderAll();
@@ -1623,7 +1642,7 @@ async function abrirArquivo(){
     const d=JSON.parse(await (await h.getFile()).text());
     if(!d||!Array.isArray(d.produtos)){ alert('Esse arquivo não parece ser um arquivo de dados válido deste sistema.'); return; }
     fileHandle=h; handlePendente=null;
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
     migrar(); undoStack=[];
     try{ ultimoMod=(await h.getFile()).lastModified; }catch(e){}
     alteracaoLocal=false;
@@ -1726,8 +1745,22 @@ async function salvarNaNuvem(){
   try{
     do{
       nuvemGravarDeNovo=false;
-      const r=await nuvemFetch('/estado',{method:'POST',body:JSON.stringify({dados:state})});
+      /* CORRIGIDO 31/08 (Felipe: envios FULL sumiram - vários aparelhos abertos, um gravou por
+         cima do outro sem avisar): manda junto o timestamp que ESTE aparelho acha que é o mais
+         recente (nuvemAtualizadoEm) - se o servidor tiver algo mais novo que isso, quer dizer que
+         OUTRO aparelho salvou no meio do caminho, e ele recusa a gravação (409) em vez de
+         sobrescrever direto. Antes só o lado de LEITURA (verificarNuvem) avisava sobre isso; a
+         gravação nunca checava nada. */
+      const r=await nuvemFetch('/estado',{method:'POST',body:JSON.stringify({dados:state,seAtualizadoEm:nuvemAtualizadoEm?new Date(nuvemAtualizadoEm).toISOString():null})});
       const j=await r.json();
+      if(r.status===409&&j.conflito){
+        nuvemGravando=false; updateFileStatus();
+        if(usuarioDigitando()) return false; /* tenta de novo sozinho na próxima alteração, sem interromper quem tá digitando */
+        confirmAction('Outro aparelho salvou dados diferentes bem na hora em que você editava aqui. Se continuar, a alteração que você acabou de fazer sobrescreve a de lá. Cancelar carrega a versão de lá agora (você perde só o que fez agora nesta tela).',
+          ()=>{ alteracaoLocal=true; nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime(); salvarNaNuvem(); },
+          ()=>{ aplicarEstadoNuvem(j.dados,j.atualizadoEm); renderAll(); toast('Carregada a versão salva por outro aparelho.'); });
+        return false;
+      }
       if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao salvar.');
       nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime();
     } while(nuvemGravarDeNovo);
@@ -1803,6 +1836,11 @@ async function openVersoesNuvemModal(){
       try{
         const j=await abrirBackupNuvem(id);
         aplicarEstadoNuvem(j.dados,j.criadoEm);
+        /* restaurar é uma sobrescrita intencional já confirmada pela pessoa - nuvemAtualizadoEm
+           agora aponta pro timestamp ANTIGO do backup (aplicarEstadoNuvem acabou de setar isso),
+           então zera antes de gravar pra não disparar o aviso de conflito (ver salvarNaNuvem)
+           contra o próprio backup que a pessoa escolheu restaurar. */
+        nuvemAtualizadoEm=null;
         await salvarNaNuvem();
         closeModal(); renderAll();
         toast('Backup restaurado.');
@@ -2749,7 +2787,7 @@ function confirmarEnvioFull(envioId,manterCompra){
   setTimeout(()=>{ flashFull={}; renderPrevisao(); },2600);
 }
 /* ---------- UI base ---------- */
-function confirmAction(msg,cb){ pendingConfirm=cb; document.getElementById('confirmMsg').textContent=msg; document.getElementById('confirmOverlay').classList.remove('hidden'); }
+function confirmAction(msg,cb,cbCancel){ pendingConfirm=cb; pendingCancel=cbCancel||null; document.getElementById('confirmMsg').textContent=msg; document.getElementById('confirmOverlay').classList.remove('hidden'); }
 function toast(msg){
   let t=document.getElementById('toast');
   if(!t){ t=document.createElement('div'); t.id='toast'; document.body.appendChild(t); }
@@ -11050,9 +11088,9 @@ document.getElementById('btnDesfazer').onclick=()=>{
 document.getElementById('confirmYes').onclick=()=>{
   document.getElementById('confirmOverlay').classList.add('hidden');
   if(pendingConfirm) pendingConfirm();
-  pendingConfirm=null;
+  pendingConfirm=null; pendingCancel=null;
 };
-document.getElementById('confirmNo').onclick=()=>{ document.getElementById('confirmOverlay').classList.add('hidden'); pendingConfirm=null; };
+document.getElementById('confirmNo').onclick=()=>{ document.getElementById('confirmOverlay').classList.add('hidden'); if(pendingCancel) pendingCancel(); pendingConfirm=null; pendingCancel=null; };
 document.getElementById('modalOverlay').addEventListener('click',e=>{ if(e.target.id==='modalOverlay') closeModal(); });
 /* os iconezinhos "i" (.det .i) mostram detalhe no hover, mas isso depende de ter espaço na
    tela — perto do topo, do rodapé ou dentro de listas com rolagem, o balão pode ficar cortado
@@ -11065,7 +11103,7 @@ document.addEventListener('click',e=>{
   body.innerHTML=`<h3>Detalhe</h3><div class="det" style="display:block"><span class="pop" style="position:static;opacity:1;pointer-events:auto;transform:none;box-shadow:none;border:0;padding:0;display:block;min-width:0;background:transparent">${pop.innerHTML}</span></div><div class="modal-acoes"><button class="btn" id="btnFecharDet">Fechar</button></div>`;
   document.getElementById('btnFecharDet').onclick=closeModal;
 });
-document.getElementById('confirmOverlay').addEventListener('click',e=>{ if(e.target.id==='confirmOverlay'){ document.getElementById('confirmOverlay').classList.add('hidden'); pendingConfirm=null; } });
+document.getElementById('confirmOverlay').addEventListener('click',e=>{ if(e.target.id==='confirmOverlay'){ document.getElementById('confirmOverlay').classList.add('hidden'); pendingConfirm=null; pendingCancel=null; } });
 /* grava pendências ao sair ou trocar de aba.
    Só avisa/força gravação se houver arquivo/pasta conectado — sem isso os dados já
    estão salvos no cache deste navegador (localStorage) e não há nada "pendente" de verdade. */
