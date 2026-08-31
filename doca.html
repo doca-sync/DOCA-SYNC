@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v342</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v344</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2347,7 +2347,13 @@ function criarEnvio(nome,data,loja,arquivo,localColeta){
 function editarEnvio(id,patch){
   const e=envioById(id); if(!e) return;
   snapshot('edição do envio '+e.nome);
+  /* Felipe 31/08: quando muda a data do FULL na mão, destrava a confirmação de "Coleta em" -
+     a pessoa marcada como confirmada pode não valer mais pra nova data (às vezes muda quem vai
+     buscar). Sem isso o "✓ FELIPE" ficava travado mostrando confirmado pra uma data que já nem
+     é mais essa. */
+  const dataMudou=patch.data!==undefined&&patch.data!==e.data;
   Object.assign(e,patch);
+  if(dataMudou) e.coletaConfirmada=false;
   const marca='FULL '+(e.nome||'')+(e.loja?' · '+e.loja:'');
   state.produtos.forEach(p=>(p.pedidos||[]).forEach(c=>{ if(c.envioId===id) c.origem=marca; }));
   persist();
@@ -4625,7 +4631,7 @@ function imprimirRelatorioCompraFornecedor(){
     const [pid,cid]=x.dataset.ped.split('|');
     const p=prodById(pid); if(!p) return;
     const c=(p.pedidos||[]).find(y=>y.id===cid); if(!c||c.qtd<=0) return;
-    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,custo:p.custo,qtd:c.qtd,obs:c.obs,data:c.data});
+    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,custo:p.custo,qtd:c.qtd,obs:c.obs,data:c.data,unidPorCaixa:p.unidPorCaixa});
   });
   if(!itens.length){ alert('Não há nada pendente em Comprar.'); return; }
   const g={}; itens.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
@@ -4653,7 +4659,8 @@ function imprimirRelatorioCompraFornecedor(){
       <div class="forn-sub">${l.reduce((a,i)=>a+i.qtd,0)} un. em ${l.length} pedido(s)</div>
       <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Qtd</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
       ${l.map(i=>`<tr>
-        <td>${esc(fmtData(i.data))}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td><td class="n">${fmtInt(i.qtd)}</td>
+        <td>${esc(fmtData(i.data))}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td>
+        <td class="n">${fmtInt(i.qtd)}${i.unidPorCaixa?`<br><span style="font-size:10.5px;color:var(--muted)">${esc(caixasTxt(i.qtd,i.unidPorCaixa))}</span>`:''}</td>
         <td class="n">${i.custo>0?fmtMoney(i.custo):'—'}</td><td class="n">${i.custo>0?fmtMoney(i.custo*i.qtd):'—'}</td>
         <td class="obs">${esc(i.obs||'')}</td></tr>`).join('')}
       </tbody></table></div><div class="sub-t">Subtotal ${esc(f)}: <b>${fmtMoney(sub)}</b></div></div>`;
@@ -10263,6 +10270,7 @@ function aplicarRecalculo(envioId,novaData){
       aplicarAjusteItem(e,l.item,l.produto,l.novo);
       if(l.dif>0) soma+=l.dif; else sub+=-l.dif;
     });
+    if(e.data!==novaData) e.coletaConfirmada=false; /* ver comentário em editarEnvio */
     e.data=novaData; e.nome=fmtData(novaData);
   });
   return {ok:true,soma,sub};
