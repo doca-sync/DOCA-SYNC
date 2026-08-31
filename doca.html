@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v344</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v345</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4657,10 +4657,11 @@ function imprimirRelatorioCompraFornecedor(){
       return `<div class="card-rel">
       <div class="forn-h">${esc(f)}</div>
       <div class="forn-sub">${l.reduce((a,i)=>a+i.qtd,0)} un. em ${l.length} pedido(s)</div>
-      <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Qtd</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
+      <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Qtd</th><th class="n">Caixas</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
       ${l.map(i=>`<tr>
         <td>${esc(fmtData(i.data))}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td>
-        <td class="n">${fmtInt(i.qtd)}${i.unidPorCaixa?`<br><span style="font-size:10.5px;color:var(--muted)">${esc(caixasTxt(i.qtd,i.unidPorCaixa))}</span>`:''}</td>
+        <td class="n">${fmtInt(i.qtd)}</td>
+        <td class="n">${i.unidPorCaixa?fmtInt(Math.ceil(i.qtd/i.unidPorCaixa)):'—'}</td>
         <td class="n">${i.custo>0?fmtMoney(i.custo):'—'}</td><td class="n">${i.custo>0?fmtMoney(i.custo*i.qtd):'—'}</td>
         <td class="obs">${esc(i.obs||'')}</td></tr>`).join('')}
       </tbody></table></div><div class="sub-t">Subtotal ${esc(f)}: <b>${fmtMoney(sub)}</b></div></div>`;
