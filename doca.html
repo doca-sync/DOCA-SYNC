@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v345</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v347</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4631,14 +4631,31 @@ function imprimirRelatorioCompraFornecedor(){
     const [pid,cid]=x.dataset.ped.split('|');
     const p=prodById(pid); if(!p) return;
     const c=(p.pedidos||[]).find(y=>y.id===cid); if(!c||c.qtd<=0) return;
-    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,custo:p.custo,qtd:c.qtd,obs:c.obs,data:c.data,unidPorCaixa:p.unidPorCaixa});
+    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,custo:p.custo,qtd:c.qtd,obs:c.obs,data:c.data,unidPorCaixa:p.unidPorCaixa,produtoId:p.id,compartilhado:(membrosVinculados(p).length>0||!!p.vinculadoA)});
   });
   if(!itens.length){ alert('Não há nada pendente em Comprar.'); return; }
-  const g={}; itens.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
+  /* Felipe 31/08: produto de estoque compartilhado (vinculadoA) pode ter várias linhas de pedido
+     separadas (uma pra cada envio que gerou a compra nele) mesmo sendo fisicamente o mesmo
+     produto - no relatório impresso pro fornecedor, unifica numa linha só (soma a qtd). Em
+     Comprar a tela continua mostrando cada pedido separado (útil pra saber de qual envio veio
+     cada um) - a unificação é só na hora de imprimir/mandar pro fornecedor. */
+  const itensUnificados=[]; const porProduto={};
+  itens.forEach(i=>{
+    if(!i.compartilhado){ itensUnificados.push(i); return; }
+    const acc=porProduto[i.produtoId];
+    if(!acc){ const novo={...i,_datas:new Set([i.data]),_obsSet:new Set(i.obs?[i.obs]:[])}; porProduto[i.produtoId]=novo; itensUnificados.push(novo); return; }
+    acc.qtd+=i.qtd; acc._datas.add(i.data); if(i.obs) acc._obsSet.add(i.obs);
+  });
+  itensUnificados.forEach(i=>{
+    if(!i.compartilhado) return;
+    i.data=i._datas.size===1?[...i._datas][0]:null;
+    i.obs=[...i._obsSet].join(' · ');
+  });
+  const g={}; itensUnificados.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
   const nomes=Object.keys(g).sort((a,b)=>a.localeCompare(b));
   const win=window.open('','_blank');
   if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
-  const total=itens.reduce((a,i)=>a+(i.custo||0)*i.qtd,0);
+  const total=itensUnificados.reduce((a,i)=>a+(i.custo||0)*i.qtd,0);
   win.document.open();
   win.document.write(`<!doctype html><html><head><meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -4657,11 +4674,11 @@ function imprimirRelatorioCompraFornecedor(){
       return `<div class="card-rel">
       <div class="forn-h">${esc(f)}</div>
       <div class="forn-sub">${l.reduce((a,i)=>a+i.qtd,0)} un. em ${l.length} pedido(s)</div>
-      <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Qtd</th><th class="n">Caixas</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
+      <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Caixas</th><th class="n">Qtd</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
       ${l.map(i=>`<tr>
-        <td>${esc(fmtData(i.data))}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}</td><td>${esc(i.codigo)}</td>
-        <td class="n">${fmtInt(i.qtd)}</td>
+        <td>${i.data?esc(fmtData(i.data)):'Diversas datas'}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}${i.compartilhado?' <span style="font-size:10.5px;color:var(--muted)" title="Estoque compartilhado - pedidos de mais de um envio somados nesta linha">🔗</span>':''}</td><td>${esc(i.codigo)}</td>
         <td class="n">${i.unidPorCaixa?fmtInt(Math.ceil(i.qtd/i.unidPorCaixa)):'—'}</td>
+        <td class="n">${fmtInt(i.qtd)}</td>
         <td class="n">${i.custo>0?fmtMoney(i.custo):'—'}</td><td class="n">${i.custo>0?fmtMoney(i.custo*i.qtd):'—'}</td>
         <td class="obs">${esc(i.obs||'')}</td></tr>`).join('')}
       </tbody></table></div><div class="sub-t">Subtotal ${esc(f)}: <b>${fmtMoney(sub)}</b></div></div>`;
