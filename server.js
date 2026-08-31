@@ -2092,8 +2092,18 @@ app.get('/estado', exigirLogin, async (req, res) => {
 });
 /* backup automatico antes de CADA gravacao - guarda o estado ANTERIOR numa tabela de historico:
      'rotativo' -> uma copia a cada gravacao, mantendo so as ultimas NUM_ROTATIVOS
-     'diario'   -> uma copia por dia, guardada por mais tempo */
-const NUM_ROTATIVOS = 30;
+     'horario'  -> 1 copia por hora, guardada por DIAS_GUARDAR_HORARIO dias
+     'diario'   -> 1 copia por dia, guardada por mais tempo
+   CORRIGIDO 31/08 (Felipe: tinha backup das ~16h aparecendo na lista, restaurou algumas vezes
+   tentando achar o certo, e esses backups sumiram da lista pouco depois): NUM_ROTATIVOS era so'
+   30 - numa sessao ativa (varios cliques, e cada tentativa de restaurar TAMBEM conta como uma
+   gravacao nova) da' pra consumir 30 gravacoes em minutos, empurrando os backups bons pra fora
+   da janela antes de alguem conseguir usa-los. 'diario' nao cobria esse buraco porque so' guarda
+   o PRIMEIRO salvamento do dia (de manha', antes de qualquer coisa da tarde acontecer). Aumentado
+   NUM_ROTATIVOS bastante e adicionado o nivel 'horario' (1 por hora, 14 dias) como uma rede de
+   seguranca no meio do caminho entre o rotativo (fino, mas curto) e o diario (longo, mas grosso). */
+const NUM_ROTATIVOS = 500;
+const DIAS_GUARDAR_HORARIO = 14;
 const DIAS_GUARDAR_DIARIO = 180;
 async function fazerBackupAntesDeGravar(dadosAntigos, atualizadoEmAntigo) {
   if (!dadosAntigos) return;
@@ -2101,6 +2111,15 @@ async function fazerBackupAntesDeGravar(dadosAntigos, atualizadoEmAntigo) {
     `insert into doca_estado_hist (tipo, dados, criado_em) values ('rotativo', $1, coalesce($2, now()))`,
     [JSON.stringify(dadosAntigos), atualizadoEmAntigo || null]
   );
+  const jaTemHorarioNestaHora = await pool.query(
+    `select 1 from doca_estado_hist where tipo = 'horario' and date_trunc('hour', criado_em) = date_trunc('hour', now()) limit 1`
+  );
+  if (jaTemHorarioNestaHora.rowCount === 0) {
+    await pool.query(
+      `insert into doca_estado_hist (tipo, dados, criado_em) values ('horario', $1, coalesce($2, now()))`,
+      [JSON.stringify(dadosAntigos), atualizadoEmAntigo || null]
+    );
+  }
   const jaTemDiarioHoje = await pool.query(
     `select 1 from doca_estado_hist where tipo = 'diario' and criado_em::date = now()::date limit 1`
   );
@@ -2115,6 +2134,9 @@ async function fazerBackupAntesDeGravar(dadosAntigos, atualizadoEmAntigo) {
        select id from doca_estado_hist where tipo = 'rotativo' order by criado_em desc limit $1
      )`,
     [NUM_ROTATIVOS]
+  );
+  await pool.query(
+    `delete from doca_estado_hist where tipo = 'horario' and criado_em < now() - interval '${DIAS_GUARDAR_HORARIO} days'`
   );
   await pool.query(
     `delete from doca_estado_hist where tipo = 'diario' and criado_em < now() - interval '${DIAS_GUARDAR_DIARIO} days'`
@@ -2167,7 +2189,7 @@ app.get('/estado/backups', exigirLogin, async (req, res) => {
     const r = await pool.query(
       `select id, tipo, criado_em, jsonb_array_length(coalesce(dados->'produtos','[]'::jsonb)) as produtos,
               jsonb_array_length(coalesce(dados->'envios','[]'::jsonb)) as envios
-       from doca_estado_hist order by criado_em desc limit 80`
+       from doca_estado_hist order by criado_em desc limit 300`
     );
     res.json({ ok: true, backups: r.rows.map(x => ({ id: x.id, tipo: x.tipo, criadoEm: x.criado_em, produtos: x.produtos, envios: x.envios })) });
   } catch (e) {

@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v350</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v351</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1717,6 +1717,38 @@ async function conectarNuvem(usuario,senha){
     return {ok:true,temDados:!!(j.dados&&Array.isArray(j.dados.produtos)),dados:j.dados,atualizadoEm:j.atualizadoEm};
   }catch(e){ nuvemAuth=antigo; throw e; }
 }
+/* CORRIGIDO 31/08 (Felipe: "e se o outro que está aberto está fazendo algo que não salvou
+   ainda?"): antes, quando o servidor recusava a gravação por conflito (ver salvarNaNuvem/
+   saveToFile), a única saída era tudo-ou-nada - ou a pessoa sobrescrevia por cima do que o
+   outro aparelho tinha acabado de salvar, ou jogava fora a própria alteração. Ou seja, dava
+   pra perceber o conflito, mas não dava pra ficar com os dois ao mesmo tempo.
+   Agora, antes de perguntar qualquer coisa, tenta COMBINAR os dois automaticamente: pra listas
+   onde cada item tem um id próprio (envios, produtos, tarefas, notas fiscais, despesas, avisos
+   de fornecedor) - que é o caso mais comum (um aparelho criou um envio novo, o outro editou um
+   produto diferente) - junta os dois conjuntos pelo id, sem precisar escolher um em detrimento
+   do outro. Só entra item de um item que o outro TAMBÉM tem se os dois mexeram exatamente no
+   MESMO item ao mesmo tempo (aí fica a versão local, que é rara e sem solução melhor sem
+   histórico campo a campo). Financeiro/config (full.cfg, ads.cfg etc) continuam ficando com a
+   versão local, por serem preferências de tela, não listas de itens. */
+function mesclarPorId(local,remoto){
+  const porId={};
+  (Array.isArray(remoto)?remoto:[]).forEach(x=>{ if(x&&x.id!=null) porId[x.id]=x; });
+  (Array.isArray(local)?local:[]).forEach(x=>{ if(x&&x.id!=null) porId[x.id]=x; }); /* local ganha em empate - é quem está tentando salvar agora */
+  return Object.values(porId);
+}
+function mesclarEstados(local,remoto){
+  if(!remoto||typeof remoto!=='object') return local;
+  return {...local,
+    envios:mesclarPorId(local.envios,remoto.envios),
+    produtos:mesclarPorId(local.produtos,remoto.produtos),
+    tarefas:mesclarPorId(local.tarefas,remoto.tarefas),
+    listas:mesclarPorId(local.listas,remoto.listas),
+    notasFiscais:mesclarPorId(local.notasFiscais,remoto.notasFiscais),
+    despesas:mesclarPorId(local.despesas,remoto.despesas),
+    avisosFornecedor:mesclarPorId(local.avisosFornecedor,remoto.avisosFornecedor),
+    full:{...local.full,itens:mesclarPorId(local.full&&local.full.itens,remoto.full&&remoto.full.itens)}
+  };
+}
 function aplicarEstadoNuvem(d,atualizadoEmIso){
   state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
   migrar(); saveToLocalStorage();
@@ -1738,7 +1770,8 @@ async function carregarDaNuvem(silencioso){
     return false;
   }catch(e){ toast('⚠ Não consegui carregar da nuvem: '+e.message); return false; }
 }
-async function salvarNaNuvem(){
+async function salvarNaNuvem(tentativaMerge){
+  tentativaMerge=tentativaMerge||0;
   if(!nuvemAuth) return false;
   if(nuvemGravando){ nuvemGravarDeNovo=true; return true; }
   nuvemGravando=true;
@@ -1755,8 +1788,23 @@ async function salvarNaNuvem(){
       const j=await r.json();
       if(r.status===409&&j.conflito){
         nuvemGravando=false; updateFileStatus();
+        /* CORRIGIDO 31/08 (2ª volta, Felipe: "e se o outro que está aberto está fazendo algo que
+           não salvou ainda?"): antes de perguntar qualquer coisa, tenta COMBINAR os dois
+           automaticamente (ver mesclarEstados) - cobre o caso comum de cada aparelho ter mexido
+           em itens diferentes (um envio novo aqui, um produto editado lá), sem precisar escolher
+           um em detrimento do outro. Só cai no aviso manual se, depois de várias tentativas
+           seguidas, ainda tiver outro aparelho salvando bem no mesmo instante. */
+        if(tentativaMerge<5){
+          state=mesclarEstados(state,j.dados);
+          nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime();
+          alteracaoLocal=true;
+          const ok=await salvarNaNuvem(tentativaMerge+1);
+          if(ok) toast('🔀 Combinado automaticamente com o que foi salvo em outro aparelho.');
+          renderAll();
+          return ok;
+        }
         if(usuarioDigitando()) return false; /* tenta de novo sozinho na próxima alteração, sem interromper quem tá digitando */
-        confirmAction('Outro aparelho salvou dados diferentes bem na hora em que você editava aqui. Se continuar, a alteração que você acabou de fazer sobrescreve a de lá. Cancelar carrega a versão de lá agora (você perde só o que fez agora nesta tela).',
+        confirmAction('Outro aparelho está salvando ao mesmo tempo bem na hora em que você editava aqui, e não deu pra combinar automaticamente depois de várias tentativas. Se continuar, a alteração que você acabou de fazer sobrescreve a de lá. Cancelar carrega a versão de lá agora (você perde só o que fez agora nesta tela).',
           ()=>{ alteracaoLocal=true; nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime(); salvarNaNuvem(); },
           ()=>{ aplicarEstadoNuvem(j.dados,j.atualizadoEm); renderAll(); toast('Carregada a versão salva por outro aparelho.'); });
         return false;
@@ -1820,10 +1868,10 @@ async function openVersoesNuvemModal(){
   try{ vs=await listarBackupsNuvem(); }
   catch(e){ body.innerHTML=`<h3>Backups guardados na nuvem</h3><p class="empty-inline">Não consegui ler: ${esc(e.message)}</p><div class="modal-actions"><button class="btn" id="btnFechar">Fechar</button></div>`; document.getElementById('btnFechar').onclick=closeModal; return; }
   body.innerHTML=`<h3>Backups guardados na nuvem</h3>
-    <p class="hint" style="margin:0 0 14px">Uma cópia é salva sozinha antes de cada gravação. <b>rotativo</b>: últimas 30 gravações; <b>diário</b>: 1 por dia, guardado por 180 dias.</p>
+    <p class="hint" style="margin:0 0 14px">Uma cópia é salva sozinha antes de cada gravação. <b>rotativo</b>: últimas 500 gravações; <b>a cada hora</b>: 1 por hora, guardado por 14 dias; <b>diário</b>: 1 por dia, guardado por 180 dias.</p>
     ${vs.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
       <th>Tipo</th><th>Quando</th><th>SKUs</th><th>Envios</th><th></th></tr></thead><tbody>
-      ${vs.map(v=>`<tr><td>${v.tipo==='rotativo'?'rotativo':'diário'}</td>
+      ${vs.map(v=>`<tr><td>${v.tipo==='rotativo'?'rotativo':(v.tipo==='horario'?'a cada hora':'diário')}</td>
         <td>${new Date(v.criadoEm).toLocaleString('pt-BR')}</td>
         <td class="num">${fmtInt(v.produtos)}</td>
         <td class="num">${fmtInt(v.envios)}</td>
