@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v351</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v352</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -11163,6 +11163,16 @@ function flushEdicaoAtual(){
 window.addEventListener('visibilitychange',()=>{
   flushEdicaoAtual();
   if(document.visibilityState==='hidden'&&alteracaoLocal&&fileHandle) saveToFile();
+  /* CORRIGIDO 31/08 (Felipe: mudança no computador não aparecia no celular nem fechando/abrindo
+     de novo): no celular, "fechar e abrir o app" quase sempre só traz a MESMA aba de volta do
+     segundo plano, sem recarregar a página - e o navegador costuma pausar o setInterval de
+     verificação automática (iniciarSyncNuvem/iniciarSync) enquanto o app fica em segundo plano.
+     Então força uma checagem na hora em que a tela volta a ficar visível, em vez de depender só
+     do timer. */
+  if(document.visibilityState==='visible'){
+    if(nuvemAuth) verificarNuvem();
+    else if(fileHandle) verificarArquivo();
+  }
 });
 window.addEventListener('beforeunload',e=>{
   flushEdicaoAtual();
