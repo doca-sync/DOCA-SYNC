@@ -2158,11 +2158,18 @@ app.post('/estado', exigirLogin, async (req, res) => {
 });
 app.get('/estado/backups', exigirLogin, async (req, res) => {
   try {
+    /* 31/08 (Felipe, envios FULL sumidos): agora traz tambem quantos envios cada backup tem
+       (jsonb_array_length de dados->'envios'), igual ja fazia com produtos - antes a pessoa
+       so' via a hora de cada backup e tinha que restaurar no escuro pra saber se tinha os envios
+       de volta ou nao. Com essa coluna da' pra escanear a lista visualmente e achar o backup
+       certo (o ultimo antes do numero de envios cair/zerar) sem precisar restaurar varias vezes
+       tentando adivinhar. */
     const r = await pool.query(
-      `select id, tipo, criado_em, jsonb_array_length(coalesce(dados->'produtos','[]'::jsonb)) as produtos
+      `select id, tipo, criado_em, jsonb_array_length(coalesce(dados->'produtos','[]'::jsonb)) as produtos,
+              jsonb_array_length(coalesce(dados->'envios','[]'::jsonb)) as envios
        from doca_estado_hist order by criado_em desc limit 80`
     );
-    res.json({ ok: true, backups: r.rows.map(x => ({ id: x.id, tipo: x.tipo, criadoEm: x.criado_em, produtos: x.produtos })) });
+    res.json({ ok: true, backups: r.rows.map(x => ({ id: x.id, tipo: x.tipo, criadoEm: x.criado_em, produtos: x.produtos, envios: x.envios })) });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
