@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v341</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v342</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2690,7 +2690,17 @@ function confirmarEnvioFull(envioId,manterCompra){
        nunca o componente solto. Sem isso, os componentes ficavam 5 dias com estoque "chegando"
        que nunca chega, inflando a projeção deles. */
     if(i.kitDeItemId) return;
-    const fi=state.full.itens.find(x=>x.loja===e.loja&&fullProduto(x)&&fullProduto(x).id===p.id);
+    /* CORRIGIDO 31/08 (Felipe: produtos que compartilham estoque - ex. ALICATE - mostravam
+       "entrada pendente" de OUTRA loja): i.produtoId aqui é sempre o MESTRE físico (onde o
+       estoque de verdade é decrementado - ver alocarNoEnvio), mas a fila de "entrada pendente"
+       é por LOJA/anúncio (cada loja tem seu próprio painel Full e seu próprio log real de
+       recebimento do ML - ver mlAtualizarFullDoSinc). Gravar sempre no mestre juntava numa fila
+       só as confirmações de TODAS as lojas que compartilham aquele produto, e qualquer loja via
+       a entrada pendente confirmada por outra. i.skuEscolhidoId guarda o SKU realmente escolhido
+       pra ESTE envio (só é diferente do mestre quando é um vinculado) - usa ele como o lugar
+       certo pra gravar a fila dessa loja específica. */
+    const pLoja=prodById(i.skuEscolhidoId)||p;
+    const fi=state.full.itens.find(x=>x.loja===e.loja&&fullProduto(x)&&fullProduto(x).id===pLoja.id);
     if(fi) fi.ajuste=null;
     /* 21/08 (Felipe): assim que confirma um envio, ele some de "Próximos programados" (de
        propósito - ver comentário lá em cima) e o Mercado Livre ainda demora uns dias pra
@@ -2721,10 +2731,10 @@ function confirmarEnvioFull(envioId,manterCompra){
        conta de "quanto já chegou" agora vem do log real de operações do ML
        (buscarRecebimentosFull no server.js), não de comparar aptas+transf antes/depois (que se
        confundia com venda no meio do caminho) - ver filaProcessamentoComRestante. */
-    if(!p.filaProcessamento) p.filaProcessamento=[];
-    p.filaProcessamento.push({data:hoje(),qtdOriginal:i.solicitado||0});
-    somado.push(p.sku);
-    flashFull[p.id]=Date.now();
+    if(!pLoja.filaProcessamento) pLoja.filaProcessamento=[];
+    pLoja.filaProcessamento.push({data:hoje(),qtdOriginal:i.solicitado||0});
+    somado.push(pLoja.sku);
+    flashFull[pLoja.id]=Date.now();
   });
   state.envios=state.envios.filter(x=>x.id!==envioId);
   persist();
