@@ -1850,7 +1850,18 @@ async function passoSaldoMp(loja, row) {
   // saldo mostrado na tela ficava travado num valor ainda mais antigo, girando em pedidos novos
   // que nunca chegavam a tempo. 20h da' margem suficiente pra sempre aceitar o relatorio mais
   // recente que existe (evita usar algo de dias atras', que aí sim seria enganoso).
-  const JANELA_FRESCOR_MS = 20 * 60 * 60 * 1000;
+  /* CORRIGIDO 01/09 (Felipe: "porque o saldo esta tao desatualizado de algumas e de outras
+     atualizado hoje"): a janela de frescor estava virando o proprio problema. Se o relatorio mais
+     novo que existe pra loja tem, digamos, 22h, ele era REJEITADO por passar de 20h - mas o que
+     fica na tela nesse caso nao e' nada mais novo, e' o valor guardado da ultima leitura aceita,
+     que e' AINDA MAIS VELHO (na TorvStore chegou a 2 dias). Rejeitar o mais fresco que existe
+     nunca deixa o numero mais atual, so' mais antigo. Como o rotulo na tela ja' mostra a idade
+     real do saldo ("saldo MP 30/08 23:29 - ha 2 dias"), o certo e' sempre usar o melhor relatorio
+     disponivel e deixar a idade visivel. Mantem um teto largo (7 dias) so' pra nao usar algo
+     absurdamente velho de vez. O Doca continua pedindo um relatorio novo a cada ciclo; a diferenca
+     de frequencia entre as lojas e' do lado do Mercado Pago (cada conta gera o relatorio em lote no
+     seu proprio ritmo, mais rapido quanto maior o volume) e nao tem como forcar daqui. */
+  const JANELA_FRESCOR_MS = 7 * 24 * 60 * 60 * 1000;
   try {
     const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
