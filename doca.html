@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v356</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v357</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3029,7 +3029,10 @@ function renderTarefas(){
     </div>
     ${tarefas.length?`<div class="tarefa-lista" id="tarefaLista">
       ${tarefas.map(t=>{
-        const venc=t.data&&t.data<h, hj=t.data===h;
+        /* periódica mostra a ocorrência do período atual (ver dataEfetivaTarefa), não a data crua
+           de quando foi criada - senão fica vermelha de "atrasada" pra sempre depois do 1º mês */
+        const dataMostrada=dataEfetivaTarefa(t);
+        const venc=dataMostrada&&dataMostrada<h, hj=dataMostrada===h;
         const idx=tarefas.indexOf(t);
         const subs=t.subs||[];
         const resetaTipo=t.resetaTipo;
@@ -3049,9 +3052,9 @@ function renderTarefas(){
             </span>
             ${temSubsMensal?(feitaEsteMes?`<span class="tarefa-check feito" title="Todas as subtarefas concluídas ${rotuloPeriodo}"></span>`:''):`<button class="tarefa-check ${feitaEsteMes?'feito':''}" data-concluir="${t.id}" title="${mensal?(feitaEsteMes?('Feita '+rotuloPeriodo+' — clique para reabrir'):('Marcar como feita '+rotuloPeriodo+' (não some, volta a pedir '+rotuloPeriodoSeg+')')):'Concluir tarefa'}"></button>`}
             <input class="tarefa-tit" type="text" value="${esc(t.titulo)}" data-tit="${t.id}" placeholder="Sem título">
-            <button type="button" class="tarefa-resumo" data-abrir="${t.id}" title="Data, horário, repetição e observação">${t.data?`📅 ${fmtData(t.data).slice(0,5)}`:''}${t.repetirMensal?' 🔁':''}${(!t.data&&!t.repetirMensal)?'⋯':''}</button>
+            <button type="button" class="tarefa-resumo" data-abrir="${t.id}" title="Data, horário, repetição e observação">${dataMostrada?`📅 ${fmtData(dataMostrada).slice(0,5)}`:''}${t.repetirMensal?' 🔁':''}${(!dataMostrada&&!t.repetirMensal)?'⋯':''}</button>
             ${subs.length?`<span class="sub-cont ${feitas===subs.length?'ok':''}" title="Subtarefas concluídas">${feitas}/${subs.length}</span>`:''}
-            ${botaoData('data_'+t.id,t.data,{placeholder:'Data',style:'',classe:'tarefa-data '+(venc?'venc':(hj?'hoje':'')),dataAttr:`data-databtn="${t.id}"`})}
+            ${botaoData('data_'+t.id,dataMostrada,{placeholder:'Data',style:'',classe:'tarefa-data '+(venc?'venc':(hj?'hoje':'')),dataAttr:`data-databtn="${t.id}"`})}
             <input class="tarefa-hora" type="time" value="${esc(t.hora||'')}" data-hora="${t.id}" title="Horário (opcional)">
             <button class="tarefa-repetir ${resetaTipo==='mensal'?'ativo':''}" data-gestaomensal="${t.id}" title="${resetaTipo==='mensal'?'Gestão Ativa mensal ativada — clique para desativar':'Ativar Gestão Ativa mensal nesta tarefa: não some ao concluir, fica com ✓ e volta a pedir sozinha no mês seguinte'}">🔁M</button>
             <button class="tarefa-repetir ${resetaTipo==='semanal'?'ativo':''}" data-gestaosemanal="${t.id}" title="${resetaTipo==='semanal'?'Gestão Ativa semanal ativada — clique para desativar':'Ativar Gestão Ativa semanal nesta tarefa: não some ao concluir, fica com ✓ e volta a pedir sozinha na semana seguinte'}">🔁S</button>
@@ -11348,6 +11351,42 @@ tentarReconectar();
    - modal no meio da tela (reaproveita openModal/closeModal), não banner no topo */
 /* tarefa de Gestão Ativa que já está concluída no período atual (direto ou via subtarefas) não
    deve aparecer como pendente no alerta do dia - pedido do Felipe 19/08 */
+/* DATA EFETIVA DE TAREFA PERIÓDICA (pedido do Felipe 01/09: "não deveria estar aparecendo 07/08,
+   isso foi quando foi criado - quando concluir deve mudar pro próximo mês, 07/09 e assim por
+   diante"): numa tarefa de Gestão Ativa a data guardada serve só pra dizer QUE DIA do período ela
+   cai (dia 7, toda quarta...), não uma data única no calendário. Antes a data ficava congelada no
+   dia em que a tarefa foi criada, então o mês virava e ela aparecia como atrasada pra sempre,
+   cobrando todo santo dia mesmo faltando uma semana pro dia 7 chegar de novo.
+   Agora a data mostrada e usada no aviso é sempre a ocorrência do período ATUAL - e, se já foi
+   concluída neste período, já mostra a do período seguinte. A data guardada (t.data) não é
+   alterada: ela continua sendo a origem do "dia 7", e editar o campo simplesmente escolhe outro
+   dia. Tarefa normal (sem Gestão Ativa) não muda nada - data continua sendo data. */
+function diaParaISO(numDias){
+  const d=new Date(numDias*864e5+432e5); /* meio-dia, pra não escorregar de dia por fuso */
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function dataEfetivaTarefa(t){
+  const base=String((t&&t.data)||'').slice(0,10);
+  if(!base||!t.resetaTipo) return base;
+  const h=hoje();
+  if(t.resetaTipo==='semanal'){
+    /* mesma "semana" usada pelo reset (ver semanaAtualStr): blocos fixos de 7 dias */
+    const diaBase=Math.floor(new Date(base+'T12:00:00').getTime()/864e5);
+    if(isNaN(diaBase)) return base;
+    const hojeNum=Math.floor(new Date(h+'T12:00:00').getTime()/864e5);
+    const inicio=Math.floor(hojeNum/7)*7;
+    let alvo=inicio+((((diaBase-inicio)%7)+7)%7);
+    if(tarefaConcluidaNoPeriodo(t)) alvo+=7;
+    return diaParaISO(alvo);
+  }
+  const dia=Number(base.slice(8,10));
+  if(!dia) return base;
+  let ano=Number(h.slice(0,4)), mes=Number(h.slice(5,7));
+  if(tarefaConcluidaNoPeriodo(t)){ mes++; if(mes>12){ mes=1; ano++; } }
+  const ultimoDiaDoMes=new Date(ano,mes,0).getDate(); /* dia 31 num mês de 30 cai no último dia */
+  const diaFinal=Math.min(dia,ultimoDiaDoMes);
+  return `${ano}-${String(mes).padStart(2,'0')}-${String(diaFinal).padStart(2,'0')}`;
+}
 function tarefaConcluidaNoPeriodo(t){
   if(!t||!t.resetaTipo) return false;
   const subs=t.subs||[];
@@ -11358,7 +11397,7 @@ function tarefasDeHojePendentes(){
   const h=hoje();
   const hhmm=new Date().toTimeString().slice(0,5);
   const porData=(state.tarefas||[]).filter(t=>{
-    const d=String(t.data||'').slice(0,10);
+    const d=dataEfetivaTarefa(t);                  // periódica: ocorrência deste período, não a data de criação
     if(!d||d>h) return false;                      // sem data, ou data futura - ainda não mostra
     // pedido do Felipe 20/08: hoje OU atrasada (d<=h) continua avisando todo dia até concluir -
     // só não mostra quando a tarefa já foi concluída.
