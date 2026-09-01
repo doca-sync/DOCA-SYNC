@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v355</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v356</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2412,7 +2412,43 @@ function reconciliarProduto(p){
   return movido;
 }
 /* garante que nenhum envio fique "falta comprar" havendo estoque livre daquele SKU */
-function reconciliarTudo(){ let t=0; state.produtos.forEach(p=>{ t+=reconciliarProduto(p); }); return t; }
+/* CUSTO AUTOMÁTICO DE KIT (pedido do Felipe 01/09): o custo de um kit é sempre a soma do custo
+   de cada componente x a quantidade dele por unidade do kit - não faz sentido digitar isso na
+   mão, porque desatualiza sozinho toda vez que o custo de um componente muda. Escreve direto no
+   p.custo do kit pra que TUDO que já lê custo (margem, CMV, fechamento, relatórios) pegue o
+   valor certo sem precisar mudar cada tela.
+   Isso NÃO duplica valor de estoque: o kit nunca tem estoque próprio (fica sempre 0 de
+   propósito, ver kitVirtualQtd), então no valor de estoque ele multiplica por zero - quem
+   valoriza o estoque são os componentes, com o custo deles.
+   Suporta kit feito de kit (recursivo) e ignora referência circular (vistos) pra não travar. */
+function custoKitCalculado(p,vistos){
+  const comps=componentesDe(p);
+  if(!comps.length) return null;
+  vistos=vistos||new Set();
+  if(vistos.has(p.id)) return null; /* kit que se referencia em círculo - não dá pra somar */
+  vistos.add(p.id);
+  let total=0;
+  for(const c of comps){
+    const comp=prodById(c.produtoId);
+    if(!comp) return null; /* componente sumiu - melhor não inventar um custo pela metade */
+    const sub=custoKitCalculado(comp,vistos);
+    /* componente que TAMBÉM é kit mas não deu pra calcular (círculo, componente faltando) não
+       pode virar 0 disfarçado - nesse caso desiste e deixa o custo atual como está. */
+    if(sub===null&&componentesDe(comp).length) return null;
+    const unit=sub!==null?sub:(Number(comp.custo)||0);
+    total+=unit*(Number(c.qtdPorUnidade)||1);
+  }
+  return Math.round(total*100)/100;
+}
+function atualizarCustosDeKits(){
+  state.produtos.forEach(p=>{
+    if(!componentesDe(p).length) return;
+    const calc=custoKitCalculado(p);
+    if(calc===null) return;
+    if(Number(p.custo||0)!==calc) p.custo=calc;
+  });
+}
+function reconciliarTudo(){ let t=0; state.produtos.forEach(p=>{ t+=reconciliarProduto(p); }); atualizarCustosDeKits(); return t; }
 function ajustarEstoque(id,novos){
   const p=prodById(id); if(!p) return {ok:false,msg:'Produto não encontrado.'};
   const rc=reservadoColetaDe(p);
@@ -4452,7 +4488,16 @@ function openProdutoModal(id,lojaPadrao){
       <label>SKU<input id="fSku" type="text" value="${p?esc(p.sku):''}" placeholder="Ex: afiador19"></label>
       <label>Código do produto<input id="fCodigo" type="text" value="${p?esc(p.codigo):''}" placeholder="Ex: JIIK92165"></label>
       <label>Fornecedor<input id="fFornecedor" type="text" value="${p?esc(p.fornecedor):''}" placeholder="Ex: Distribuidora XYZ"></label>
-      <label>Custo unitário (R$)<input id="fCusto" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${p&&p.custo?String(p.custo).replace('.',','):''}"></label>
+      ${ehKit?(()=>{
+        /* kit: custo é somado sozinho a partir dos componentes (ver atualizarCustosDeKits) -
+           campo fica só pra leitura, com a conta no hover, pra não dar a impressão de que dá
+           pra digitar um valor que seria sobrescrito no próximo salvamento. */
+        const calc=custoKitCalculado(p);
+        const detalhe=componentesDe(p).map(c=>{ const cp=prodById(c.produtoId); return (cp?cp.sku:'?')+' '+fmtMoney(cp?(Number(cp.custo)||0):0)+' × '+(c.qtdPorUnidade||1); }).join('  +  ');
+        return `<label>Custo unitário (R$) <span class="muted" style="font-size:10.5px">· somado do kit</span>
+        <input id="fCusto" type="text" readonly title="${esc(detalhe||'')}" style="opacity:.75;cursor:not-allowed" value="${calc!==null?String(calc.toFixed(2)).replace('.',','):''}">
+        <span class="muted" style="font-size:10.5px">${calc!==null?esc(detalhe):'Cadastre o custo dos componentes pra somar aqui.'}</span></label>`;
+      })():`<label>Custo unitário (R$)<input id="fCusto" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" value="${p&&p.custo?String(p.custo).replace('.',','):''}"></label>`}
       <label>Unidades por caixa<input id="fUnidCaixa" type="number" min="1" step="1" placeholder="Ex: 12" value="${p&&p.unidPorCaixa?p.unidPorCaixa:''}"></label>
     </div>
     ${!editing?`<div class="form-grid">
