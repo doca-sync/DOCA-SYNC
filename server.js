@@ -2082,6 +2082,11 @@ async function pegarEstadoNuvem() {
   return r.rows[0] || null;
 }
 app.get('/estado', exigirLogin, async (req, res) => {
+  /* CORRIGIDO 31/08 (3a volta - Felipe: mudanca feita no computador nao aparecia ao abrir no
+     celular): sem Cache-Control, um GET repetido na mesma URL pode voltar do cache do navegador
+     (comum em celular) em vez de ir ate o servidor de novo, mostrando dados velhos mesmo que o
+     banco ja tenha o mais recente. Forca sempre buscar de novo. */
+  res.set('Cache-Control', 'no-store');
   try {
     const linha = await pegarEstadoNuvem();
     if (!linha) return res.json({ ok: true, dados: null, atualizadoEm: null });

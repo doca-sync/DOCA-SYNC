@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v353</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v354</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1707,7 +1707,7 @@ async function nuvemFetch(caminho,opts){
   const base=nuvemBaseUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (mesma usada no Atualizar do Mercado Livre).');
   if(!nuvemAuth) throw new Error('Nuvem não conectada.');
-  const r=await fetch(`${base}${caminho}`,{...opts,headers:{...(opts&&opts.headers||{}),Authorization:'Basic '+nuvemAuth,'Content-Type':'application/json'}});
+  const r=await fetch(`${base}${caminho}`,{...opts,cache:'no-store',headers:{...(opts&&opts.headers||{}),Authorization:'Basic '+nuvemAuth,'Content-Type':'application/json'}});
   if(r.status===401) throw new Error('Usuário ou senha incorretos.');
   return r;
 }
@@ -1793,12 +1793,12 @@ async function carregarDaNuvem(silencioso){
     return false;
   }catch(e){ toast('⚠ Não consegui carregar da nuvem: '+e.message); return false; }
 }
-async function salvarNaNuvem(tentativaMerge){
-  tentativaMerge=tentativaMerge||0;
+async function salvarNaNuvem(){
   if(!nuvemAuth) return false;
   if(nuvemGravando){ nuvemGravarDeNovo=true; return true; }
   nuvemGravando=true;
   try{
+    let tentativasConflito=0;
     do{
       nuvemGravarDeNovo=false;
       /* CORRIGIDO 31/08 (Felipe: envios FULL sumiram - vários aparelhos abertos, um gravou por
@@ -1810,22 +1810,31 @@ async function salvarNaNuvem(tentativaMerge){
       const r=await nuvemFetch('/estado',{method:'POST',body:JSON.stringify({dados:state,seAtualizadoEm:nuvemAtualizadoEm?new Date(nuvemAtualizadoEm).toISOString():null})});
       const j=await r.json();
       if(r.status===409&&j.conflito){
-        nuvemGravando=false; updateFileStatus();
         /* CORRIGIDO 31/08 (2ª volta, Felipe: "e se o outro que está aberto está fazendo algo que
            não salvou ainda?"): antes de perguntar qualquer coisa, tenta COMBINAR os dois
            automaticamente (ver mesclarEstados) - cobre o caso comum de cada aparelho ter mexido
            em itens diferentes (um envio novo aqui, um produto editado lá), sem precisar escolher
            um em detrimento do outro. Só cai no aviso manual se, depois de várias tentativas
-           seguidas, ainda tiver outro aparelho salvando bem no mesmo instante. */
-        if(tentativaMerge<5){
+           seguidas, ainda tiver outro aparelho salvando bem no mesmo instante.
+           CORRIGIDO 31/08 (3ª volta, Felipe: "com dois aparelhos abertos não salva a mudança que
+           fiz"): antes isso chamava salvarNaNuvem() de novo por RECURSÃO, num "ramo" separado do
+           laço do-while - se uma edição nova chegasse enquanto essa recursão ainda rodava, ela só
+           marcava nuvemGravarDeNovo=true (achando que o do-while ia pegar de novo), mas quem
+           devolvia o resultado era o "return ok" logo depois da recursão, sem nunca conferir esse
+           aviso - a edição feita durante a mesclagem ficava perdida, sem erro nenhum. Agora tudo
+           passa pelo MESMO laço: mescla, marca pra tentar de novo, e o próprio do-while cuida
+           tanto do reenvio da mesclagem quanto de qualquer edição nova que tenha chegado nesse
+           meio-tempo. */
+        if(tentativasConflito<5){
+          tentativasConflito++;
           state=mesclarEstados(state,j.dados);
           nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime();
           alteracaoLocal=true;
-          const ok=await salvarNaNuvem(tentativaMerge+1);
-          if(ok) toast('🔀 Combinado automaticamente com o que foi salvo em outro aparelho.');
           renderAll();
-          return ok;
+          nuvemGravarDeNovo=true;
+          continue;
         }
+        nuvemGravando=false; updateFileStatus();
         if(usuarioDigitando()) return false; /* tenta de novo sozinho na próxima alteração, sem interromper quem tá digitando */
         confirmAction('Outro aparelho está salvando ao mesmo tempo bem na hora em que você editava aqui, e não deu pra combinar automaticamente depois de várias tentativas. Se continuar, a alteração que você acabou de fazer sobrescreve a de lá. Cancelar carrega a versão de lá agora (você perde só o que fez agora nesta tela).',
           ()=>{ alteracaoLocal=true; nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime(); salvarNaNuvem(); },
@@ -1834,6 +1843,7 @@ async function salvarNaNuvem(tentativaMerge){
       }
       if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao salvar.');
       nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime();
+      if(tentativasConflito>0){ toast('🔀 Combinado automaticamente com o que foi salvo em outro aparelho.'); tentativasConflito=0; }
     } while(nuvemGravarDeNovo);
     alteracaoLocal=false;
     ultimoSincronizado=JSON.parse(JSON.stringify(state));
