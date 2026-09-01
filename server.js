@@ -2110,6 +2110,25 @@ app.get('/estado', exigirLogin, async (req, res) => {
 const NUM_ROTATIVOS = 500;
 const DIAS_GUARDAR_HORARIO = 14;
 const DIAS_GUARDAR_DIARIO = 180;
+/* CORRIGIDO 31/08 (Felipe: 'NAO SALVOU na nuvem: new row for relation "doca_estado_hist" violates
+   check constraint "doca_estado_hist_tipo_check"'): a tabela foi criada com um CHECK que so' aceita
+   os tipos antigos ('rotativo','diario'), entao o nivel novo 'horario' era recusado pelo banco - e
+   como o backup roda ANTES da gravacao, isso derrubava a gravacao inteira junto. Solta o CHECK
+   antigo e recria aceitando os tres tipos. Roda uma vez na subida do servidor e nao quebra se a
+   tabela ainda nao existir ou se ja tiver sido ajustada antes. */
+pool.query(`
+  do $$
+  begin
+    if exists (select 1 from information_schema.tables where table_name = 'doca_estado_hist') then
+      if exists (select 1 from information_schema.table_constraints
+                 where table_name = 'doca_estado_hist' and constraint_name = 'doca_estado_hist_tipo_check') then
+        alter table doca_estado_hist drop constraint doca_estado_hist_tipo_check;
+      end if;
+      alter table doca_estado_hist add constraint doca_estado_hist_tipo_check
+        check (tipo in ('rotativo','horario','diario'));
+    end if;
+  end $$;
+`).catch(e => console.error('Falha ao ajustar o check de doca_estado_hist:', e.message));
 async function fazerBackupAntesDeGravar(dadosAntigos, atualizadoEmAntigo) {
   if (!dadosAntigos) return;
   await pool.query(
@@ -2177,8 +2196,15 @@ app.post('/estado', exigirLogin, async (req, res) => {
         return res.status(409).json({ ok: false, conflito: true, erro: 'Outro aparelho salvou dados mais novos nesse meio tempo.', dados: anterior.dados, atualizadoEm: anterior.atualizado_em });
       }
     }
+    /* CORRIGIDO 31/08 (mesma ocorrencia do check constraint): backup e' rede de seguranca, nao
+       pode ser motivo pra NAO gravar. Se o backup falhar por qualquer motivo, registra o erro e
+       segue gravando - perder um backup e' ruim, travar todas as gravacoes e' muito pior. */
     if (anterior && anterior.dados) {
-      await fazerBackupAntesDeGravar(anterior.dados, anterior.atualizado_em);
+      try {
+        await fazerBackupAntesDeGravar(anterior.dados, anterior.atualizado_em);
+      } catch (eBackup) {
+        console.error('Falha ao gravar backup (a gravacao segue normalmente):', eBackup.message);
+      }
     }
     await pool.query(
       `insert into doca_estado (id, dados, atualizado_em) values (1, $1, now())
