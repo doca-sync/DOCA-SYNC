@@ -2162,10 +2162,18 @@ app.post('/estado', exigirLogin, async (req, res) => {
        bater, e' porque alguem gravou no meio do caminho - devolve 409 com os dados atuais do
        banco em vez de sobrescrever, e o front pergunta pra pessoa o que fazer (mesmo padrao de
        aviso que ja existia do lado da leitura). */
+    /* CORRIGIDO 31/08 (4a volta - Felipe: "nao esta salvando mais nada, ele da a mensagem do que
+       fez mas nao salva"): a comparacao era !== (igualdade exata em milissegundos). Basta o
+       timestamp perder precisao em QUALQUER ponto do caminho (Postgres guarda microssegundos, o
+       Date do JS so' vai ate milissegundo, e ainda passa por texto ISO na ida e na volta) pra
+       nunca mais bater - e ai TODA gravacao virava conflito pra sempre, em qualquer aparelho,
+       mesmo sem ninguem mais mexendo. Agora so' e' conflito de verdade se o banco estiver mais
+       NOVO que o que o aparelho conhece, com uma folga de 1s pra absorver essa perda de precisao.
+       Se o aparelho estiver igual ou a' frente, nao ha' nada pra proteger - grava normal. */
     if (anterior && req.body && req.body.seAtualizadoEm) {
       const doBanco = anterior.atualizado_em ? new Date(anterior.atualizado_em).getTime() : null;
       const doCliente = new Date(req.body.seAtualizadoEm).getTime();
-      if (doBanco && !isNaN(doCliente) && doBanco !== doCliente) {
+      if (doBanco && !isNaN(doCliente) && doBanco > doCliente + 1000) {
         return res.status(409).json({ ok: false, conflito: true, erro: 'Outro aparelho salvou dados mais novos nesse meio tempo.', dados: anterior.dados, atualizadoEm: anterior.atualizado_em });
       }
     }
