@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v357</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v359</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -638,6 +638,8 @@ let ultimaAtividadeLocal=0;
 let ultimaVerificacao=null;
 let nuvemAuth=localStorage.getItem('estoque_nuvem_auth')||null;  /* "usuario:senha" em base64 - presença = nuvem ligada */
 let nuvemAtualizadoEm=0;      /* "atualizado_em" (epoch ms) da última leitura/gravação conhecida na nuvem */
+let nuvemForcarProximaGravacao=false; /* marca a PRÓXIMA gravação como sobrescrita intencional
+   (restaurar backup / "usar os dados deste navegador") - ver salvarNaNuvem e o /estado do server */
 let ultimoSincronizado=null;  /* CORRIGIDO 31/08 (2ª volta - Felipe: mudança no computador sumiu com o
    celular aberto): foto do state exatamente como estava na última vez que bateu com o servidor
    (depois de carregar ou salvar com sucesso). Usada em mesclarPorId pra saber se ESTE aparelho
@@ -1807,7 +1809,11 @@ async function salvarNaNuvem(){
          OUTRO aparelho salvou no meio do caminho, e ele recusa a gravação (409) em vez de
          sobrescrever direto. Antes só o lado de LEITURA (verificarNuvem) avisava sobre isso; a
          gravação nunca checava nada. */
-      const r=await nuvemFetch('/estado',{method:'POST',body:JSON.stringify({dados:state,seAtualizadoEm:nuvemAtualizadoEm?new Date(nuvemAtualizadoEm).toISOString():null})});
+      /* sobrescreverMesmo: só nas duas situações em que sobrescrever é a intenção declarada da
+         pessoa - restaurar um backup e "usar os dados deste navegador" ao conectar a nuvem. Fora
+         isso o servidor recusa gravação sem timestamp (aba com versão antiga em cache). */
+      const forcar=nuvemForcarProximaGravacao; nuvemForcarProximaGravacao=false;
+      const r=await nuvemFetch('/estado',{method:'POST',body:JSON.stringify({dados:state,seAtualizadoEm:nuvemAtualizadoEm?new Date(nuvemAtualizadoEm).toISOString():null,sobrescreverMesmo:forcar})});
       const j=await r.json();
       if(r.status===409&&j.conflito){
         /* CORRIGIDO 31/08 (2ª volta, Felipe: "e se o outro que está aberto está fazendo algo que
@@ -1928,7 +1934,7 @@ async function openVersoesNuvemModal(){
            agora aponta pro timestamp ANTIGO do backup (aplicarEstadoNuvem acabou de setar isso),
            então zera antes de gravar pra não disparar o aviso de conflito (ver salvarNaNuvem)
            contra o próprio backup que a pessoa escolheu restaurar. */
-        nuvemAtualizadoEm=null;
+        nuvemAtualizadoEm=null; nuvemForcarProximaGravacao=true;
         await salvarNaNuvem();
         closeModal(); renderAll();
         toast('Backup restaurado.');
@@ -1970,7 +1976,7 @@ function abrirConectarNuvem(){
             <button class="btn gold" id="btnUsarNuvem">Carregar os dados da nuvem</button>
           </div>`;
         document.getElementById('btnUsarNuvem').onclick=()=>{ aplicarEstadoNuvem(r.dados,r.atualizadoEm); iniciarSyncNuvem(); closeModal(); renderAll(); toast('Dados da nuvem carregados.'); };
-        document.getElementById('btnUsarLocal').onclick=async()=>{ nuvemAtualizadoEm=0; iniciarSyncNuvem(); closeModal(); await salvarNaNuvem(); renderAll(); toast('Nuvem conectada. Dados deste navegador enviados.'); };
+        document.getElementById('btnUsarLocal').onclick=async()=>{ nuvemAtualizadoEm=0; nuvemForcarProximaGravacao=true; iniciarSyncNuvem(); closeModal(); await salvarNaNuvem(); renderAll(); toast('Nuvem conectada. Dados deste navegador enviados.'); };
       } else {
         closeModal();
         iniciarSyncNuvem(); await salvarNaNuvem(); renderAll();
@@ -9699,14 +9705,23 @@ function renderEnvio(){
             const rc=grupo.reduce((s,g)=>s+(g.reservadoColeta||0),0);
             const gc=grupo.reduce((s,g)=>s+(g.geradoCompra||0),0);
             const aberto=envioKitAberto.has(i.id);
+            /* CORRIGIDO 01/09 (Felipe: "não está aparecendo média de vendas dos kits e nem
+               disponível"): essas duas colunas eram "—" fixo. Mas o kit É um anúncio de verdade no
+               Mercado Livre (vende com SKU próprio), então a média/dia sai da venda dele mesmo,
+               igual a qualquer outro item. E o "disponível" existe sim: é quantos kits dá pra
+               montar com o estoque livre dos componentes hoje - o componente que tiver menos é
+               quem limita (mesma conta do kitVirtualQtd usado na aba Produtos). */
+            const pjKit=projecaoEnvioItem(p,i.solicitado);
+            const kv=kitVirtualQtd(p);
+            const dispKit=kv?kv.disp:null;
             return `<tr><td class="mono">🧩 ${esc(p.sku)} <button class="btn sm" data-envkitdet="${i.id}" style="padding:1px 7px;font-size:11px">${aberto?'▾':'▸'} detalhar</button></td><td>${esc(p.codigo)}</td>
             <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
             <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
-            <td class="muted" title="Kit não tem estoque próprio — veja o disponível de cada componente em detalhar">—</td>
+            <td class="num ${dispKit>0?'okv':''}" title="${dispKit==null?'Kit sem componentes cadastrados':'Quantos kits dá pra montar com o estoque livre dos componentes hoje (o componente com menos é quem limita) — veja componente a componente em detalhar'}">${dispKit==null?'—':fmtInt(dispKit)}</td>
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totkit="${e.id}|${i.id}"
               title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
-            <td class="muted" title="Kit não vende como anúncio próprio no Full — veja a projeção de cada componente em detalhar">—</td>
-            <td class="muted">—</td>
+            <td class="num" title="Ponderada 7/15/30 dias da venda do próprio anúncio do kit, igual a Previsão de reposição">${pjKit.media>0?pjKit.media.toFixed(2):'—'}</td>
+            <td title="Contando aptas + em transferência + esta programação">${pjKit.diaZero?fmtData(pjKit.diaZero):(pjKit.media>0?'—':'sem venda')}</td>
             <td><button class="btn sm" data-movkit="${e.id}|${i.id}" title="Mover este kit inteiro (com todos os componentes) pra outro envio programado desta loja">↦ Mover</button>
               <button class="btn sm danger-outline" data-remkit="${e.id}|${i.id}">Remover</button></td></tr>
             ${aberto?grupo.map(g=>{ const pg=prodById(g.skuEscolhidoId||g.produtoId); if(!pg) return '';
