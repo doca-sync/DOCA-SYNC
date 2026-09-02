@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v377</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v380</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2147,6 +2147,10 @@ async function atualizarRankingLoja(loja,forcar){
       /* etiquetas do anúncio (ver /ml/ranking-categoria no server) - usadas no card de
          oportunidades da Visão Geral e no preço por faixa de quantidade */
       if(Array.isArray(x.tags)) p.mlTags=x.tags;
+      /* quantos OUTROS vendedores estão ofertando o mesmo produto de catálogo (pedido do Felipe
+         02/09). null = anúncio que não é de catálogo, ou lista não disponível. */
+      p.mlOutrosVendedores=(typeof x.outrosVendedores==='number')?x.outrosVendedores:null;
+      p.mlMenorPrecoConcorrente=(typeof x.menorPrecoConcorrente==='number')?x.menorPrecoConcorrente:null;
       p.mlTipoAnuncio=x.tipoAnuncio||null;
       p.mlLogistica=x.logistica||null;
       if(x.status) p.mlStatus=x.status;
@@ -3700,20 +3704,21 @@ function cardRankingMaisVendidos(){
     <p class="hint" style="margin:0 0 10px">Posição de cada anúncio entre os mais vendidos da categoria no Mercado Livre. Lido sozinho 2x por dia; a comparação é com a leitura anterior.</p>
     <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
       <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ok)">▲ Ganhando posição</b>
-        ${subiu.length?subiu.slice(0,8).map(m=>linha(m,'subiu')).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém subiu desde a última leitura.</div>'}
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ok)">▲ Ganhando posição${subiu.length?` (${subiu.length})`:''}</b>
+        ${subiu.length?subiu.slice(0,8).map(m=>linha(m,'subiu')).join('')+(subiu.length>8?`<div class="muted" style="font-size:11px">+ ${subiu.length-8} outro(s)</div>`:''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém subiu desde a última leitura.</div>'}
       </div>
       <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--pend,#e6a23c)">▼ Perdendo posição</b>
-        ${caiu.length?caiu.slice(0,8).map(m=>linha(m,'caiu')).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém caiu desde a última leitura.</div>'}
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--pend,#e6a23c)">▼ Perdendo posição${caiu.length?` (${caiu.length})`:''}</b>
+        ${caiu.length?caiu.slice(0,8).map(m=>linha(m,'caiu')).join('')+(caiu.length>8?`<div class="muted" style="font-size:11px">+ ${caiu.length-8} outro(s)</div>`:''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém caiu desde a última leitura.</div>'}
       </div>
       <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">🏅 Top 10 hoje</b>
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">🏅 Top 10 hoje${top.length?` (${top.length})`:''}</b>
+        <div class="hint" style="margin:2px 0 4px">${comRanking.filter(p=>typeof p.mlPosicaoCategoria==='number').length} anúncio(s) com medalha hoje, de ${comRanking.length} lido(s).</div>
         ${top.length?top.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b>${p.mlPosicaoCategoria}º</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum anúncio no top 10 das categorias.</div>'}
       </div>
       <div>
         <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">◇ Candidatos a mais vendido</b>
-        ${candidatos.length?candidatos.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="muted">concorrendo ao selo</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum candidato marcado pelo Mercado Livre no momento.</div>'}
+        ${candidatos.length?candidatos.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="muted">concorrendo ao selo</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum. O Mercado Livre marca pouquíssimos anúncios como candidatos, e hoje nenhum dos seus tem essa marca — a posição no ranking ao lado é a medida que vale.</div>'}
       </div>
     </div>
   </div>`;
@@ -3733,7 +3738,13 @@ function cardConcorrenciaCatalogo(){
   });
   const perdendo=ps.filter(p=>p.mlConcorrenciaStatus==='losing');
   const empatando=ps.filter(p=>p.mlConcorrenciaStatus==='sharing_first');
-  if(!novos.length&&!saiu.length&&!piorou.length&&!perdendo.length&&!empatando.length) return '';
+  /* "tem alguém vendendo no meu catálogo?" (pedido do Felipe 02/09) - conta os OUTROS vendedores
+     ofertando o mesmo produto de catálogo. Aparece mesmo quando você está ganhando a compra, que é
+     justamente o caso que o status de perdendo/empatando não mostrava. */
+  const comConcorrente=ps.filter(p=>typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0)
+    .sort((a,b)=>b.mlOutrosVendedores-a.mlOutrosVendedores);
+  const sozinho=ps.filter(p=>p.mlOutrosVendedores===0).length;
+  if(!novos.length&&!saiu.length&&!piorou.length&&!perdendo.length&&!empatando.length&&!comConcorrente.length&&!sozinho) return '';
   const precoTxt=p=>(typeof p.mlConcorrenciaPreco==='number')?` <span class="muted" style="font-size:11px">concorrente ${fmtMoney(p.mlConcorrenciaPreco)}${(typeof p.mlPreco==='number'&&p.mlPreco>0)?` · você ${fmtMoney(p.mlPreco)}`:''}</span>`:'';
   const bloco=(titulo,cor,lista,render,dica)=>{
     if(!lista.length) return '';
@@ -3746,8 +3757,11 @@ function cardConcorrenciaCatalogo(){
   };
   return `<div class="card">
     <h3 style="margin-top:0">⚔ Concorrência no catálogo</h3>
-    <p class="hint" style="margin:0 0 10px">Quem está disputando a compra nos seus anúncios de catálogo. A comparação é com a leitura anterior da sincronização.</p>
+    <p class="hint" style="margin:0 0 10px">Quem está disputando a compra nos seus anúncios de catálogo${sozinho?` · <b>${sozinho}</b> anúncio(s) de catálogo sem nenhum concorrente hoje`:''}.</p>
     <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
+      ${bloco('👥 Vendendo no meu catálogo','var(--violet-l)',comConcorrente,
+        p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${(typeof p.mlMenorPrecoConcorrente==='number')?` <span class="muted" style="font-size:11px">menor deles ${fmtMoney(p.mlMenorPrecoConcorrente)}${(typeof p.mlPreco==='number'&&p.mlPreco>0)?` · você ${fmtMoney(p.mlPreco)}`:''}</span>`:''}</span><b class="${p.mlConcorrenciaStatus==='losing'?'pend':''}">${p.mlOutrosVendedores} vendedor${p.mlOutrosVendedores===1?'':'es'}</b></div>`,
+        'Outros vendedores ofertando o mesmo produto de catálogo — inclusive onde você está ganhando a compra.')}
       ${bloco('🚨 Entrou concorrente','var(--pend,#e6a23c)',novos,
         ({p,e})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span><b class="pend">${e.para==='losing'?'perdendo':'empatado'}</b></div>`,
         'Antes você estava sozinho/ganhando. Alguém entrou desde a leitura anterior.')}
@@ -3768,10 +3782,7 @@ function cardOportunidadesAnuncios(){
   const ps=state.produtos.filter(p=>p.mlItemId&&(Array.isArray(p.mlTags)||p.mlTipoAnuncio));
   if(!ps.length) return '';
   const tem=(p,t)=>Array.isArray(p.mlTags)&&p.mlTags.indexOf(t)>=0;
-  const premium=ps.filter(p=>p.mlTipoAnuncio==='gold_pro');
-  const foraDoFull=ps.filter(p=>p.mlLogistica&&p.mlLogistica!=='fulfillment');
   const pausados=ps.filter(p=>p.mlStatus==='paused');
-  const semFotoBoa=ps.filter(p=>Array.isArray(p.mlTags)&&!tem(p,'good_quality_thumbnail'));
   const foraDoCarrinho=ps.filter(p=>Array.isArray(p.mlTags)&&!tem(p,'cart_eligible'));
   const bloco=(titulo,lista,cor,dica)=>{
     if(!lista.length) return '';
@@ -3782,11 +3793,11 @@ function cardOportunidadesAnuncios(){
       ${lista.length>8?`<div class="muted" style="font-size:11px">+ ${lista.length-8} outro(s)</div>`:''}
     </div>`;
   };
+  /* REMOVIDOS 02/09 a pedido do Felipe: "Anúncio Premium", "Fora do Full" e "Sem foto de boa
+     qualidade" - informação que ele já conhece/controla, virava só ruído no card. */
   const blocos=[
-    bloco('⚠ Anúncio Premium',premium, 'var(--pend,#e6a23c)','Paga quase o dobro de comissão do Clássico. Vale conferir se o giro compensa.'),
-    bloco('📦 Fora do Full',foraDoFull,'var(--violet-l)','Envio não é pelo Full — perde exposição e prazo. Conferir se é proposital.'),
     bloco('⏸ Pausados',pausados,'var(--pend,#e6a23c)','Anúncio parado não vende nem pontua no ranking da categoria.'),
-    bloco('📷 Sem foto de boa qualidade',semFotoBoa,'var(--muted)','O Mercado Livre não deu a etiqueta de boa miniatura — foto melhor costuma render mais clique.'),
+
     bloco('🛒 Fora do carrinho',foraDoCarrinho,'var(--muted)','Não elegível ao carrinho de compras, então perde venda casada.')
   ].filter(Boolean);
   if(!blocos.length) return '';
@@ -4613,7 +4624,7 @@ function renderProdutos(){
         return `
         <tr>
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
-          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${medalhaProduto(p)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}${kitv?` <span class="muted" style="font-size:10.5px" title="Kit: monta a partir de ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:''}</td>
+          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${medalhaProduto(p)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}${kitv?` <span class="muted" style="font-size:10.5px" title="Kit: monta a partir de ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
           <td class="num">${mProp!=null?mProp.toFixed(2):'<span class="muted">—</span>'}${vinculados.length?` <small class="muted" title="Soma deste + ${vinculados.map(v=>esc(v.sku)).join(', ')} — é esse total que decide quanto comprar/repor">(total: ${(m||0).toFixed(2)})</small>`:''}${mestreVinc?` <small class="muted" title="Estoque e reposição são decididos pelo total no SKU mestre ${esc(mestreVinc.sku)}, não só por este anúncio">🔗</small>`:''}</td>
           <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.comprar)} 🧩</span>`:`${fmtInt(mestreVinc?mestreVinc.qtd.comprar:p.qtd.comprar)}${mestreVinc?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(mestreVinc.sku)} — mostrado aqui só pra referência, não soma 2x nos totais">🔗</small>`:''}`}</td>
@@ -6108,7 +6119,7 @@ function renderAds(){
               return ` <span style="margin-left:8px;display:inline-block;font-size:11.5px;font-weight:700;color:${cor}" title="${esc(melhor.sku)} está em ${melhor.mlPosicaoCategoria}º lugar entre os mais vendidos da categoria no Mercado Livre${melhor.mlTotalRanking?' (ranking de '+melhor.mlTotalRanking+' anúncios)':''}. Atualizado sozinho a cada 12h.">🏅 ${melhor.mlPosicaoCategoria}º</span>`;
             }
             if(prods.some(p=>p.mlTagMaisVendido)) return ` <span class="muted" style="margin-left:8px;display:inline-block;font-size:11px;font-weight:600" title="O Mercado Livre marca este anúncio como CANDIDATO a Mais Vendido na categoria — ainda não é o selo conquistado. Sem medalha de propósito, pra não confundir com quem está no ranking de destaques.">◇ candidato a mais vendido</span>`;
-            return dados.tagMaisVendido[camp.id]?' <span style="margin-left:8px;display:inline-block" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':'';
+            return '';
           })()}${notaRoas}${tagLucro}${sugCampTag}</td>
           <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
@@ -6222,15 +6233,17 @@ function renderAds(){
               <div style="opacity:.6;font-size:11px">Calculado em ${new Date(sug.calculadoEm).toLocaleString('pt-BR')} · ${dadosCamp.diasAmostrados} dia(s) com venda no período · meta baseada na ${margemLabel}. O ⭐ é o melhor cenário pelo conjunto vendas + lucro + eficiência; os outros ficam aqui pra você decidir olhando os números.</div>
             </div>`;
           })()}
-          <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;margin:2px 0 8px">
-            <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>${(()=>{
-              const prods=itensDaCampanhaAds(camp).map(it=>state.produtos.find(x=>x.mlItemId===it.itemId)).filter(Boolean);
-              const comPos=prods.filter(p=>typeof p.mlPosicaoCategoria==='number');
-              if(!comPos.length) return '';
-              return ` <span class="muted" style="font-size:11.5px">— o Mercado Livre já informa: ${comPos.map(p=>esc(p.sku)+' em '+p.mlPosicaoCategoria+'º').join(', ')} na categoria (não precisa marcar na mão)</span>`;
-            })()}
-            🏅 Anúncio tem a etiqueta/selo de "Mais vendido" no Mercado Livre <span class="muted">(marque manualmente ao conferir)</span>
-          </label>
+          ${(()=>{
+            /* REMOVIDO 02/09 (Felipe: "remova esse campo, agora ele puxa automático"): o checkbox
+               de marcar "Mais vendido" na mão saiu - a posição vem sozinha do ranking de destaques
+               da categoria (ver atualizarRankingLoja). No lugar, mostra a colocação de cada anúncio
+               da campanha. */
+            const prods=itensDaCampanhaAds(camp).map(it=>state.produtos.find(x=>x.mlItemId===it.itemId)).filter(Boolean);
+            const comPos=prods.filter(p=>typeof p.mlPosicaoCategoria==='number')
+              .sort((a,b)=>a.mlPosicaoCategoria-b.mlPosicaoCategoria);
+            if(!comPos.length) return `<div class="hint" style="margin:2px 0 8px">🏅 Nenhum anúncio desta campanha está no ranking de mais vendidos da categoria hoje.</div>`;
+            return `<div style="margin:2px 0 8px;font-size:12.5px">🏅 <b>Mais vendidos da categoria:</b> ${comPos.map(p=>`${esc(p.sku)} <b style="color:${p.mlPosicaoCategoria<=3?'var(--gold,#d4a83c)':'inherit'}">${p.mlPosicaoCategoria}º</b>${p.mlTotalRanking?` <span class="muted">de ${p.mlTotalRanking}</span>`:''}`).join(' · ')} <span class="muted">(puxado sozinho do Mercado Livre)</span></div>`;
+          })()}
         </td></tr>`:''}`;
       }).join('')}
     </tbody></table></div>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
@@ -6284,20 +6297,8 @@ function renderAds(){
     if(adsDetalheAberto.has(id)) adsDetalheAberto.delete(id); else adsDetalheAberto.add(id);
     renderAds();
   });
-  el.querySelectorAll('[data-adstag]').forEach(chk=>chk.onchange=()=>{
-    dados.tagMaisVendido[chk.dataset.adstag]=chk.checked;
-    /* espelha a marcação manual no(s) produto(s) da campanha, pra medalha aparecer também em
-       Produtos, Comprar, Coletar, FULL e Estoque Mínimo (ver medalhaProduto) - pedido do Felipe
-       02/09: "não tire o campo de tickar e adicione automaticamente em todas as telas". */
-    const campanhaAlvo=(campanhas||[]).find(cc=>String(cc.id)===String(chk.dataset.adstag));
-    if(campanhaAlvo) itensDaCampanhaAds(campanhaAlvo).forEach(it=>{
-      const p=state.produtos.find(x=>x.mlItemId===it.itemId);
-      if(p) p.maisVendidoManual=chk.checked;
-    });
-    persist();
-    toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
-    renderAds();
-  });
+  /* o checkbox manual de "Mais vendido" foi removido em 02/09 - a posição passou a vir sozinha do
+     ranking de destaques da categoria, então não há mais o que marcar na mão. */
 }
 /* ================= Finanças (despesas + histórico mensal, base pra DRE) =================
    Guarda as despesas do negócio (manuais ou puxadas automaticamente do Mercado Livre) com data de

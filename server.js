@@ -1513,7 +1513,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     for (let i = 0; i < ids0.length; i += 20) {
       const lote = ids0.slice(i, i + 20).join(',');
       try {
-        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping,catalog_listing,catalog_product_id,user_product_id`, { headers: cab });
+        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping,catalog_listing,catalog_product_id,user_product_id,seller_id,price`, { headers: cab });
         const jj = await rr.json();
         (Array.isArray(jj) ? jj : []).forEach(w => {
           const b = w && w.body; if (!b || !b.id) return;
@@ -1533,10 +1533,31 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
                do proprio vendedor, id comecando com MLBU, que e' o caso do anuncio TRADICIONAL como
                o AFIADOR19) e o proprio anuncio. Sem o user_product_id, o tradicional continuava
                sem posicao mesmo estando no ranking. */
-            produtoDoVendedor: b.user_product_id || null
+            produtoDoVendedor: b.user_product_id || null,
+            vendedor: b.seller_id || null,
+            preco: (typeof b.price === 'number') ? b.price : null
           };
         });
       } catch (e) { /* lote com problema: segue */ }
+    }
+    /* QUEM MAIS VENDE NO MEU CATALOGO (02/09, pedido do Felipe: "inclua na Visao Geral se tem algum
+       vendedor vendendo no meu catalogo"). O status de price_to_win so' diz se estou ganhando ou
+       perdendo a compra - nao diz QUANTOS estao disputando. /products/{id}/items lista todas as
+       ofertas daquele produto de catalogo, entao da' pra contar os outros vendedores mesmo quando
+       eu estou ganhando. 1 chamada por produto de catalogo, so' pra quem tem catalog_product_id. */
+    const ofertasPorProduto = {};
+    const produtosCat = [...new Set(Object.values(extras).map(e => e.produtoCatalogo).filter(Boolean))];
+    for (const pid of produtosCat) {
+      try {
+        const rp = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(pid)}/items?limit=50`, { headers: cab });
+        const jp = await rp.json();
+        const res = (jp && Array.isArray(jp.results)) ? jp.results : [];
+        ofertasPorProduto[pid] = res.map(o => ({
+          itemId: o.item_id || o.id || null,
+          vendedor: o.seller_id || null,
+          preco: (o.price && typeof o.price === 'number') ? o.price : (o.price && o.price.amount) || null
+        }));
+      } catch (e) { /* produto sem lista de ofertas: fica sem contagem */ }
     }
     const itens = r.rows.map(x => {
       const ex = extras[x.ml_item_id] || {};
@@ -1564,8 +1585,17 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
           else casouPor = 'catalogo';
         }
       }
+      const ofertas = ex.produtoCatalogo ? (ofertasPorProduto[ex.produtoCatalogo] || null) : null;
+      let outrosVendedores = null, menorPrecoConcorrente = null;
+      if (Array.isArray(ofertas)) {
+        const outros = ofertas.filter(o => o.vendedor && String(o.vendedor) !== String(ex.vendedor || ''));
+        outrosVendedores = outros.length;
+        const precos = outros.map(o => o.preco).filter(v => typeof v === 'number' && v > 0);
+        if (precos.length) menorPrecoConcorrente = Math.min(...precos);
+      }
       return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total, casouPor,
         catalogo: !!ex.catalogo, produtoCatalogo: ex.produtoCatalogo || null, produtoDoVendedor: ex.produtoDoVendedor || null,
+        outrosVendedores, menorPrecoConcorrente, meuPreco: ex.preco || null,
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
