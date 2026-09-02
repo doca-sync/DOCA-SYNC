@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v375</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v376</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2113,12 +2113,14 @@ function variacaoPosicao(p){
   return {delta:anterior.pos-atual.pos,de:anterior.pos,para:atual.pos,desde:anterior.data};
 }
 let rankingBuscando={};
-async function atualizarRankingLoja(loja){
+async function atualizarRankingLoja(loja,forcar){
   if(rankingBuscando[loja]) return;
   const cfg=(state.mlSync&&state.mlSync.cfg)||{};
   if(!cfg.rankingEm) cfg.rankingEm={};
   const ultimo=cfg.rankingEm[loja]||0;
-  if(Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
+  /* forcar: botão "Atualizar agora" do card. Sem isso, uma leitura ruim (ex: feita antes de uma
+     correção no servidor) ficava 12h travando a próxima tentativa - pedido do Felipe 02/09. */
+  if(!forcar&&Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
   rankingBuscando[loja]=true;
   try{
     const base=nuvemBaseUrl(); if(!base) return;
@@ -3665,7 +3667,7 @@ function cardRankingMaisVendidos(){
   const comRanking=state.produtos.filter(p=>p.mlItemId&&Array.isArray(p.mlPosicaoHist)&&p.mlPosicaoHist.length);
   const candidatos=state.produtos.filter(p=>p.mlItemId&&p.mlTagMaisVendido&&typeof p.mlPosicaoCategoria!=='number');
   if(!comRanking.length&&!candidatos.length){
-    return `<div class="card"><h3 style="margin-top:0">🏅 Ranking de mais vendidos</h3>
+    return `<div class="card"><h3 style="margin-top:0">🏅 Ranking de mais vendidos <button class="btn sm" id="btnRankingAgora" style="margin-left:8px">↻ Atualizar agora</button></h3>
       <p class="hint" style="margin:0">Ainda sem leitura do ranking. Ele é buscado sozinho no Mercado Livre ao abrir esta tela (2x por dia) e vai formando o histórico — a comparação de subiu/caiu aparece a partir da segunda leitura.</p></div>`;
   }
   const movs=[];
@@ -3683,7 +3685,7 @@ function cardRankingMaisVendidos(){
     return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span> <span class="muted" style="font-size:11px">${v.de}º → ${v.para}º</span></span><b class="${cls}">${sinal} ${Math.abs(v.delta)} posiç${Math.abs(v.delta)===1?'ão':'ões'}</b></div>`;
   };
   return `<div class="card">
-    <h3 style="margin-top:0">🏅 Ranking de mais vendidos</h3>
+    <h3 style="margin-top:0">🏅 Ranking de mais vendidos <button class="btn sm" id="btnRankingAgora" style="margin-left:8px">↻ Atualizar agora</button></h3>
     <p class="hint" style="margin:0 0 10px">Posição de cada anúncio entre os mais vendidos da categoria no Mercado Livre. Lido sozinho 2x por dia; a comparação é com a leitura anterior.</p>
     <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
       <div>
@@ -4087,6 +4089,13 @@ function renderDashboard(){
     persist();
     renderDashboard();
   });
+  const btnRk=document.getElementById('btnRankingAgora');
+  if(btnRk) btnRk.onclick=async()=>{
+    btnRk.disabled=true; btnRk.textContent='Lendo...';
+    for(const l of STORES){ await atualizarRankingLoja(l,true); }
+    toast('Ranking atualizado.');
+    renderAll();
+  };
 }
 /* ---------- produtos ---------- */
 function mlSyncCfg(){ return state.mlSync.cfg; }
