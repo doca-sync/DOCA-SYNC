@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v369</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v371</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2132,6 +2132,12 @@ async function atualizarRankingLoja(loja){
       if(!p) return;
       p.mlPosicaoCategoria=(typeof x.posicao==='number')?x.posicao:null;
       p.mlTotalRanking=(typeof x.total==='number')?x.total:null;
+      /* etiquetas do anúncio (ver /ml/ranking-categoria no server) - usadas no card de
+         oportunidades da Visão Geral e no preço por faixa de quantidade */
+      if(Array.isArray(x.tags)) p.mlTags=x.tags;
+      p.mlTipoAnuncio=x.tipoAnuncio||null;
+      p.mlLogistica=x.logistica||null;
+      if(x.status) p.mlStatus=x.status;
       if(registrarPosicaoProduto(p,p.mlPosicaoCategoria,p.mlTotalRanking)) mudou=true;
     });
     cfg.rankingEm[loja]=Date.now();
@@ -3699,6 +3705,41 @@ function cardRankingMaisVendidos(){
     </div>
   </div>`;
 }
+/* CARD "OPORTUNIDADES NOS ANÚNCIOS" (02/09) - montado a partir das etiquetas que o próprio
+   Mercado Livre devolve e que o Doca passou a guardar (ver /ml/ranking-categoria). Só mostra o que
+   tem ação clara e dinheiro envolvido; nada de listar etiqueta por listar. */
+function cardOportunidadesAnuncios(){
+  const ps=state.produtos.filter(p=>p.mlItemId&&(Array.isArray(p.mlTags)||p.mlTipoAnuncio));
+  if(!ps.length) return '';
+  const tem=(p,t)=>Array.isArray(p.mlTags)&&p.mlTags.indexOf(t)>=0;
+  const premium=ps.filter(p=>p.mlTipoAnuncio==='gold_pro');
+  const foraDoFull=ps.filter(p=>p.mlLogistica&&p.mlLogistica!=='fulfillment');
+  const pausados=ps.filter(p=>p.mlStatus==='paused');
+  const semFotoBoa=ps.filter(p=>Array.isArray(p.mlTags)&&!tem(p,'good_quality_thumbnail'));
+  const foraDoCarrinho=ps.filter(p=>Array.isArray(p.mlTags)&&!tem(p,'cart_eligible'));
+  const bloco=(titulo,lista,cor,dica)=>{
+    if(!lista.length) return '';
+    return `<div>
+      <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:${cor}">${titulo} (${lista.length})</b>
+      <div class="hint" style="margin:2px 0 4px">${dica}</div>
+      ${lista.slice(0,8).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span></div>`).join('')}
+      ${lista.length>8?`<div class="muted" style="font-size:11px">+ ${lista.length-8} outro(s)</div>`:''}
+    </div>`;
+  };
+  const blocos=[
+    bloco('⚠ Anúncio Premium',premium, 'var(--pend,#e6a23c)','Paga quase o dobro de comissão do Clássico. Vale conferir se o giro compensa.'),
+    bloco('📦 Fora do Full',foraDoFull,'var(--violet-l)','Envio não é pelo Full — perde exposição e prazo. Conferir se é proposital.'),
+    bloco('⏸ Pausados',pausados,'var(--pend,#e6a23c)','Anúncio parado não vende nem pontua no ranking da categoria.'),
+    bloco('📷 Sem foto de boa qualidade',semFotoBoa,'var(--muted)','O Mercado Livre não deu a etiqueta de boa miniatura — foto melhor costuma render mais clique.'),
+    bloco('🛒 Fora do carrinho',foraDoCarrinho,'var(--muted)','Não elegível ao carrinho de compras, então perde venda casada.')
+  ].filter(Boolean);
+  if(!blocos.length) return '';
+  return `<div class="card">
+    <h3 style="margin-top:0">🔎 Oportunidades nos anúncios</h3>
+    <p class="hint" style="margin:0 0 10px">Lido direto do Mercado Livre junto com o ranking (2x por dia).</p>
+    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">${blocos.join('')}</div>
+  </div>`;
+}
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
   const totals=STORES.map(loja=>{
@@ -3737,6 +3778,7 @@ function renderDashboard(){
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
     ${cardRankingMaisVendidos()}
+    ${cardOportunidadesAnuncios()}
     <div class="cards-lojas">
       ${totals.map(t=>`<div class="card-loja">
         <div class="card-loja-head"><b>${esc(t.loja)}</b><span class="badge">${t.count} SKU${t.count===1?'':'s'}</span></div>
@@ -5233,7 +5275,7 @@ function itensDaCampanhaAds(camp){
    meta de TACOS bater com o "Resumo de custos" do simulador do ML. Roda uma vez por loja a cada
    12h; não trava a tela (se falhar, a conta cai na média real das vendas, como antes). */
 let custosAnuncioBuscando={};
-async function garantirCustosAnuncio(loja){
+async function garantirCustosAnuncio(loja,forcar){
   if(custosAnuncioBuscando[loja]) return;
   const itens=((adsLucroResultado&&adsLucroResultado.ads&&adsLucroResultado.ads.itens)||[]);
   const agora=Date.now();
@@ -5241,7 +5283,9 @@ async function garantirCustosAnuncio(loja){
   itens.forEach(it=>{
     const p=state.produtos.find(x=>x.mlItemId===it.itemId);
     if(!p||p.loja!==loja) return;
-    if(p.mlCustosEm&&(agora-p.mlCustosEm)<12*3600*1000) return; /* já está fresco */
+    /* forcar: usado pelo botão Atualizar - sem isso, um valor errado já gravado ficava 12h na
+       tela mesmo depois de corrigir o cálculo no servidor (pedido do Felipe 02/09) */
+    if(!forcar&&p.mlCustosEm&&(agora-p.mlCustosEm)<12*3600*1000) return; /* já está fresco */
     if(alvos.indexOf(it.itemId)<0) alvos.push(it.itemId);
   });
   if(!alvos.length) return;
@@ -5257,6 +5301,8 @@ async function garantirCustosAnuncio(loja){
       const p=state.produtos.find(y=>y.mlItemId===x.itemId);
       if(!p) return;
       if(typeof x.comissao==='number'&&x.comissao>0){ p.mlComissao=x.comissao; mudou=true; }
+      if(typeof x.comissaoPercentual==='number'&&x.comissaoPercentual>0){ p.mlComissaoPct=x.comissaoPercentual; mudou=true; }
+      if(typeof x.comissaoFixa==='number'){ p.mlComissaoFixa=x.comissaoFixa; }
       if(typeof x.frete==='number'&&x.frete>0){ p.mlFrete=x.frete; mudou=true; }
       if(typeof x.preco==='number'&&x.preco>0){ p.mlPreco=x.preco; mudou=true; }
       /* posição de mais vendido na categoria (pedido do Felipe 02/09) - vem do ranking de
@@ -5291,7 +5337,14 @@ function metaTacosPorProduto(camp,loja){
        disso, é pack ou outra unidade de medida - aí manda o realizado. */
     const precoRealizado=iv.valor/iv.qtd;
     const precoAnuncioBruto=(p&&typeof p.mlPreco==='number'&&p.mlPreco>0)?p.mlPreco:null;
-    const precoBate=precoAnuncioBruto!=null&&precoRealizado>0&&Math.abs(precoAnuncioBruto-precoRealizado)/precoRealizado<=0.25;
+    /* MELHORADO 02/09: o /ml/raio-x mostrou que o Mercado Livre marca explicitamente os anúncios
+       com preço por faixa de quantidade com a etiqueta "standard_price_by_quantity" (14 dos 20 da
+       TorvStore) - era exatamente o caso do AFIADOR19, onde o preço da API era o do pack e a meta
+       saiu quase 3x maior. Nesses, o preço do anúncio não serve como preço de 1 unidade, então
+       nem tenta: vai direto no valor recebido por unidade. Nos demais continua valendo a conferência
+       por diferença, pra pegar outros descasamentos. */
+    const precoPorFaixa=!!(p&&Array.isArray(p.mlTags)&&p.mlTags.indexOf('standard_price_by_quantity')>=0);
+    const precoBate=!precoPorFaixa&&precoAnuncioBruto!=null&&precoRealizado>0&&Math.abs(precoAnuncioBruto-precoRealizado)/precoRealizado<=0.25;
     const precoAnuncio=precoBate?precoAnuncioBruto:null;
     const precoUnit=precoAnuncio||precoRealizado;
     /* COMISSÃO e ENVIO: os mesmos dois números do "Resumo de custos" do Mercado Livre (tarifa de
@@ -5301,7 +5354,12 @@ function metaTacosPorProduto(camp,loja){
        AFIADOR19) - a média mistura pedidos de regiões/condições diferentes e come R$0,40 de margem
        por unidade em relação à condição atual do anúncio. Sem o dado do ML ainda carregado, cai na
        média real, como antes. */
-    const comissaoDoAnuncio=(p&&typeof p.mlComissao==='number'&&p.mlComissao>0)?p.mlComissao:null;
+    /* comissão do anúncio: usa o PERCENTUAL (+ parte fixa, quando houver) aplicado no preço de 1
+       unidade. Ver a correção de 02/09 em /ml/custos-anuncio: o valor em reais que o ML devolve é
+       calculado sobre o preço consultado, que em anúncio com faixa de quantidade é o do pack. */
+    const comissaoDoAnuncio=(p&&typeof p.mlComissaoPct==='number'&&p.mlComissaoPct>0)
+      ? (precoUnit*(p.mlComissaoPct/100)+(Number(p.mlComissaoFixa)||0))
+      : ((p&&typeof p.mlComissao==='number'&&p.mlComissao>0&&!precoPorFaixa)?p.mlComissao:null);
     const freteDoAnuncio=(p&&typeof p.mlFrete==='number'&&p.mlFrete>0)?p.mlFrete:null;
     const comissaoPct=precoRealizado>0?((iv.tarifa||0)/iv.qtd)/precoRealizado:0;
     const comissaoUnit=comissaoDoAnuncio!=null?comissaoDoAnuncio:precoUnit*comissaoPct;
@@ -6100,7 +6158,7 @@ function renderAds(){
          mesma loja - isso derrubava um dos dois silenciosamente (Gasto Ads/Margem Bruta ficavam
          em branco sem erro nenhum, ou a Sugestão de ROAS vinha com "Resposta inválida do
          backend"). Agora roda em fila: 1) Lucro, 2) Sugestão de ROAS. */
-      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>{ garantirCustosAnuncio(c.loja); iniciarSugestaoRoasLoja(c.loja); });
+      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>{ garantirCustosAnuncio(c.loja,true); iniciarSugestaoRoasLoja(c.loja); });
     }
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
@@ -6118,7 +6176,7 @@ function renderAds(){
        precisa disparar aqui, porque o botão "Atualizar" (que normalmente dispara ela) fica
        escondido quando o período é personalizado. */
     adsBuscarPersonalizado(c.loja);
-    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>{ garantirCustosAnuncio(c.loja); iniciarSugestaoRoasLoja(c.loja); });
+    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>{ garantirCustosAnuncio(c.loja,true); iniciarSugestaoRoasLoja(c.loja); });
   };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);

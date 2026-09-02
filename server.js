@@ -1431,6 +1431,21 @@ app.get('/ml/custos-anuncio', exigirLogin, async (req, res) => {
           const escolhido = lista.find(x => x && x.listing_type_id === j.listing_type_id) || lista[0];
           if (escolhido && typeof escolhido.sale_fee_amount === 'number') linha.comissao = escolhido.sale_fee_amount;
           linha.tipoAnuncio = (escolhido && escolhido.listing_type_id) || j.listing_type_id || null;
+          /* CORRIGIDO 02/09 (Felipe: "ainda esta mostrando a comissao errada" - vinha R$4,37, o
+             DOBRO exato dos R$2,18 do simulador): a comissao em reais vem calculada sobre o preco
+             que mandamos na consulta, e nesses anuncios o preco da API e' o do PACK (2 unidades),
+             nao o de 1. Como a comissao e' percentual, o que serve pra qualquer preco e' a PARTE
+             PERCENTUAL (mais a fixa, quando existe) - o Doca aplica isso no preco unitario. */
+          const det = escolhido && escolhido.sale_fee_details;
+          if (det) {
+            if (typeof det.percentage_fee === 'number') linha.comissaoPercentual = det.percentage_fee;
+            if (typeof det.fixed_fee === 'number') linha.comissaoFixa = det.fixed_fee;
+          }
+          if (linha.comissaoPercentual == null && typeof linha.comissao === 'number' && j.price > 0) {
+            linha.comissaoPercentual = (linha.comissao / j.price) * 100;  /* deduz o percentual */
+            linha.comissaoFixa = 0;
+          }
+          linha.precoConsultado = Number(j.price) || null;
         } catch (e) { /* sem comissao: o front cai na media real */ }
         try {
           const rF = await fetch(`https://api.mercadolibre.com/users/${j.seller_id}/shipping_options/free?item_id=${itemId}`, { headers: cab });
@@ -1467,6 +1482,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
       "select ml_item_id, sku, categoria_id from ml_produtos where loja = $1 and categoria_id is not null and coalesce(status,'') <> 'closed'",
       [loja]
     );
+    const ids0 = r.rows.map(x => x.ml_item_id).filter(Boolean);
     const categorias = [...new Set(r.rows.map(x => x.categoria_id).filter(Boolean))];
     const ranking = {};
     for (const cat of categorias) {
@@ -1476,6 +1492,28 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         if (rH.ok && jH && Array.isArray(jH.content)) ranking[cat] = jH.content;
       } catch (e) { /* categoria sem destaques: os itens dela ficam sem posicao */ }
     }
+    /* Junto do ranking, traz as etiquetas do anuncio (02/09 - o /ml/raio-x na TorvStore mostrou
+       que dali saem coisas uteis que o Doca ainda ignorava: gold_pro = anuncio Premium pagando
+       quase o dobro de comissao, standard_price_by_quantity = preco por faixa de quantidade -
+       que foi exatamente o que fez a meta do AFIADOR19 sair errada -, good_quality_thumbnail,
+       status pausado e logistic_type fora do fulfillment). Multiget: 1 chamada a cada 20. */
+    const extras = {};
+    for (let i = 0; i < ids0.length; i += 20) {
+      const lote = ids0.slice(i, i + 20).join(',');
+      try {
+        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping`, { headers: cab });
+        const jj = await rr.json();
+        (Array.isArray(jj) ? jj : []).forEach(w => {
+          const b = w && w.body; if (!b || !b.id) return;
+          extras[b.id] = {
+            tags: Array.isArray(b.tags) ? b.tags : [],
+            tipoAnuncio: b.listing_type_id || null,
+            status: b.status || null,
+            logistica: (b.shipping && b.shipping.logistic_type) || null
+          };
+        });
+      } catch (e) { /* lote com problema: segue */ }
+    }
     const itens = r.rows.map(x => {
       const lista = ranking[x.categoria_id];
       let posicao = null, total = null;
@@ -1483,7 +1521,9 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         const idx = lista.findIndex(c => c && (c.id === x.ml_item_id || c.parent_id === x.ml_item_id));
         if (idx >= 0) { posicao = idx + 1; total = lista.length; }
       }
-      return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total };
+      const ex = extras[x.ml_item_id] || {};
+      return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total,
+        tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true, loja, categorias: categorias.length, itens });
