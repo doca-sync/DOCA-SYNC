@@ -1513,7 +1513,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     for (let i = 0; i < ids0.length; i += 20) {
       const lote = ids0.slice(i, i + 20).join(',');
       try {
-        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping,catalog_listing,catalog_product_id`, { headers: cab });
+        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping,catalog_listing,catalog_product_id,user_product_id`, { headers: cab });
         const jj = await rr.json();
         (Array.isArray(jj) ? jj : []).forEach(w => {
           const b = w && w.body; if (!b || !b.id) return;
@@ -1527,7 +1527,13 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
                lista o PRODUTO de catalogo, nao o anuncio. Sem o catalog_product_id nao tinha como
                casar, e por isso TODAS as posicoes voltavam null. */
             catalogo: !!b.catalog_listing,
-            produtoCatalogo: b.catalog_product_id || null
+            produtoCatalogo: b.catalog_product_id || null,
+            /* CORRIGIDO 02/09 (2a volta, com o diagnostico real do Felipe): o ranking mistura tres
+               tipos de entrada - PRODUCT (produto de catalogo, ex: musgo), USER_PRODUCT (produto
+               do proprio vendedor, id comecando com MLBU, que e' o caso do anuncio TRADICIONAL como
+               o AFIADOR19) e o proprio anuncio. Sem o user_product_id, o tradicional continuava
+               sem posicao mesmo estando no ranking. */
+            produtoDoVendedor: b.user_product_id || null
           };
         });
       } catch (e) { /* lote com problema: segue */ }
@@ -1545,16 +1551,21 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
           if (!c) return false;
           if (c.id === x.ml_item_id || c.parent_id === x.ml_item_id) return true;
           if (ex.produtoCatalogo && (c.id === ex.produtoCatalogo || c.parent_id === ex.produtoCatalogo)) return true;
+          if (ex.produtoDoVendedor && (c.id === ex.produtoDoVendedor || c.parent_id === ex.produtoDoVendedor)) return true;
           return false;
         });
         if (idx >= 0) {
-          posicao = idx + 1; total = lista.length;
           const achado = lista[idx];
-          casouPor = (achado && (achado.id === x.ml_item_id || achado.parent_id === x.ml_item_id)) ? 'anuncio' : 'catalogo';
+          /* usa a posicao que o proprio ML manda; se nao vier, cai no indice da lista */
+          posicao = (achado && typeof achado.position === 'number') ? achado.position : (idx + 1);
+          total = lista.length;
+          if (achado && (achado.id === x.ml_item_id || achado.parent_id === x.ml_item_id)) casouPor = 'anuncio';
+          else if (ex.produtoDoVendedor && achado && (achado.id === ex.produtoDoVendedor || achado.parent_id === ex.produtoDoVendedor)) casouPor = 'produto_do_vendedor';
+          else casouPor = 'catalogo';
         }
       }
       return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total, casouPor,
-        catalogo: !!ex.catalogo, produtoCatalogo: ex.produtoCatalogo || null,
+        catalogo: !!ex.catalogo, produtoCatalogo: ex.produtoCatalogo || null, produtoDoVendedor: ex.produtoDoVendedor || null,
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
