@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v383</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v384</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5414,6 +5414,31 @@ async function garantirCustosAnuncio(loja,forcar){
    `realizado` (opcional) traz as médias reais do período pra servir de referência e de reserva:
    o preço do anúncio só é aceito quando bate com o recebido por unidade (anúncio com faixa de
    quantidade tem preço de pack, ver a correção do AFIADOR19). */
+/* SEMÁFORO DE ADS — 3 estados (02/09, pedido do Felipe). Antes eram 2 sinais soltos e meio
+   sobrepostos ("dentro da meta" de um lado, "lucro > ads" do outro). Agora é um só, com a mesma
+   leitura na aba Ads e nos relatórios de Finanças:
+     ✓ verde    = dentro da meta de TACOS (gasto <= 1/3 da margem) → o ideal
+     ⚠ amarelo  = passou da meta, mas o produto ainda dá lucro depois do Ads → atenção
+     ✕ vermelho = o Ads comeu o lucro todo (gasto >= margem) → está pagando pra vender
+   `teto` pode vir null (sem dado pra calcular a meta) - aí só distingue lucro x prejuízo. */
+function semaforoAds(margem,gastoAds,teto){
+  if(gastoAds==null||margem==null) return null;
+  if(teto!=null&&gastoAds<=teto){
+    return {nivel:'ok',icone:'✓',cor:'var(--ok)',
+      titulo:`Dentro da meta de TACOS — Ads de ${fmtMoney(gastoAds)} contra um teto de ${fmtMoney(teto)}.`};
+  }
+  if(margem>gastoAds){
+    return {nivel:'atencao',icone:'⚠',cor:'var(--warn)',
+      titulo:`Ainda dá lucro (margem ${fmtMoney(margem)} contra Ads de ${fmtMoney(gastoAds)}), mas passou da meta de TACOS${teto!=null?` — o teto era ${fmtMoney(teto)}, estourou ${fmtMoney(gastoAds-teto)}`:''}.`};
+  }
+  return {nivel:'ruim',icone:'✕',cor:'var(--danger)',
+    titulo:`O Ads consumiu o lucro: margem ${fmtMoney(margem)} contra ${fmtMoney(gastoAds)} de Ads${teto!=null?` (teto da meta: ${fmtMoney(teto)})`:''}.`};
+}
+function selosAds(margem,gastoAds,teto){
+  const s=semaforoAds(margem,gastoAds,teto);
+  if(!s) return '';
+  return ` <span style="color:${s.cor};font-weight:700" title="${esc(s.titulo)}">${s.icone}</span>`;
+}
 function metaTacosUnit(p,aliquota,realizado){
   const custoUnit=(p&&p.custo)?p.custo:0;
   const precoRealizado=(realizado&&realizado.precoUnit>0)?realizado.precoUnit:null;
@@ -6082,7 +6107,10 @@ function renderAds(){
           ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
           `CVR (${av.cvr7.toFixed(1)}%): peso ${av.pesoCvr}/${PESO_MAX_CVR}`
         ].join(' · ')}">${av.score.toFixed(0)}%</span>`:'';
-        const tagLucro=lucroBruto==null?'':(lucroBruto>custoAdsCalc?` <span class="okv" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Lucro Bruto (${fmtMoney(lucroBruto)}) maior que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">✓ lucro > ads</span>`:` <span class="pend" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Lucro Bruto (${fmtMoney(lucroBruto)}) menor que o custo de Ads (${fmtMoney(custoAdsCalc)}) nesse período">⚠ lucro < ads</span>`);
+        /* UNIFICADO 02/09: 3 estados num selo só (ver semaforoAds) - antes eram dois avisos
+           separados que podiam se contradizer na leitura. */
+        const semAds=semaforoAds(margemContrib,custoAdsCalc,mt?mt.tetoAds:(margemContrib>0?margemContrib/3:null));
+        const tagLucro=!semAds?'':` <span style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block;color:${semAds.cor}" title="${esc(semAds.titulo)}">${semAds.icone} ${semAds.nivel==='ok'?'dentro da meta':(semAds.nivel==='atencao'?'acima da meta, com lucro':'ads > lucro')}</span>`;
         const sugCampTag=(()=>{
           const sug=adsSugestaoRoasArr()[c.loja];
           const dc=sug&&sug.porCampanha[camp.id];
@@ -6111,7 +6139,7 @@ function renderAds(){
           })()}${notaRoas}${tagLucro}${sugCampTag}</td>
           <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
-          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${dentroMetaTacos?` <span class="okv" title="Gasto em Ads (${fmtMoney(custoAdsCalc||0)}) dentro da meta de TACOS — teto de ${fmtMoney((margemContrib||0)/3)} (1/3 da Margem de Contribuição)">✓</span>`:(margemContrib>0?` <span class="pend" title="Gasto em Ads (${fmtMoney(custoAdsCalc||0)}) acima da meta de TACOS — o teto é ${fmtMoney(margemContrib/3)} (1/3 da Margem de Contribuição)">⚠</span>`:'')}`:'<span class="muted">—</span>'}</td>
+          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${selosAds(margemContrib,custoAdsCalc,mt?mt.tetoAds:(margemContrib>0?margemContrib/3:null))}`:'<span class="muted">—</span>'}</td>
           <td class="num">${mt?`<b title="${(()=>{
             const cab='Meta = 1/3 da margem unitária, em cima do PREÇO DO ANÚNCIO:';
             return cab+' · '+mt.linhas.map(l=>`${l.sku}: ${fmtMoney(l.precoUnit)}${l.precoDoAnuncio?'':' (preço médio vendido - anúncio sem preço sincronizado)'} − custo ${fmtMoney(l.custoUnit)} − comissão ${fmtMoney(l.comissaoUnit)} − envio ${fmtMoney(l.freteUnit)} − imposto ${fmtMoney(l.impostoUnit)} = ${fmtMoney(l.margemUnit)} (${l.margemPct.toFixed(2)}%) → meta ${l.metaPct.toFixed(2)}%`).join(' · ')+` · Teto de Ads no período: ${fmtMoney(mt.tetoAds)} (faturou ${fmtMoney(mt.faturamento)}), gasto: ${fmtMoney(mt.gastoAds)}. Abra o ▼ pra ver produto a produto.`;
@@ -8109,7 +8137,8 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       const metaIt=tetoAdsDoItem(p,aliquotaLoja,it);
       const dentroMetaAds=adsAchado!=null&&(metaIt?adsAchado<=metaIt.teto
         :(margemContribItem>0&&adsAchado<=margemContribItem/3));
-      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds};
+      const seloAds=selosAds(margemContribItem,adsAchado,metaIt?metaIt.teto:(margemContribItem>0?margemContribItem/3:null));
+      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds,seloAds};
     });
     const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
     const margemPosAds=r.m.margem-gastoAds;
@@ -8161,7 +8190,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição — mês de ${esc(r.mesDe)} a ${esc(r.mesAte)} (${r.diasMes} dias): despesas <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML <b>${fmtMoney(r.faturaMlPeriodo)}</b> = <b>${fmtMoney(r.custosPeriodo+r.faturaMlPeriodo)}</b> (valor cheio, usado na "custo total"). Rateado pros ${r.diasSel} dia(s) do período selecionado: <b>${fmtMoney(r.custosRateado+r.faturaMlRateada)}</b> (usado na "rateada").</p>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<div class="tbl-scroll"><table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
-        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.dentroMetaAds?' <span style="color:var(--ok)">✓</span>':''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
+        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.seloAds||''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
       </tbody></table></div>`:`<p class="vazio">Nenhuma venda no período.</p>`}
       ${r.porSocio?`<h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sócios${r.fonte?` · ${esc(r.fonte)}`:''}</h3>
         <div class="tbl-scroll"><table><thead><tr><th>Sócio</th><th class="n">Cota</th><th class="n">Retirou</th><th class="n">Reembolso</th></tr></thead><tbody>
@@ -8649,7 +8678,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
           const dentroMetaTacosItem=adsAchado!=null&&(metaIt?adsAchado<=metaIt.teto
             :(margemContribItem>0&&adsAchado<=margemContribItem/3));
           const pctAds=it.valor&&adsAchado!=null?(adsAchado/it.valor*100):0;
-          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':`${fmtMoney(adsAchado)} <span class="muted" style="font-size:11px">(${pctAds.toFixed(1)}%)</span>${dentroMetaTacosItem?` <span class="okv" style="font-size:11px;font-weight:700" title="Ads dentro da meta de TACOS — teto de ${fmtMoney(metaIt?metaIt.teto:margemContribItem/3)}${metaIt?` (meta ${metaIt.metaPct.toFixed(2)}% = 1/3 da margem unitária de ${metaIt.margemPct.toFixed(1)}%, mesmo critério da aba Ads)`:' (1/3 da Margem de Contribuição do período)'}">✓</span>`:''}`;
+          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':`${fmtMoney(adsAchado)} <span class="muted" style="font-size:11px">(${pctAds.toFixed(1)}%)</span>${selosAds(margemContribItem,adsAchado,metaIt?metaIt.teto:(margemContribItem>0?margemContribItem/3:null))}`;
           const aberto=resumoRankingAberto.has(String(it.itemId));
           const pctMC=it.valor?(margemContribItem/it.valor*100):0;
           const pctML=it.valor?(margemLiquidaItem/it.valor*100):0;
