@@ -1545,10 +1545,20 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
        perdendo a compra - nao diz QUANTOS estao disputando. /products/{id}/items lista todas as
        ofertas daquele produto de catalogo, entao da' pra contar os outros vendedores mesmo quando
        eu estou ganhando. 1 chamada por produto de catalogo, so' pra quem tem catalog_product_id. */
+    /* CORRIGIDO 02/09 (Felipe: "0 produtos com posição gravada" na aba Ads, depois de ter
+       funcionado): esta varredura de ofertas foi acrescentada DEPOIS que o ranking ja' funcionava,
+       e ela faz 1 chamada por produto de catalogo. Com isso o endpoint inteiro passou a demorar
+       demais e comecou a estourar/falhar - derrubando junto a parte do RANKING, que e' o principal.
+       Agora ela tem orcamento de tempo: se passar de 12s, para onde esta' e devolve o ranking do
+       mesmo jeito. Antes o ranking morria junto com ela. */
     const ofertasPorProduto = {};
     const diagnosticoOfertas = [];
+    const INICIO_OFERTAS = Date.now();
+    const ORCAMENTO_OFERTAS_MS = 12000;
+    let ofertasInterrompidas = false;
     const produtosCat = [...new Set(Object.values(extras).map(e => e.produtoCatalogo).filter(Boolean))];
     for (const pid of produtosCat) {
+      if (Date.now() - INICIO_OFERTAS > ORCAMENTO_OFERTAS_MS) { ofertasInterrompidas = true; break; }
       try {
         const rp = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(pid)}/items?limit=50`, { headers: cab });
         const jp = await rp.json();
@@ -1612,7 +1622,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, loja, categorias: categorias.length, diagnostico, diagnosticoOfertas, itens });
+    res.json({ ok: true, loja, categorias: categorias.length, ofertasInterrompidas, diagnostico, diagnosticoOfertas, itens });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }

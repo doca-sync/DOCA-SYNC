@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v386</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v388</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2150,7 +2150,6 @@ async function atualizarRankingLoja(loja,forcar){
      que legitimamente não tem anúncio no ranking dispararia uma leitura a cada render de tela. */
   if(!forcar&&!temAlguma&&rankingTentadoVazio[loja]) return;
   if(!forcar&&temAlguma&&Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
-  if(!temAlguma) rankingTentadoVazio[loja]=true;
   rankingBuscando[loja]=true;
   let achadas=0;
   try{
@@ -2164,7 +2163,7 @@ async function atualizarRankingLoja(loja,forcar){
       /* erro visível: antes ia só pro console e dava a impressão de que "não aparece medalha",
          quando na verdade a leitura nem tinha acontecido - pedido do Felipe 02/09 */
       const msg=(j&&j.erro)||('HTTP '+r.status+(r.status===404?' — o server.js novo ainda não está no ar':''));
-      if(forcar) toast('⚠ Não consegui ler o ranking de '+loja+': '+msg);
+      toast('⚠ Não consegui ler o ranking de '+loja+': '+msg);
       throw new Error(msg);
     }
     let mudou=false;
@@ -2186,6 +2185,10 @@ async function atualizarRankingLoja(loja,forcar){
       if(x.status) p.mlStatus=x.status;
       if(registrarPosicaoProduto(p,p.mlPosicaoCategoria,p.mlTotalRanking)) mudou=true;
     });
+    /* só marca "tentei e veio vazio" quando a leitura REALMENTE não trouxe posição nenhuma.
+       Assim, se as posições sumirem depois (ex: a nuvem trouxe o estado de outro aparelho por
+       cima), a próxima tela já lê de novo em vez de ficar travada até o fim da sessão. */
+    rankingTentadoVazio[loja]=(achadas===0);
     cfg.rankingEm[loja]=Date.now();
     state.mlSync.cfg=cfg;
     if(mudou){ persist(); renderAll(); }
@@ -5404,11 +5407,18 @@ async function garantirCustosAnuncio(loja,forcar){
       if(typeof x.comissaoFixa==='number'){ p.mlComissaoFixa=x.comissaoFixa; }
       if(typeof x.frete==='number'&&x.frete>0){ p.mlFrete=x.frete; mudou=true; }
       if(typeof x.preco==='number'&&x.preco>0){ p.mlPreco=x.preco; mudou=true; }
-      /* posição de mais vendido na categoria (pedido do Felipe 02/09) - vem do ranking de
-         destaques do ML, ver /ml/custos-anuncio. null = anúncio fora do ranking da categoria. */
-      p.mlPosicaoCategoria=(typeof x.posicaoCategoria==='number')?x.posicaoCategoria:null;
-      p.mlTotalRanking=(typeof x.totalRanking==='number')?x.totalRanking:null;
-      p.mlTagMaisVendido=!!x.tagMaisVendido;
+      /* CORRIGIDO 02/09 (Felipe: "coloquei pra calcular Ads aí sumiu" - as medalhas apareciam ao
+         abrir e sumiam ao clicar em Atualizar): este endpoint também devolvia posição, mas por um
+         caminho antigo que só casava pelo ID do ANÚNCIO - sem o casamento por produto de catálogo
+         e por produto do vendedor que o /ml/ranking-categoria passou a fazer. Resultado: voltava
+         vazio pros anúncios de catálogo e ZERAVA (null) a posição que o ranking tinha gravado.
+         Agora quem manda na posição é só o /ml/ranking-categoria; aqui nunca mais apaga - só
+         completa se por acaso vier algo e ainda não houver nada. */
+      if(typeof x.posicaoCategoria==='number'&&typeof p.mlPosicaoCategoria!=='number'){
+        p.mlPosicaoCategoria=x.posicaoCategoria;
+        if(typeof x.totalRanking==='number') p.mlTotalRanking=x.totalRanking;
+      }
+      if(x.tagMaisVendido) p.mlTagMaisVendido=true;
       mudou=true;
       p.mlCustosEm=Date.now();
     });
@@ -6091,7 +6101,15 @@ function renderAds(){
         const casados=itensAds.filter(it=>state.produtos.some(p=>p.mlItemId===it.itemId));
         const casadosComPos=itensAds.filter(it=>{ const p=state.produtos.find(y=>y.mlItemId===it.itemId); return p&&typeof p.mlPosicaoCategoria==='number'; });
         if(comPos.length&&casadosComPos.length) return '';
-        return `<p class="hint" style="color:var(--warn)">🏅 Medalhas: ${comPos.length} produto(s) desta loja com posição gravada · ${itensAds.length} item(ns) de Ads no período, ${casados.length} casado(s) com SKU do Doca, ${casadosComPos.length} com posição. ${!comPos.length?'A leitura do ranking ainda não trouxe posição pra esta loja.':'Os anúncios que aparecem em Ads não são os que estão no ranking.'}</p>`;
+        /* a medalha na linha da campanha depende do cálculo de Lucro (é ele que liga campanha →
+           anúncio → SKU). Sem ele, não é "anúncio fora do ranking", é só que ainda não carregou -
+           dizer a coisa errada aqui me fez perder tempo caçando o bug no lugar errado. */
+        const motivo=!itensAds.length
+          ?(adsLucroCarregando?'O cálculo do Lucro ainda está rodando — a medalha aparece quando ele terminar.'
+            :'Clique em <b>Atualizar</b> pra calcular o Lucro do período: é ele que liga cada campanha ao SKU, e sem isso não dá pra saber de quem é a medalha.')
+          :(!comPos.length?'A leitura do ranking ainda não trouxe posição pra esta loja.'
+            :'Os anúncios que aparecem em Ads não são os que estão no ranking da categoria.');
+        return `<p class="hint" style="color:var(--warn)">🏅 Medalhas: ${comPos.length} produto(s) desta loja com posição gravada · ${itensAds.length} item(ns) de Ads no período, ${casados.length} casado(s) com SKU do Doca, ${casadosComPos.length} com posição. ${motivo}</p>`;
       })()}
       ${adsLucroCarregando?(adsLucroProgresso&&adsLucroProgresso.total?barraProgresso(adsLucroProgresso.feito,adsLucroProgresso.total,'💰 '+(adsLucroProgresso.etapa||'Calculando custo/lucro do período...')):barraIndeterminada('💰 Calculando custo/lucro do período...')):''}
       ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
