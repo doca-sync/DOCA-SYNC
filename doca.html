@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v373</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v375</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3708,6 +3708,49 @@ function cardRankingMaisVendidos(){
 /* CARD "OPORTUNIDADES NOS ANÚNCIOS" (02/09) - montado a partir das etiquetas que o próprio
    Mercado Livre devolve e que o Doca passou a guardar (ver /ml/ranking-categoria). Só mostra o que
    tem ação clara e dinheiro envolvido; nada de listar etiqueta por listar. */
+/* CARD "CONCORRÊNCIA NO CATÁLOGO" (pedido do Felipe 02/09). Separa o que MUDOU (entrou gente
+   agora, ou você recuperou) do estado atual - porque saber que entrou hoje é o que pede ação. */
+function cardConcorrenciaCatalogo(){
+  const ps=state.produtos.filter(p=>p.mlItemId&&!p.mlAusente);
+  const novos=[],saiu=[],piorou=[];
+  ps.forEach(p=>{
+    const e=entrouConcorrente(p);
+    if(!e) return;
+    if(e.entrou) novos.push({p,e}); else if(e.saiu) saiu.push({p,e}); else if(e.piorou) piorou.push({p,e});
+  });
+  const perdendo=ps.filter(p=>p.mlConcorrenciaStatus==='losing');
+  const empatando=ps.filter(p=>p.mlConcorrenciaStatus==='sharing_first');
+  if(!novos.length&&!saiu.length&&!piorou.length&&!perdendo.length&&!empatando.length) return '';
+  const precoTxt=p=>(typeof p.mlConcorrenciaPreco==='number')?` <span class="muted" style="font-size:11px">concorrente ${fmtMoney(p.mlConcorrenciaPreco)}${(typeof p.mlPreco==='number'&&p.mlPreco>0)?` · você ${fmtMoney(p.mlPreco)}`:''}</span>`:'';
+  const bloco=(titulo,cor,lista,render,dica)=>{
+    if(!lista.length) return '';
+    return `<div>
+      <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:${cor}">${titulo} (${lista.length})</b>
+      ${dica?`<div class="hint" style="margin:2px 0 4px">${dica}</div>`:''}
+      ${lista.slice(0,8).map(render).join('')}
+      ${lista.length>8?`<div class="muted" style="font-size:11px">+ ${lista.length-8} outro(s)</div>`:''}
+    </div>`;
+  };
+  return `<div class="card">
+    <h3 style="margin-top:0">⚔ Concorrência no catálogo</h3>
+    <p class="hint" style="margin:0 0 10px">Quem está disputando a compra nos seus anúncios de catálogo. A comparação é com a leitura anterior da sincronização.</p>
+    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
+      ${bloco('🚨 Entrou concorrente','var(--pend,#e6a23c)',novos,
+        ({p,e})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span><b class="pend">${e.para==='losing'?'perdendo':'empatado'}</b></div>`,
+        'Antes você estava sozinho/ganhando. Alguém entrou desde a leitura anterior.')}
+      ${bloco('🔻 Piorou','var(--pend,#e6a23c)',piorou,
+        ({p,e})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span><b class="pend">empatado → perdendo</b></div>`,'')}
+      ${bloco('✅ Você recuperou','var(--ok)',saiu,
+        ({p})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="okv">ganhando</b></div>`,
+        'Deixou de estar em disputa desde a leitura anterior.')}
+      ${bloco('⚔ Perdendo hoje','var(--pend,#e6a23c)',perdendo,
+        p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span></div>`,
+        'Outro vendedor está levando a venda no catálogo.')}
+      ${bloco('🤝 Empatando hoje','var(--muted)',empatando,
+        p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span></div>`,'')}
+    </div>
+  </div>`;
+}
 function cardOportunidadesAnuncios(){
   const ps=state.produtos.filter(p=>p.mlItemId&&(Array.isArray(p.mlTags)||p.mlTipoAnuncio));
   if(!ps.length) return '';
@@ -3778,6 +3821,7 @@ function renderDashboard(){
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
     ${cardRankingMaisVendidos()}
+    ${cardConcorrenciaCatalogo()}
     ${cardOportunidadesAnuncios()}
     <div class="cards-lojas">
       ${totals.map(t=>`<div class="card-loja">
@@ -4161,6 +4205,33 @@ function concorrenciaLabel(s){
   if(s==='sharing_first') return 'Empatando no catálogo';
   return null;
 }
+/* HISTÓRICO DE CONCORRÊNCIA NO CATÁLOGO (pedido do Felipe 02/09: "consegue trazer no card se algum
+   outro vendedor entrou no meu catálogo?"). O status por anúncio já vinha da sincronização
+   (price_to_win: 'winning' = você é o dono da compra, 'sharing_first' = empatado, 'losing' =
+   alguém está ganhando de você). O que faltava era GUARDAR, pra dar pra dizer "entrou agora" em vez
+   de só "está assim hoje". Guarda 1 leitura por dia, 120 dias. */
+function registrarConcorrencia(p){
+  if(!p||!p.mlItemId) return;
+  const d=hoje();
+  const st=p.mlConcorrenciaStatus||'winning';
+  if(!Array.isArray(p.mlConcHist)) p.mlConcHist=[];
+  const ultimo=p.mlConcHist[p.mlConcHist.length-1];
+  if(ultimo&&ultimo.data===d){ ultimo.st=st; ultimo.preco=(typeof p.mlConcorrenciaPreco==='number')?p.mlConcorrenciaPreco:null; }
+  else p.mlConcHist.push({data:d,st,preco:(typeof p.mlConcorrenciaPreco==='number')?p.mlConcorrenciaPreco:null});
+  const limite=_somaDiasISO(d,-120);
+  p.mlConcHist=p.mlConcHist.filter(x=>x.data>=limite);
+}
+/* mudou de "sozinho/ganhando" pra "dividindo/perdendo" desde a leitura anterior = entrou gente */
+function entrouConcorrente(p){
+  const h=Array.isArray(p&&p.mlConcHist)?p.mlConcHist:[];
+  if(h.length<2) return null;
+  const atual=h[h.length-1], ant=h[h.length-2];
+  const disputado=s=>s==='losing'||s==='sharing_first';
+  if(!disputado(ant.st)&&disputado(atual.st)) return {entrou:true,de:ant.st,para:atual.st,desde:ant.data,preco:atual.preco};
+  if(disputado(ant.st)&&!disputado(atual.st)) return {saiu:true,de:ant.st,para:atual.st,desde:ant.data};
+  if(ant.st==='sharing_first'&&atual.st==='losing') return {piorou:true,de:ant.st,para:atual.st,desde:ant.data,preco:atual.preco};
+  return null;
+}
 /* alimenta automaticamente a mesma lista usada pelo card "No FULL" da Visão Geral (state.full.itens)
    com o que vem da API do Mercado Livre: quantidade "aptas", vendas 7/15/30d (a Previsão de
    reposição e a média ponderada passam a usar isso, igual usariam uma leitura manual do
@@ -4326,6 +4397,7 @@ function aplicarItemSincronizado(p,item,loja){
   p.mlCatalogo=!!item.catalog_listing;
   p.mlConcorrenciaStatus=item.concorrencia_status||null;
   p.mlConcorrenciaPreco=(typeof item.concorrencia_preco==='number')?item.concorrencia_preco:null;
+  registrarConcorrencia(p);   /* forma o histórico do card "entrou no meu catálogo" */
   p.mlPerguntas=item.perguntas_sem_resposta||0;
   p.mlTransferencia=(typeof item.transferencia_full==='number')?item.transferencia_full:null;
   p.mlAusente=false; p.mlAusenteDesde=null;
@@ -5881,7 +5953,7 @@ function renderAds(){
     const mt=metaTacosCampanha(camp,c.loja);
     const temBaseLucro=(margemContrib!=null&&faturamentoContrib>0&&custoAdsCalc!=null);
     const tacosExib=mt?mt.tacosReal:(temBaseLucro?(custoAdsCalc/faturamentoContrib*100):tacos);
-    return {camp,m,tacos,tacosExib,mt,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto};
+    return {camp,m,tacos,tacosExib,mt,temBaseLucro,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto};
   });
   if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacosExib-a.tacosExib);
   else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacosExib-b.tacosExib);
@@ -5960,7 +6032,7 @@ function renderAds(){
       <th class="num">TACOS Meta</th><th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
-      ${linhas.map(({camp,m,tacos,tacosExib,mt,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto})=>{
+      ${linhas.map(({camp,m,tacos,tacosExib,mt,temBaseLucro,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
