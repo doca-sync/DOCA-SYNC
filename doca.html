@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v376</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v377</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2122,17 +2122,27 @@ async function atualizarRankingLoja(loja,forcar){
      correção no servidor) ficava 12h travando a próxima tentativa - pedido do Felipe 02/09. */
   if(!forcar&&Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
   rankingBuscando[loja]=true;
+  let achadas=0;
   try{
-    const base=nuvemBaseUrl(); if(!base) return;
+    const base=nuvemBaseUrl();
+    if(!base){ if(forcar) toast('⚠ Configure a URL do backend antes (a mesma do Atualizar do Mercado Livre).'); return 0; }
     const r=await fetch(`${base}/ml/ranking-categoria?loja=${encodeURIComponent(loja)}`,
       {cache:'no-store',headers:nuvemAuth?{Authorization:'Basic '+nuvemAuth}:{}});
-    const j=await r.json();
-    if(!r.ok||!j.ok) throw new Error(j.erro||'falha');
+    let j=null;
+    try{ j=await r.json(); }catch(e){ j=null; }
+    if(!r.ok||!j||!j.ok){
+      /* erro visível: antes ia só pro console e dava a impressão de que "não aparece medalha",
+         quando na verdade a leitura nem tinha acontecido - pedido do Felipe 02/09 */
+      const msg=(j&&j.erro)||('HTTP '+r.status+(r.status===404?' — o server.js novo ainda não está no ar':''));
+      if(forcar) toast('⚠ Não consegui ler o ranking de '+loja+': '+msg);
+      throw new Error(msg);
+    }
     let mudou=false;
     (j.itens||[]).forEach(x=>{
       const p=state.produtos.find(y=>y.mlItemId===x.itemId);
       if(!p) return;
       p.mlPosicaoCategoria=(typeof x.posicao==='number')?x.posicao:null;
+      if(p.mlPosicaoCategoria!=null) achadas++;
       p.mlTotalRanking=(typeof x.total==='number')?x.total:null;
       /* etiquetas do anúncio (ver /ml/ranking-categoria no server) - usadas no card de
          oportunidades da Visão Geral e no preço por faixa de quantidade */
@@ -2145,7 +2155,8 @@ async function atualizarRankingLoja(loja,forcar){
     cfg.rankingEm[loja]=Date.now();
     state.mlSync.cfg=cfg;
     if(mudou){ persist(); renderAll(); }
-  }catch(e){ console.error('ranking da categoria:',e.message); }
+    return achadas;
+  }catch(e){ console.error('ranking da categoria:',e.message); return 0; }
   finally{ rankingBuscando[loja]=false; }
 }
 function medalhaProduto(p){
@@ -4092,8 +4103,10 @@ function renderDashboard(){
   const btnRk=document.getElementById('btnRankingAgora');
   if(btnRk) btnRk.onclick=async()=>{
     btnRk.disabled=true; btnRk.textContent='Lendo...';
-    for(const l of STORES){ await atualizarRankingLoja(l,true); }
-    toast('Ranking atualizado.');
+    let total=0;
+    for(const l of STORES){ total+=(await atualizarRankingLoja(l,true))||0; }
+    toast(total>0?`Ranking atualizado: ${total} anúncio(s) posicionado(s).`
+                 :'Ranking lido, mas nenhum anúncio apareceu no ranking das categorias. Se você esperava algum, me avise.');
     renderAll();
   };
 }
