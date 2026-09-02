@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v371</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v373</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5374,6 +5374,8 @@ function metaTacosPorProduto(camp,loja){
     linhas.push({itemId:ia.itemId,sku:(p&&p.sku)||ia.itemId,semCusto:!(custoUnit>0),
       precoDoAnuncio:!!precoAnuncio,precoRealizado,
       comissaoDoAnuncio:comissaoDoAnuncio!=null,freteDoAnuncio:freteDoAnuncio!=null,
+      comissaoPct:(p&&typeof p.mlComissaoPct==='number')?p.mlComissaoPct:null,
+      comissaoFixa:(p&&Number(p.mlComissaoFixa))||0,
       qtd:iv.qtd,faturamento:iv.valor,precoUnit,custoUnit,comissaoUnit,freteUnit,impostoUnit,
       margemUnit,margemPct,metaPct,tetoAds,gastoAds,tacosReal,dentro:gastoAds<=tetoAds});
   });
@@ -5871,10 +5873,18 @@ function renderAds(){
     const faturamentoContrib=mc?mc.faturamento:0;
     const custoAdsCalc=custoAdsCampanhaCalculado(camp);
     const lucroBruto=(margemContrib!=null&&custoAdsCalc!=null)?(margemContrib-custoAdsCalc):null;
-    return {camp,m,tacos,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto};
+    /* CORRIGIDO 02/09 (Felipe: "no filtro de maior TACOS, por que a CAPINHA não aparece abaixo do
+       ADUBO?"): a coluna passou a mostrar o TACOS calculado na mesma base da meta (ver
+       metaTacosCampanha), mas a ordenação continuou usando o valor antigo da API - ordenava por um
+       número e mostrava outro, então a lista saía fora de ordem na tela. Calcula aqui, uma vez, e
+       usa o MESMO valor pra ordenar e pra exibir. */
+    const mt=metaTacosCampanha(camp,c.loja);
+    const temBaseLucro=(margemContrib!=null&&faturamentoContrib>0&&custoAdsCalc!=null);
+    const tacosExib=mt?mt.tacosReal:(temBaseLucro?(custoAdsCalc/faturamentoContrib*100):tacos);
+    return {camp,m,tacos,tacosExib,mt,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto};
   });
-  if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacos-a.tacos);
-  else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacos-b.tacos);
+  if(adsFiltro==='tacos_desc') linhas=linhas.slice().sort((a,b)=>b.tacosExib-a.tacosExib);
+  else if(adsFiltro==='tacos_asc') linhas=linhas.slice().sort((a,b)=>a.tacosExib-b.tacosExib);
   else if(adsFiltro==='custo_desc') linhas=linhas.slice().sort((a,b)=>(b.m.cost||0)-(a.m.cost||0));
   else if(adsFiltro==='roas_score'){
     const nota=x=>{ const av=avalAtual.get(x.camp.id); return av?av.score:-1; };
@@ -5950,7 +5960,7 @@ function renderAds(){
       <th class="num">TACOS Meta</th><th class="num">TACOS</th><th class="num">Aporte Ads</th><th class="num">Ganho Leilões</th>
       <th class="num">CTR</th><th class="num">CVR</th><th class="num">Cliques</th><th class="num">Impressões</th><th></th>
     </tr></thead><tbody>
-      ${linhas.map(({camp,m,tacos,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto})=>{
+      ${linhas.map(({camp,m,tacos,tacosExib,mt,margemContrib,faturamentoContrib,custoAdsCalc,lucroBruto})=>{
         const aberto=adsDetalheAberto.has(String(camp.id));
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
@@ -5972,9 +5982,6 @@ function renderAds(){
            preço − custo − comissão − tarifa de envio − imposto, e a meta é 1/3 disso. Antes saía
            da margem agregada do período (preço médio já com promoção), o que dava um número menor
            - no AFIADOR19, 4,75% em vez dos 5,47% da conta dele. */
-        const mt=metaTacosCampanha(camp,c.loja);
-        const temBaseLucro=(margemContrib!=null&&faturamentoContrib>0&&custoAdsCalc!=null);
-        const tacosExib=mt?mt.tacosReal:(temBaseLucro?(custoAdsCalc/faturamentoContrib*100):tacos);
         const dentroMetaTacos=mt?mt.dentro:(margemContrib>0&&custoAdsCalc!=null&&custoAdsCalc<=margemContrib/3);
         const tacosAlto=mt?!mt.dentro:(tacosExib>c.margemPct);
         const av=avalAtual.get(camp.id);
@@ -6063,7 +6070,7 @@ function renderAds(){
                 <td class="num">${fmtInt(l.qtd)}</td>
                 <td class="num" title="${l.precoDoAnuncio?'Preço do anúncio no Mercado Livre':`Preço médio recebido por unidade (valor ÷ quantidade). ${l.precoRealizado?'':''}Não usou o preço do anúncio${(typeof (state.produtos.find(x=>x.mlItemId===l.itemId)||{}).mlPreco==='number')?' ('+fmtMoney((state.produtos.find(x=>x.mlItemId===l.itemId)||{}).mlPreco)+') porque ele destoa demais do recebido por unidade — normalmente é anúncio vendido em pack':' porque ainda não foi sincronizado'}`}">${fmtMoney(l.precoUnit)}${l.precoDoAnuncio?'':' <span class="muted" style="font-size:10px">méd.</span>'}</td>
                 <td class="num">${fmtMoney(l.custoUnit)}</td>
-                <td class="num" title="${l.comissaoDoAnuncio?'Tarifa de venda atual do anúncio (mesma do Resumo de custos do Mercado Livre)':'Média cobrada nas vendas do período — o valor atual do anúncio ainda não carregou'}">${fmtMoney(l.comissaoUnit)}${l.comissaoDoAnuncio?'':' <span class="muted" style="font-size:10px">méd.</span>'}</td>
+                <td class="num" title="${l.comissaoDoAnuncio?`Tarifa de venda deste anúncio, na categoria e no tipo dele${l.comissaoPct?' — '+l.comissaoPct.toFixed(2)+'%'+(l.comissaoFixa?' + '+fmtMoney(l.comissaoFixa)+' fixo':'')+' sobre '+fmtMoney(l.precoUnit):''}. Cada categoria tem a sua, consultada anúncio por anúncio no Mercado Livre.`:'Média cobrada nas vendas do período — o valor atual do anúncio ainda não carregou'}">${fmtMoney(l.comissaoUnit)}${l.comissaoDoAnuncio?(l.comissaoPct?` <span class="muted" style="font-size:10px">${l.comissaoPct.toFixed(1)}%</span>`:''):' <span class="muted" style="font-size:10px">méd.</span>'}</td>
                 <td class="num" title="${l.freteDoAnuncio?'Custo de envio atual do anúncio (mesmo do Resumo de custos do Mercado Livre)':'Média cobrada nas vendas do período — o valor atual do anúncio ainda não carregou'}">${fmtMoney(l.freteUnit)}${l.freteDoAnuncio?'':' <span class="muted" style="font-size:10px">méd.</span>'}</td>
                 <td class="num">${fmtMoney(l.impostoUnit)}</td>
                 <td class="num"><b>${fmtMoney(l.margemUnit)}</b></td>

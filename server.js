@@ -1485,12 +1485,24 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     const ids0 = r.rows.map(x => x.ml_item_id).filter(Boolean);
     const categorias = [...new Set(r.rows.map(x => x.categoria_id).filter(Boolean))];
     const ranking = {};
+    const diagnostico = [];
     for (const cat of categorias) {
       try {
         const rH = await fetch(`https://api.mercadolibre.com/highlights/MLB/category/${encodeURIComponent(cat)}`, { headers: cab });
         const jH = await rH.json();
         if (rH.ok && jH && Array.isArray(jH.content)) ranking[cat] = jH.content;
-      } catch (e) { /* categoria sem destaques: os itens dela ficam sem posicao */ }
+        /* diagnostico (02/09): as posicoes vieram todas null com 17 categorias consultadas -
+           precisa ver o que o endpoint devolve de fato (status, quantos itens, e o formato de
+           cada entrada: o ranking pode vir por PRODUTO de catalogo em vez de por anuncio). */
+        if (diagnostico.length < 3) {
+          diagnostico.push({
+            categoria: cat, status: rH.status,
+            temContent: !!(jH && Array.isArray(jH.content)),
+            qtd: (jH && Array.isArray(jH.content)) ? jH.content.length : null,
+            amostra: (jH && Array.isArray(jH.content)) ? jH.content.slice(0, 3) : (jH || null)
+          });
+        }
+      } catch (e) { if (diagnostico.length < 3) diagnostico.push({ categoria: cat, erro: e.message }); }
     }
     /* Junto do ranking, traz as etiquetas do anuncio (02/09 - o /ml/raio-x na TorvStore mostrou
        que dali saem coisas uteis que o Doca ainda ignorava: gold_pro = anuncio Premium pagando
@@ -1526,7 +1538,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, loja, categorias: categorias.length, itens });
+    res.json({ ok: true, loja, categorias: categorias.length, diagnostico, itens });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
