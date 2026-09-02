@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v381</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v383</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3717,18 +3717,22 @@ function cardRankingMaisVendidos(){
       <p class="sub">Ainda sem leitura. É buscado sozinho no Mercado Livre quando o Doca abre (no máximo 2× por dia); a comparação de subiu/caiu começa na segunda leitura.</p></div>`;
   }
   const medalhados=comRanking.filter(p=>typeof p.mlPosicaoCategoria==='number');
+  /* a linha mostra o MOVIMENTO desde a leitura anterior (subiu/caiu/entrou/saiu) embaixo do SKU -
+     pedido do Felipe 02/09. O "de N no ranking" saiu: era informação repetida em toda linha e não
+     dizia nada de novo. Enquanto só existe 1 leitura, fica "primeira leitura". */
   const linhaProduto=p=>{
     const v=variacaoPosicao(p);
-    let mov='';
+    let mov='<span class="muted" style="font-size:10.5px">primeira leitura</span>';
     if(v){
-      if(v.entrou) mov=`<span class="okv" style="font-size:10.5px">entrou agora</span>`;
-      else if(v.saiu) mov=`<span class="pend" style="font-size:10.5px">saiu do ranking</span>`;
-      else if(v.delta>0) mov=`<span class="okv" style="font-size:10.5px">▲ ${v.delta} · era ${v.de}º</span>`;
-      else if(v.delta<0) mov=`<span class="pend" style="font-size:10.5px">▼ ${Math.abs(v.delta)} · era ${v.de}º</span>`;
+      if(v.entrou) mov=`<span class="okv" style="font-size:10.5px">🚀 entrou no ranking</span>`;
+      else if(v.saiu) mov=`<span class="pend" style="font-size:10.5px">saiu do ranking (era ${v.de}º)</span>`;
+      else if(v.delta>0) mov=`<span class="okv" style="font-size:10.5px">▲ subiu ${v.delta} · era ${v.de}º</span>`;
+      else if(v.delta<0) mov=`<span class="pend" style="font-size:10.5px">▼ caiu ${Math.abs(v.delta)} · era ${v.de}º</span>`;
+      else mov=`<span class="muted" style="font-size:10.5px">manteve a posição</span>`;
     }
     const pos=(typeof p.mlPosicaoCategoria==='number')
       ? `<span style="color:${p.mlPosicaoCategoria<=3?'var(--gold,#d4a83c)':'inherit'}">${p.mlPosicaoCategoria}º</span>` : '—';
-    return vgLinha(esc(p.sku),pos,mov||(p.mlTotalRanking?`de ${p.mlTotalRanking} no ranking`:''));
+    return vgLinha(esc(p.sku),pos,mov);
   };
   return `<div class="card-vg">
     <h3>🏅 Ranking de mais vendidos</h3>
@@ -4001,27 +4005,38 @@ function renderDashboard(){
           <td class="num ${g?'pend':''}">${fmtInt(g)}</td></tr>`;
       }).join('')}
       </tbody></table></div>`:''}
-    ${rupturasPorLoja.length?`<div class="alert-baixo risco"><div class="alert-head">🚨 Risco de ruptura no FULL em até ${diasAlertaRuptura} dia(s)</div>
-      ${rupturasPorLoja.map(g=>`<div class="alert-grupo-loja"><b class="alert-loja">${esc(g.loja)}</b>
-        <div class="alert-list">${g.itens.map(r=>{
-          const st=statusAcaoFull(r.p);
-          const zeraTxt=r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`;
-          /* específico por PRODUTO — se esse SKU não está em nenhum envio programado, ou está mas
-             ele chega depois da ruptura, não importa se a loja tem outro envio programado com
-             OUTROS produtos */
-          // CORRIGIDO 26/08 (pedido do Felipe): antes existiam 2 frases diferentes pra
-          // essencialmente a mesma situação (SKU sem Full cobrindo a tempo) - "não está no
-          // próximo envio, inclua ele" só aparecia se a loja JÁ tivesse um próximo envio com data
-          // marcada; sem isso, caía numa segunda frase genérica ("nenhum FULL programado ainda"),
-          // mesmo quando o motivo de fundo era o mesmo. Unificado: só varia conforme existir ou
-          // não um próximo envio da loja pra sugerir incluir o SKU.
-          const envioTxt=r.zeraAntesDoEnvio
-            ?` — <b class="pend">🚨 este SKU já tem FULL programado pra ${fmtData(r.proximoFullProduto.data)}, mas é DEPOIS da ruptura — precisa antecipar</b>`
-            :(r.proximoFullProduto?` — FULL deste SKU programado pra ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
-              :(r.emGracaEnvio?` — envio confirmado como FULL em ${fmtData(r.dataEnvioConfirmado)}, aguardando o Mercado Livre processar (ver Próximos programados)`
-              :' — <b class="pend">SKU sem FULL programado</b>'));
-          return `<span>${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}<span class="mono">${esc(r.p.sku)}</span> — ${zeraTxt} (${fmtData(r.diaZero)}) — média: ${(r.k.media||0).toFixed(2)}/dia — <span class="acao-${st.tipo}">${st.texto}</span>${envioTxt} <button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor, e depois excluir o anúncio — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button></span>`;
-        }).join('')}</div></div>`).join('')}</div>`:''}
+    ${(()=>{
+      /* RUPTURA no mesmo desenho dos cards novos, uma coluna por loja (pedido do Felipe 02/09).
+         Mantém tudo que a versão anterior mostrava - curva, quando zera, média/dia, ação sugerida,
+         situação do FULL programado e o 🔕 de pausar o aviso - só que organizado por loja em vez
+         de uma lista corrida. */
+      if(!rupturasPorLoja.length) return '';
+      const total=rupturasPorLoja.reduce((s2,g)=>s2+g.itens.length,0);
+      const porLoja={}; rupturasPorLoja.forEach(g=>{ porLoja[g.loja]=g.itens; });
+      const linhaRup=r=>{
+        const st=statusAcaoFull(r.p);
+        const zeraTxt=r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`;
+        const envioTxt=r.zeraAntesDoEnvio
+          ?`<span class="pend">🚨 FULL só em ${fmtData(r.proximoFullProduto.data)} — depois da ruptura, precisa antecipar</span>`
+          :(r.proximoFullProduto?`FULL em ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
+            :(r.emGracaEnvio?`confirmado em ${fmtData(r.dataEnvioConfirmado)}, aguardando o ML`
+            :'<span class="pend">sem FULL programado</span>'));
+        const esqSku=`${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}${esc(r.p.sku)}`;
+        const sub=`${zeraTxt} (${fmtData(r.diaZero)}) · média ${(r.k.media||0).toFixed(2)}/dia<br><span class="acao-${st.tipo}">${st.texto}</span> · ${envioTxt}`;
+        const dir=`<button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button>`;
+        return vgLinha(esqSku,dir,sub);
+      };
+      return `<div class="card-vg">
+        <h3>🚨 Risco de ruptura no FULL <span class="badge pend">${total} SKU(s)</span></h3>
+        <p class="sub">Produtos que zeram no Full em até ${diasAlertaRuptura} dia(s), pelo ritmo de venda atual.</p>
+        <div class="vg-cols">
+          ${STORES.map(loja=>{
+            const itens=porLoja[loja]||[];
+            return vgColunaLoja(loja,itens.length,itens.map(linhaRup).join(''),'Nenhum SKU em risco.');
+          }).join('')}
+        </div>
+      </div>`;
+    })()}
     ${produtosComReposicaoPausada().length?`<p class="hint" style="margin:8px 0 0"><button class="btn sm" id="btnVerPausados">🔕 ${produtosComReposicaoPausada().length} SKU(s) com aviso de ruptura pausado — ver/reativar</button></p>`:''}
     `;
   el.querySelectorAll('[data-mpago]').forEach(i=>{
@@ -5390,6 +5405,50 @@ async function garantirCustosAnuncio(loja,forcar){
   }catch(e){ console.error('custos do anúncio:',e.message); }
   finally{ custosAnuncioBuscando[loja]=false; }
 }
+/* META DE TACOS DE UM PRODUTO - FONTE ÚNICA DA VERDADE (02/09, pergunta do Felipe: "nos relatórios
+   em Finanças vai usar o mesmo critério agora de Ads também?"). Antes existiam DUAS contas:
+     - Ads   : margem unitária pelo preço do anúncio (o critério novo, que ele definiu)
+     - Finanças: margem agregada do período (preço médio já com promoção)
+   O mesmo produto podia sair ✓ num lugar e ⚠ no outro. Agora as duas telas chamam esta função.
+   Fórmula: preço − custo − comissão − tarifa de envio − imposto, por unidade; meta = 1/3 disso.
+   `realizado` (opcional) traz as médias reais do período pra servir de referência e de reserva:
+   o preço do anúncio só é aceito quando bate com o recebido por unidade (anúncio com faixa de
+   quantidade tem preço de pack, ver a correção do AFIADOR19). */
+function metaTacosUnit(p,aliquota,realizado){
+  const custoUnit=(p&&p.custo)?p.custo:0;
+  const precoRealizado=(realizado&&realizado.precoUnit>0)?realizado.precoUnit:null;
+  const precoPorFaixa=!!(p&&Array.isArray(p.mlTags)&&p.mlTags.indexOf('standard_price_by_quantity')>=0);
+  const precoAnuncioBruto=(p&&typeof p.mlPreco==='number'&&p.mlPreco>0)?p.mlPreco:null;
+  const precoBate=!precoPorFaixa&&precoAnuncioBruto!=null&&precoRealizado&&Math.abs(precoAnuncioBruto-precoRealizado)/precoRealizado<=0.25;
+  const precoDoAnuncio=precoBate?precoAnuncioBruto:null;
+  const precoUnit=precoDoAnuncio||precoRealizado||precoAnuncioBruto||0;
+  if(!(precoUnit>0)) return null;
+  const comissaoDoAnuncio=(p&&typeof p.mlComissaoPct==='number'&&p.mlComissaoPct>0)
+    ? (precoUnit*(p.mlComissaoPct/100)+(Number(p.mlComissaoFixa)||0)) : null;
+  const comissaoUnit=(comissaoDoAnuncio!=null)?comissaoDoAnuncio
+    :((realizado&&realizado.comissaoUnit>=0)?realizado.comissaoUnit:0);
+  const freteDoAnuncio=(p&&typeof p.mlFrete==='number'&&p.mlFrete>0)?p.mlFrete:null;
+  const freteUnit=(freteDoAnuncio!=null)?freteDoAnuncio
+    :((realizado&&realizado.freteUnit>=0)?realizado.freteUnit:0);
+  const impostoUnit=precoUnit*((aliquota||0)/100);
+  const margemUnit=precoUnit-custoUnit-comissaoUnit-freteUnit-impostoUnit;
+  const margemPct=margemUnit/precoUnit*100;
+  return {precoUnit,custoUnit,comissaoUnit,freteUnit,impostoUnit,margemUnit,margemPct,
+    metaPct:margemPct/3,precoDoAnuncio:!!precoDoAnuncio,precoRealizado,
+    comissaoDoAnuncio:comissaoDoAnuncio!=null,freteDoAnuncio:freteDoAnuncio!=null,
+    comissaoPct:(p&&typeof p.mlComissaoPct==='number')?p.mlComissaoPct:null,
+    comissaoFixa:(p&&Number(p.mlComissaoFixa))||0,
+    semCusto:!(custoUnit>0)};
+}
+/* usado pelos relatórios de Finanças: teto de Ads em reais pro que o produto faturou no período,
+   pelo MESMO critério da aba Ads. Devolve null quando não dá pra calcular (produto sem preço). */
+function tetoAdsDoItem(p,aliquota,it){
+  const qtd=(it&&it.qtd)||0, valor=(it&&it.valor)||0;
+  if(!(qtd>0)||!(valor>0)) return null;
+  const m=metaTacosUnit(p,aliquota,{precoUnit:valor/qtd,comissaoUnit:(it.tarifa||0)/qtd,freteUnit:(it.freteMl||0)/qtd});
+  if(!m||!(m.margemPct>0)) return null;
+  return {metaPct:m.metaPct,teto:valor*(m.metaPct/100),margemUnit:m.margemUnit,margemPct:m.margemPct,detalhe:m};
+}
 function metaTacosPorProduto(camp,loja){
   if(!adsLucroResultado) return [];
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -5399,58 +5458,19 @@ function metaTacosPorProduto(camp,loja){
     const iv=((adsLucroResultado.itensVendidos)||[]).find(x=>x.itemId===ia.itemId);
     if(!iv||!(iv.qtd>0)||!(iv.valor>0)) return;
     const p=state.produtos.find(x=>x.mlItemId===ia.itemId);
-    const custoUnit=p&&p.custo?p.custo:0;
-    /* PREÇO POR UNIDADE. Usa o preço do anúncio (p.mlPreco) quando ele é mesmo o preço de UMA
-       unidade. CORRIGIDO 02/09 (Felipe: "AFIADOR19 ficou com 15,42% de meta, está errado"):
-       anúncio com faixa de quantidade (o do afiador mostra "Preço de 1 unidade ▼") tem no preço da
-       API o valor do PACK, não o de 1 unidade - no afiador entrou ~R$36 no lugar de R$19, quase
-       dobrando a margem e a meta. Como o preço realmente recebido por unidade vendida
-       (valor ÷ quantidade) nunca tem esse problema, ele é a referência: só aceita o preço do
-       anúncio se bater com ele (até 25% de diferença, que cobre promoção/desconto normal). Fora
-       disso, é pack ou outra unidade de medida - aí manda o realizado. */
-    const precoRealizado=iv.valor/iv.qtd;
-    const precoAnuncioBruto=(p&&typeof p.mlPreco==='number'&&p.mlPreco>0)?p.mlPreco:null;
-    /* MELHORADO 02/09: o /ml/raio-x mostrou que o Mercado Livre marca explicitamente os anúncios
-       com preço por faixa de quantidade com a etiqueta "standard_price_by_quantity" (14 dos 20 da
-       TorvStore) - era exatamente o caso do AFIADOR19, onde o preço da API era o do pack e a meta
-       saiu quase 3x maior. Nesses, o preço do anúncio não serve como preço de 1 unidade, então
-       nem tenta: vai direto no valor recebido por unidade. Nos demais continua valendo a conferência
-       por diferença, pra pegar outros descasamentos. */
-    const precoPorFaixa=!!(p&&Array.isArray(p.mlTags)&&p.mlTags.indexOf('standard_price_by_quantity')>=0);
-    const precoBate=!precoPorFaixa&&precoAnuncioBruto!=null&&precoRealizado>0&&Math.abs(precoAnuncioBruto-precoRealizado)/precoRealizado<=0.25;
-    const precoAnuncio=precoBate?precoAnuncioBruto:null;
-    const precoUnit=precoAnuncio||precoRealizado;
-    /* COMISSÃO e ENVIO: os mesmos dois números do "Resumo de custos" do Mercado Livre (tarifa de
-       venda e custo de envio), buscados do ML pelo /ml/custos-anuncio e guardados em
-       p.mlComissao/p.mlFrete. CORRIGIDO 02/09 (Felipe: "comissão e envio está errado, deveria ser
-       2,18 e 6,85"): antes usava a MÉDIA do que foi cobrado nas vendas do período (2,28 e 7,15 no
-       AFIADOR19) - a média mistura pedidos de regiões/condições diferentes e come R$0,40 de margem
-       por unidade em relação à condição atual do anúncio. Sem o dado do ML ainda carregado, cai na
-       média real, como antes. */
-    /* comissão do anúncio: usa o PERCENTUAL (+ parte fixa, quando houver) aplicado no preço de 1
-       unidade. Ver a correção de 02/09 em /ml/custos-anuncio: o valor em reais que o ML devolve é
-       calculado sobre o preço consultado, que em anúncio com faixa de quantidade é o do pack. */
-    const comissaoDoAnuncio=(p&&typeof p.mlComissaoPct==='number'&&p.mlComissaoPct>0)
-      ? (precoUnit*(p.mlComissaoPct/100)+(Number(p.mlComissaoFixa)||0))
-      : ((p&&typeof p.mlComissao==='number'&&p.mlComissao>0&&!precoPorFaixa)?p.mlComissao:null);
-    const freteDoAnuncio=(p&&typeof p.mlFrete==='number'&&p.mlFrete>0)?p.mlFrete:null;
-    const comissaoPct=precoRealizado>0?((iv.tarifa||0)/iv.qtd)/precoRealizado:0;
-    const comissaoUnit=comissaoDoAnuncio!=null?comissaoDoAnuncio:precoUnit*comissaoPct;
-    const freteUnit=freteDoAnuncio!=null?freteDoAnuncio:((iv.freteMl||0)/iv.qtd);
-    const impostoUnit=precoUnit*(aliquota/100);
-    const margemUnit=precoUnit-custoUnit-comissaoUnit-freteUnit-impostoUnit;
-    const margemPct=precoUnit>0?(margemUnit/precoUnit*100):0;
-    const metaPct=margemPct/3;
-    const tetoAds=iv.valor*(metaPct/100);
+    const m=metaTacosUnit(p,aliquota,{precoUnit:iv.valor/iv.qtd,comissaoUnit:(iv.tarifa||0)/iv.qtd,freteUnit:(iv.freteMl||0)/iv.qtd});
+    if(!m) return;
+    const tetoAds=iv.valor*(m.metaPct/100);
     const gastoAds=Number(ia.cost)||0;
     const tacosReal=iv.valor>0?(gastoAds/iv.valor*100):0;
-    linhas.push({itemId:ia.itemId,sku:(p&&p.sku)||ia.itemId,semCusto:!(custoUnit>0),
-      precoDoAnuncio:!!precoAnuncio,precoRealizado,
-      comissaoDoAnuncio:comissaoDoAnuncio!=null,freteDoAnuncio:freteDoAnuncio!=null,
-      comissaoPct:(p&&typeof p.mlComissaoPct==='number')?p.mlComissaoPct:null,
-      comissaoFixa:(p&&Number(p.mlComissaoFixa))||0,
-      qtd:iv.qtd,faturamento:iv.valor,precoUnit,custoUnit,comissaoUnit,freteUnit,impostoUnit,
-      margemUnit,margemPct,metaPct,tetoAds,gastoAds,tacosReal,dentro:gastoAds<=tetoAds});
+    linhas.push({itemId:ia.itemId,sku:(p&&p.sku)||ia.itemId,semCusto:m.semCusto,
+      precoDoAnuncio:m.precoDoAnuncio,precoRealizado:m.precoRealizado,
+      comissaoDoAnuncio:m.comissaoDoAnuncio,freteDoAnuncio:m.freteDoAnuncio,
+      comissaoPct:m.comissaoPct,comissaoFixa:m.comissaoFixa,
+      qtd:iv.qtd,faturamento:iv.valor,precoUnit:m.precoUnit,custoUnit:m.custoUnit,
+      comissaoUnit:m.comissaoUnit,freteUnit:m.freteUnit,impostoUnit:m.impostoUnit,
+      margemUnit:m.margemUnit,margemPct:m.margemPct,metaPct:m.metaPct,
+      tetoAds,gastoAds,tacosReal,dentro:gastoAds<=tetoAds});
   });
   return linhas.sort((a,b)=>b.faturamento-a.faturamento);
 }
@@ -8083,7 +8103,12 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       const impostoItem=(it.valor||0)*((aliquotaLoja||0)/100);
       const margemContribItem=(it.valor||0)-custoProdutoItem-(it.tarifa||0)-(it.freteMl||0)-impostoItem;
       const adsAchado=p?adsGastoAutoProduto(p,r.resumo):null;
-      const dentroMetaAds=adsAchado!=null&&margemContribItem>0&&adsAchado<=margemContribItem/3;
+      /* UNIFICADO 02/09: mesmo criterio da aba Ads (ver metaTacosUnit) - margem unitaria pelo
+         preco do anuncio, meta = 1/3. Se nao der pra calcular pelo anuncio, cai na margem do
+         periodo, como era antes. */
+      const metaIt=tetoAdsDoItem(p,aliquotaLoja,it);
+      const dentroMetaAds=adsAchado!=null&&(metaIt?adsAchado<=metaIt.teto
+        :(margemContribItem>0&&adsAchado<=margemContribItem/3));
       return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds};
     });
     const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
@@ -8619,9 +8644,12 @@ function renderResumoFinanceiroResultado(resumo,loja){
           const margemLiquidaItem=margemContribItem-adsItem;
           /* tag de "dentro da meta de TACOS" ao lado do Ads gasto - pedido do Felipe 18/08: meta
              = 1/3 do faturamento do produto no período. So mostra quando ha Ads gasto de fato. */
-          const dentroMetaTacosItem=adsAchado!=null&&margemContribItem>0&&adsAchado<=margemContribItem/3;
+          /* UNIFICADO 02/09: mesmo criterio da aba Ads (ver metaTacosUnit). */
+          const metaIt=tetoAdsDoItem(p,aliquota,it);
+          const dentroMetaTacosItem=adsAchado!=null&&(metaIt?adsAchado<=metaIt.teto
+            :(margemContribItem>0&&adsAchado<=margemContribItem/3));
           const pctAds=it.valor&&adsAchado!=null?(adsAchado/it.valor*100):0;
-          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':`${fmtMoney(adsAchado)} <span class="muted" style="font-size:11px">(${pctAds.toFixed(1)}%)</span>${dentroMetaTacosItem?` <span class="okv" style="font-size:11px;font-weight:700" title="Ads dentro da meta de TACOS (1/3 da Margem de Contribuição: ${fmtMoney(margemContribItem/3)})">✓</span>`:''}`;
+          const adsCel=adsAchado==null?'<span class="muted" title="Nenhuma campanha/anúncio de Ads encontrado pra esse produto no período">—</span>':`${fmtMoney(adsAchado)} <span class="muted" style="font-size:11px">(${pctAds.toFixed(1)}%)</span>${dentroMetaTacosItem?` <span class="okv" style="font-size:11px;font-weight:700" title="Ads dentro da meta de TACOS — teto de ${fmtMoney(metaIt?metaIt.teto:margemContribItem/3)}${metaIt?` (meta ${metaIt.metaPct.toFixed(2)}% = 1/3 da margem unitária de ${metaIt.margemPct.toFixed(1)}%, mesmo critério da aba Ads)`:' (1/3 da Margem de Contribuição do período)'}">✓</span>`:''}`;
           const aberto=resumoRankingAberto.has(String(it.itemId));
           const pctMC=it.valor?(margemContribItem/it.valor*100):0;
           const pctML=it.valor?(margemLiquidaItem/it.valor*100):0;
