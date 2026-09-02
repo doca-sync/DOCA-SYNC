@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v368</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v369</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2086,6 +2086,60 @@ function adicionarQtd(id,campo,qty){
    atualizada sozinha (ver garantirCustosAnuncio); a marcação manual da aba Ads continua valendo
    como reserva pra anúncio que não aparece no ranking. Devolve string vazia quando não há nada a
    mostrar, então dá pra concatenar em qualquer lugar sem checar antes. */
+/* HISTÓRICO DE POSIÇÃO (pedido do Felipe 02/09): guarda 1 leitura por dia da colocação de cada
+   anúncio no ranking de mais vendidos da categoria, pra dar pra ver quem está subindo e quem está
+   caindo. Guarda 120 dias - o resto é peso morto. Posição null (saiu do ranking) também é
+   registrada, senão some da conta justamente quem despencou. */
+function registrarPosicaoProduto(p,posicao,total){
+  if(!p) return false;
+  const d=hoje();
+  if(!Array.isArray(p.mlPosicaoHist)) p.mlPosicaoHist=[];
+  const ultimo=p.mlPosicaoHist[p.mlPosicaoHist.length-1];
+  if(ultimo&&ultimo.data===d){ ultimo.pos=posicao; ultimo.total=total||null; }
+  else p.mlPosicaoHist.push({data:d,pos:posicao,total:total||null});
+  const limite=_somaDiasISO(d,-120);
+  p.mlPosicaoHist=p.mlPosicaoHist.filter(x=>x.data>=limite);
+  return true;
+}
+/* compara a leitura de hoje com a leitura ANTERIOR (a última de outro dia) - devolve quantas
+   posições subiu (+) ou caiu (-). Entrar no ranking vindo de fora conta como ganho; sair, perda. */
+function variacaoPosicao(p){
+  const h=Array.isArray(p&&p.mlPosicaoHist)?p.mlPosicaoHist:[];
+  if(h.length<2) return null;
+  const atual=h[h.length-1], anterior=h[h.length-2];
+  if(atual.pos==null&&anterior.pos==null) return null;
+  if(atual.pos==null) return {delta:null,saiu:true,de:anterior.pos,para:null,desde:anterior.data};
+  if(anterior.pos==null) return {delta:null,entrou:true,de:null,para:atual.pos,desde:anterior.data};
+  return {delta:anterior.pos-atual.pos,de:anterior.pos,para:atual.pos,desde:anterior.data};
+}
+let rankingBuscando={};
+async function atualizarRankingLoja(loja){
+  if(rankingBuscando[loja]) return;
+  const cfg=(state.mlSync&&state.mlSync.cfg)||{};
+  if(!cfg.rankingEm) cfg.rankingEm={};
+  const ultimo=cfg.rankingEm[loja]||0;
+  if(Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
+  rankingBuscando[loja]=true;
+  try{
+    const base=nuvemBaseUrl(); if(!base) return;
+    const r=await fetch(`${base}/ml/ranking-categoria?loja=${encodeURIComponent(loja)}`,
+      {cache:'no-store',headers:nuvemAuth?{Authorization:'Basic '+nuvemAuth}:{}});
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.erro||'falha');
+    let mudou=false;
+    (j.itens||[]).forEach(x=>{
+      const p=state.produtos.find(y=>y.mlItemId===x.itemId);
+      if(!p) return;
+      p.mlPosicaoCategoria=(typeof x.posicao==='number')?x.posicao:null;
+      p.mlTotalRanking=(typeof x.total==='number')?x.total:null;
+      if(registrarPosicaoProduto(p,p.mlPosicaoCategoria,p.mlTotalRanking)) mudou=true;
+    });
+    cfg.rankingEm[loja]=Date.now();
+    state.mlSync.cfg=cfg;
+    if(mudou){ persist(); renderAll(); }
+  }catch(e){ console.error('ranking da categoria:',e.message); }
+  finally{ rankingBuscando[loja]=false; }
+}
 function medalhaProduto(p){
   if(!p) return '';
   if(typeof p.mlPosicaoCategoria==='number'){
@@ -3598,6 +3652,53 @@ function produtosPausadosOuPerdendo(){
   // mesmo criterio do alerta de ruptura, reaproveitado aqui a pedido dele (21/08)
   return state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&!p.repoPausada&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
 }
+/* CARD "RANKING DE MAIS VENDIDOS" na Visão Geral (pedido do Felipe 02/09) - quem ganhou e quem
+   perdeu posição desde a leitura anterior, quem está no top 10, e os candidatos ao selo. O
+   histórico vem de registrarPosicaoProduto (1 leitura por dia, guardada 120 dias). */
+function cardRankingMaisVendidos(){
+  const comRanking=state.produtos.filter(p=>p.mlItemId&&Array.isArray(p.mlPosicaoHist)&&p.mlPosicaoHist.length);
+  const candidatos=state.produtos.filter(p=>p.mlItemId&&p.mlTagMaisVendido&&typeof p.mlPosicaoCategoria!=='number');
+  if(!comRanking.length&&!candidatos.length){
+    return `<div class="card"><h3 style="margin-top:0">🏅 Ranking de mais vendidos</h3>
+      <p class="hint" style="margin:0">Ainda sem leitura do ranking. Ele é buscado sozinho no Mercado Livre ao abrir esta tela (2x por dia) e vai formando o histórico — a comparação de subiu/caiu aparece a partir da segunda leitura.</p></div>`;
+  }
+  const movs=[];
+  comRanking.forEach(p=>{ const v=variacaoPosicao(p); if(v) movs.push({p,v}); });
+  const subiu=movs.filter(m=>m.v.entrou||(m.v.delta||0)>0).sort((a,b)=>(b.v.entrou?999:b.v.delta)-(a.v.entrou?999:a.v.delta));
+  const caiu=movs.filter(m=>m.v.saiu||(m.v.delta||0)<0).sort((a,b)=>(a.v.saiu?-999:a.v.delta)-(b.v.saiu?-999:b.v.delta));
+  const top=comRanking.filter(p=>typeof p.mlPosicaoCategoria==='number'&&p.mlPosicaoCategoria<=10)
+    .sort((a,b)=>a.mlPosicaoCategoria-b.mlPosicaoCategoria);
+  const linha=(m,tipo)=>{
+    const p=m.p,v=m.v;
+    if(v.entrou) return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="okv">entrou no ranking em ${v.para}º</b></div>`;
+    if(v.saiu) return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="pend">saiu do ranking (era ${v.de}º)</b></div>`;
+    const sinal=tipo==='subiu'?'▲':'▼';
+    const cls=tipo==='subiu'?'okv':'pend';
+    return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span> <span class="muted" style="font-size:11px">${v.de}º → ${v.para}º</span></span><b class="${cls}">${sinal} ${Math.abs(v.delta)} posiç${Math.abs(v.delta)===1?'ão':'ões'}</b></div>`;
+  };
+  return `<div class="card">
+    <h3 style="margin-top:0">🏅 Ranking de mais vendidos</h3>
+    <p class="hint" style="margin:0 0 10px">Posição de cada anúncio entre os mais vendidos da categoria no Mercado Livre. Lido sozinho 2x por dia; a comparação é com a leitura anterior.</p>
+    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
+      <div>
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ok)">▲ Ganhando posição</b>
+        ${subiu.length?subiu.slice(0,8).map(m=>linha(m,'subiu')).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém subiu desde a última leitura.</div>'}
+      </div>
+      <div>
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--pend,#e6a23c)">▼ Perdendo posição</b>
+        ${caiu.length?caiu.slice(0,8).map(m=>linha(m,'caiu')).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém caiu desde a última leitura.</div>'}
+      </div>
+      <div>
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">🏅 Top 10 hoje</b>
+        ${top.length?top.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b>${p.mlPosicaoCategoria}º</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum anúncio no top 10 das categorias.</div>'}
+      </div>
+      <div>
+        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">◇ Candidatos a mais vendido</b>
+        ${candidatos.length?candidatos.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="muted">concorrendo ao selo</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum candidato marcado pelo Mercado Livre no momento.</div>'}
+      </div>
+    </div>
+  </div>`;
+}
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
   const totals=STORES.map(loja=>{
@@ -3632,8 +3733,10 @@ function renderDashboard(){
   }).filter(g=>g.itens.length);
   const prox=enviosOrdenados().filter(e=>e.data); /* mostra TODOS os envios programados com data, sem cortar em 5 */
   const perguntasPorLoja=STORES.map(loja=>({loja,total:state.produtos.filter(p=>p.loja===loja).reduce((s,p)=>s+(p.mlPerguntas||0),0)}));
+  STORES.forEach(l=>atualizarRankingLoja(l));   /* forma o histórico de posição sozinho, 2x por dia */
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
+    ${cardRankingMaisVendidos()}
     <div class="cards-lojas">
       ${totals.map(t=>`<div class="card-loja">
         <div class="card-loja-head"><b>${esc(t.loja)}</b><span class="badge">${t.count} SKU${t.count===1?'':'s'}</span></div>

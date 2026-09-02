@@ -1448,6 +1448,49 @@ app.get('/ml/custos-anuncio', exigirLogin, async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* RANKING DE MAIS VENDIDOS DA LOJA INTEIRA (02/09, pedido do Felipe: "tem como ir gravando o
+   posicionamento de cada produto e fazer um card na Visao Geral dos que estao ganhando ou perdendo
+   posicao e candidatos a mais vendido?").
+   Diferente do /ml/custos-anuncio (que olha so' os anuncios da aba Ads e faz 1 chamada por item),
+   aqui aproveita a categoria que a sincronizacao ja' gravou em ml_produtos: basta 1 chamada de
+   destaques por CATEGORIA (varios anuncios caem na mesma) pra posicionar a loja toda. Fica barato
+   o suficiente pra rodar todo dia e ir formando o historico. */
+app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    const accessToken = await tokenValido(loja);
+    const cab = { Authorization: `Bearer ${accessToken}` };
+    const r = await pool.query(
+      "select ml_item_id, sku, categoria_id from ml_produtos where loja = $1 and categoria_id is not null and coalesce(status,'') <> 'closed'",
+      [loja]
+    );
+    const categorias = [...new Set(r.rows.map(x => x.categoria_id).filter(Boolean))];
+    const ranking = {};
+    for (const cat of categorias) {
+      try {
+        const rH = await fetch(`https://api.mercadolibre.com/highlights/MLB/category/${encodeURIComponent(cat)}`, { headers: cab });
+        const jH = await rH.json();
+        if (rH.ok && jH && Array.isArray(jH.content)) ranking[cat] = jH.content;
+      } catch (e) { /* categoria sem destaques: os itens dela ficam sem posicao */ }
+    }
+    const itens = r.rows.map(x => {
+      const lista = ranking[x.categoria_id];
+      let posicao = null, total = null;
+      if (Array.isArray(lista)) {
+        const idx = lista.findIndex(c => c && (c.id === x.ml_item_id || c.parent_id === x.ml_item_id));
+        if (idx >= 0) { posicao = idx + 1; total = lista.length; }
+      }
+      return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total };
+    });
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, loja, categorias: categorias.length, itens });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/debug/custo-estimado', async (req, res) => {
   try {
     const loja = req.query.loja;
