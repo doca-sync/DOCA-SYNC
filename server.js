@@ -1363,6 +1363,56 @@ app.get('/debug/mp', async (req, res) => {
    categoria dele cobra (API de precificacao do ML) e (2) o custo de frete gratis que o vendedor
    absorve (API de opcoes de frete gratis do proprio vendedor) - candidatos de endpoint mais leve
    que abrir pedido por pedido. Ex.: /debug/custo-estimado?loja=TorvStore&itemId=MLB6574356166 */
+/* CUSTOS ATUAIS DO ANUNCIO (02/09, pedido do Felipe: "comissao e envio esta errado, deveria ser
+   2,18 tarifa de venda e 6,85 custo de envio" - a meta de TACOS estava usando a MEDIA do que foi
+   cobrado nas vendas do periodo, que sai um pouco diferente da condicao ATUAL do anuncio: no
+   AFIADOR19 dava 2,28 e 7,15 no lugar de 2,18 e 6,85, comendo R$0,40 de margem por unidade).
+   Aqui pega, direto do Mercado Livre e pra vários itens de uma vez, exatamente os dois numeros do
+   simulador "Resumo de custos":
+     - tarifa de venda -> /sites/{site}/listing_prices (sale_fee do preco/categoria/tipo atuais)
+     - custo de envio  -> /users/{seller}/shipping_options/free (o que o vendedor paga de frete)
+   Chamado pela aba Ads so' pros itens que ela mostra (poucos), nao pela sincronizacao inteira. */
+app.get('/ml/custos-anuncio', exigirLogin, async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    const ids = String(req.query.itemIds || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 60);
+    if (!ids.length) return res.status(400).json({ ok: false, erro: 'Passe itemIds separados por virgula.' });
+    const accessToken = await tokenValido(loja);
+    const cab = { Authorization: `Bearer ${accessToken}` };
+    const itens = [];
+    for (const itemId of ids) {
+      const linha = { itemId, preco: null, comissao: null, frete: null, erro: null };
+      try {
+        const rItem = await fetch(`https://api.mercadolibre.com/items/${itemId}`, { headers: cab });
+        const j = await rItem.json();
+        if (!rItem.ok || !j || !j.price) { linha.erro = 'item nao encontrado'; itens.push(linha); continue; }
+        linha.preco = Number(j.price) || null;
+        try {
+          const url = `https://api.mercadolibre.com/sites/${j.site_id || 'MLB'}/listing_prices?price=${j.price}&category_id=${j.category_id}&listing_type_id=${j.listing_type_id}`;
+          const rC = await fetch(url, { headers: cab });
+          const jc = await rC.json();
+          const bruto = Array.isArray(jc) ? jc[0] : jc;
+          if (bruto && typeof bruto.sale_fee_amount === 'number') linha.comissao = bruto.sale_fee_amount;
+        } catch (e) { /* sem comissao: o front cai na media real */ }
+        try {
+          const rF = await fetch(`https://api.mercadolibre.com/users/${j.seller_id}/shipping_options/free?item_id=${itemId}`, { headers: cab });
+          const jf = await rF.json();
+          const opcoes = (jf && (jf.coverage && jf.coverage.all_country ? [jf.coverage.all_country] : jf.options)) || [];
+          const custos = opcoes.map(o => (o && (typeof o.list_cost === 'number' ? o.list_cost : o.cost))).filter(v => typeof v === 'number');
+          if (custos.length) linha.frete = Math.max(...custos);
+        } catch (e) { /* sem frete: o front cai na media real */ }
+      } catch (e) { linha.erro = e.message; }
+      itens.push(linha);
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, loja, itens });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/debug/custo-estimado', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -2084,6 +2134,13 @@ app.get('/', (_req, res) => {
    server.js) numa URL fixa, protegida por login. E guarda o "estado" inteiro do Doca numa
    tabela de UMA linha so' (doca_estado, id sempre 1). */
 app.get('/doca', exigirLogin, (_req, res) => {
+  /* CORRIGIDO 01/09 (Felipe: FULL sumiram de novo; o irmao usa o Doca num notebook roteado pelo
+     celular): sem no-store, o navegador guarda o proprio doca.html e pode ficar rodando uma VERSAO
+     ANTIGA por tempo indeterminado - ainda mais em conexao instavel, onde o navegador prefere o
+     cache. E uma versao antiga nao manda o "seAtualizadoEm", ou seja, nao passa pela protecao de
+     conflito: ela grava por cima de tudo em silencio, com os dados velhos que tem na tela. Agora
+     cada abertura busca a versao atual do servidor. */
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(__dirname, 'doca.html'), (err) => {
     if (err) res.status(404).send('doca.html nao encontrado no servidor - salve o arquivo do Doca na raiz do projeto (ao lado do server.js) com esse nome exato.');
   });
@@ -2200,6 +2257,19 @@ app.post('/estado', exigirLogin, async (req, res) => {
        mesmo sem ninguem mais mexendo. Agora so' e' conflito de verdade se o banco estiver mais
        NOVO que o que o aparelho conhece, com uma folga de 1s pra absorver essa perda de precisao.
        Se o aparelho estiver igual ou a' frente, nao ha' nada pra proteger - grava normal. */
+    /* CORRIGIDO 01/09 (mesma ocorrencia): a checagem so' rodava se o cliente MANDASSE o
+       seAtualizadoEm - quem nao mandava passava direto e gravava por cima de tudo. Quem nao manda
+       e' exatamente uma aba com versao antiga do Doca em cache (o caso do notebook roteado pelo
+       celular). Agora, se ja' existe estado salvo e a gravacao chega sem timestamp e sem dizer
+       explicitamente que e' pra sobrescrever (restauracao de backup / "usar os dados deste
+       navegador"), ela e' recusada em vez de apagar o trabalho dos outros. */
+    if (anterior && anterior.dados && req.body && !req.body.seAtualizadoEm && !req.body.sobrescreverMesmo) {
+      return res.status(409).json({
+        ok: false, conflito: true,
+        erro: 'Esta aba esta rodando uma versao antiga do Doca (nao informa a versao dos dados que carregou). Recarregue a pagina com Ctrl+F5 antes de continuar - assim nada do que os outros salvaram e perdido.',
+        dados: anterior.dados, atualizadoEm: anterior.atualizado_em
+      });
+    }
     if (anterior && req.body && req.body.seAtualizadoEm) {
       const doBanco = anterior.atualizado_em ? new Date(anterior.atualizado_em).getTime() : null;
       const doCliente = new Date(req.body.seAtualizadoEm).getTime();

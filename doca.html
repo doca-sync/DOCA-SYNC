@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v364</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v365</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5106,6 +5106,43 @@ function itensDaCampanhaAds(camp){
    produto <= esse teto.
    Obs.: o preço unitário sai da venda real (valor/qtd) porque o Doca não guarda preço de tabela -
    é o número mais fiel ao que de fato entrou, já com promoção/desconto aplicados. */
+/* busca no Mercado Livre a tarifa de venda e o custo de envio ATUAIS dos anúncios que aparecem na
+   aba Ads e guarda em p.mlComissao/p.mlFrete (ver /ml/custos-anuncio no server) - é o que faz a
+   meta de TACOS bater com o "Resumo de custos" do simulador do ML. Roda uma vez por loja a cada
+   12h; não trava a tela (se falhar, a conta cai na média real das vendas, como antes). */
+let custosAnuncioBuscando={};
+async function garantirCustosAnuncio(loja){
+  if(custosAnuncioBuscando[loja]) return;
+  const itens=((adsLucroResultado&&adsLucroResultado.ads&&adsLucroResultado.ads.itens)||[]);
+  const agora=Date.now();
+  const alvos=[];
+  itens.forEach(it=>{
+    const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+    if(!p||p.loja!==loja) return;
+    if(p.mlCustosEm&&(agora-p.mlCustosEm)<12*3600*1000) return; /* já está fresco */
+    if(alvos.indexOf(it.itemId)<0) alvos.push(it.itemId);
+  });
+  if(!alvos.length) return;
+  custosAnuncioBuscando[loja]=true;
+  try{
+    const base=nuvemBaseUrl(); if(!base) return;
+    const r=await fetch(`${base}/ml/custos-anuncio?loja=${encodeURIComponent(loja)}&itemIds=${encodeURIComponent(alvos.join(','))}`,
+      {cache:'no-store',headers:nuvemAuth?{Authorization:'Basic '+nuvemAuth}:{}});
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.erro||'falha');
+    let mudou=false;
+    (j.itens||[]).forEach(x=>{
+      const p=state.produtos.find(y=>y.mlItemId===x.itemId);
+      if(!p) return;
+      if(typeof x.comissao==='number'&&x.comissao>0){ p.mlComissao=x.comissao; mudou=true; }
+      if(typeof x.frete==='number'&&x.frete>0){ p.mlFrete=x.frete; mudou=true; }
+      if(typeof x.preco==='number'&&x.preco>0){ p.mlPreco=x.preco; mudou=true; }
+      p.mlCustosEm=Date.now();
+    });
+    if(mudou){ persist(); renderAds(); }
+  }catch(e){ console.error('custos do anúncio:',e.message); }
+  finally{ custosAnuncioBuscando[loja]=false; }
+}
 function metaTacosPorProduto(camp,loja){
   if(!adsLucroResultado) return [];
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -5129,12 +5166,18 @@ function metaTacosPorProduto(camp,loja){
     const precoBate=precoAnuncioBruto!=null&&precoRealizado>0&&Math.abs(precoAnuncioBruto-precoRealizado)/precoRealizado<=0.25;
     const precoAnuncio=precoBate?precoAnuncioBruto:null;
     const precoUnit=precoAnuncio||precoRealizado;
-    /* COMISSÃO: percentual real cobrado no período aplicado no preço do anúncio (a comissão é
-       proporcional ao preço, então não dá pra usar o valor em reais de uma venda com outro preço).
-       ENVIO: valor fixo por unidade, não muda com o preço - usa a média real cobrada. */
+    /* COMISSÃO e ENVIO: os mesmos dois números do "Resumo de custos" do Mercado Livre (tarifa de
+       venda e custo de envio), buscados do ML pelo /ml/custos-anuncio e guardados em
+       p.mlComissao/p.mlFrete. CORRIGIDO 02/09 (Felipe: "comissão e envio está errado, deveria ser
+       2,18 e 6,85"): antes usava a MÉDIA do que foi cobrado nas vendas do período (2,28 e 7,15 no
+       AFIADOR19) - a média mistura pedidos de regiões/condições diferentes e come R$0,40 de margem
+       por unidade em relação à condição atual do anúncio. Sem o dado do ML ainda carregado, cai na
+       média real, como antes. */
+    const comissaoDoAnuncio=(p&&typeof p.mlComissao==='number'&&p.mlComissao>0)?p.mlComissao:null;
+    const freteDoAnuncio=(p&&typeof p.mlFrete==='number'&&p.mlFrete>0)?p.mlFrete:null;
     const comissaoPct=precoRealizado>0?((iv.tarifa||0)/iv.qtd)/precoRealizado:0;
-    const comissaoUnit=precoUnit*comissaoPct;
-    const freteUnit=(iv.freteMl||0)/iv.qtd;     /* tarifa de envio */
+    const comissaoUnit=comissaoDoAnuncio!=null?comissaoDoAnuncio:precoUnit*comissaoPct;
+    const freteUnit=freteDoAnuncio!=null?freteDoAnuncio:((iv.freteMl||0)/iv.qtd);
     const impostoUnit=precoUnit*(aliquota/100);
     const margemUnit=precoUnit-custoUnit-comissaoUnit-freteUnit-impostoUnit;
     const margemPct=precoUnit>0?(margemUnit/precoUnit*100):0;
@@ -5144,6 +5187,7 @@ function metaTacosPorProduto(camp,loja){
     const tacosReal=iv.valor>0?(gastoAds/iv.valor*100):0;
     linhas.push({itemId:ia.itemId,sku:(p&&p.sku)||ia.itemId,semCusto:!(custoUnit>0),
       precoDoAnuncio:!!precoAnuncio,precoRealizado,
+      comissaoDoAnuncio:comissaoDoAnuncio!=null,freteDoAnuncio:freteDoAnuncio!=null,
       qtd:iv.qtd,faturamento:iv.valor,precoUnit,custoUnit,comissaoUnit,freteUnit,impostoUnit,
       margemUnit,margemPct,metaPct,tetoAds,gastoAds,tacosReal,dentro:gastoAds<=tetoAds});
   });
@@ -5818,8 +5862,8 @@ function renderAds(){
                 <td class="num">${fmtInt(l.qtd)}</td>
                 <td class="num" title="${l.precoDoAnuncio?'Preço do anúncio no Mercado Livre':`Preço médio recebido por unidade (valor ÷ quantidade). ${l.precoRealizado?'':''}Não usou o preço do anúncio${(typeof (state.produtos.find(x=>x.mlItemId===l.itemId)||{}).mlPreco==='number')?' ('+fmtMoney((state.produtos.find(x=>x.mlItemId===l.itemId)||{}).mlPreco)+') porque ele destoa demais do recebido por unidade — normalmente é anúncio vendido em pack':' porque ainda não foi sincronizado'}`}">${fmtMoney(l.precoUnit)}${l.precoDoAnuncio?'':' <span class="muted" style="font-size:10px">méd.</span>'}</td>
                 <td class="num">${fmtMoney(l.custoUnit)}</td>
-                <td class="num">${fmtMoney(l.comissaoUnit)}</td>
-                <td class="num">${fmtMoney(l.freteUnit)}</td>
+                <td class="num" title="${l.comissaoDoAnuncio?'Tarifa de venda atual do anúncio (mesma do Resumo de custos do Mercado Livre)':'Média cobrada nas vendas do período — o valor atual do anúncio ainda não carregou'}">${fmtMoney(l.comissaoUnit)}${l.comissaoDoAnuncio?'':' <span class="muted" style="font-size:10px">méd.</span>'}</td>
+                <td class="num" title="${l.freteDoAnuncio?'Custo de envio atual do anúncio (mesmo do Resumo de custos do Mercado Livre)':'Média cobrada nas vendas do período — o valor atual do anúncio ainda não carregou'}">${fmtMoney(l.freteUnit)}${l.freteDoAnuncio?'':' <span class="muted" style="font-size:10px">méd.</span>'}</td>
                 <td class="num">${fmtMoney(l.impostoUnit)}</td>
                 <td class="num"><b>${fmtMoney(l.margemUnit)}</b></td>
                 <td class="num">${l.margemPct.toFixed(1)}%</td>
@@ -5908,7 +5952,7 @@ function renderAds(){
          mesma loja - isso derrubava um dos dois silenciosamente (Gasto Ads/Margem Bruta ficavam
          em branco sem erro nenhum, ou a Sugestão de ROAS vinha com "Resposta inválida do
          backend"). Agora roda em fila: 1) Lucro, 2) Sugestão de ROAS. */
-      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>iniciarSugestaoRoasLoja(c.loja));
+      calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>{ garantirCustosAnuncio(c.loja); iniciarSugestaoRoasLoja(c.loja); });
     }
     catch(e){ alert('Não foi possível sincronizar: '+e.message); }
     finally{ adsSincronizando=false; renderAds(); }
@@ -5926,7 +5970,7 @@ function renderAds(){
        precisa disparar aqui, porque o botão "Atualizar" (que normalmente dispara ela) fica
        escondido quando o período é personalizado. */
     adsBuscarPersonalizado(c.loja);
-    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>iniciarSugestaoRoasLoja(c.loja));
+    calcularLucroAdsPeriodo(c.loja,adsPeriodoApi).then(()=>{ garantirCustosAnuncio(c.loja); iniciarSugestaoRoasLoja(c.loja); });
   };
   el.querySelectorAll('[data-adsver]').forEach(b=>b.onclick=()=>{
     const id=String(b.dataset.adsver);
