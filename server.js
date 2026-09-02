@@ -1491,6 +1491,61 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* RAIO-X DO QUE A API DEVOLVE (02/09, pergunta do Felipe: "o que mais de notas interessantes como
+   a de candidato a mais vendido a API traz que hoje nao utilizamos?"). Em vez de eu chutar pela
+   documentacao, isto varre os anuncios REAIS da loja e resume: quais tags aparecem e em quantos
+   anuncios, a nota de qualidade (health), tipo de anuncio, tipo logistico e status. E' so' leitura
+   e usa multiget (1 chamada a cada 20 anuncios). Ver /diagnostico na tela do Doca. */
+app.get('/ml/raio-x', exigirLogin, async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    const accessToken = await tokenValido(loja);
+    const cab = { Authorization: `Bearer ${accessToken}` };
+    const r = await pool.query("select ml_item_id from ml_produtos where loja = $1 and coalesce(status,'') <> 'closed'", [loja]);
+    const ids = r.rows.map(x => x.ml_item_id).filter(Boolean);
+    const contaTag = {}, contaLogistica = {}, contaTipo = {}, contaStatus = {};
+    const health = [];
+    const exemploPorTag = {};
+    let lidos = 0;
+    for (let i = 0; i < ids.length; i += 20) {
+      const lote = ids.slice(i, i + 20).join(',');
+      try {
+        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,health,listing_type_id,status,shipping,sold_quantity,available_quantity`, { headers: cab });
+        const jj = await rr.json();
+        (Array.isArray(jj) ? jj : []).forEach(w => {
+          const b = w && w.body; if (!b) return;
+          lidos++;
+          (Array.isArray(b.tags) ? b.tags : []).forEach(t => {
+            contaTag[t] = (contaTag[t] || 0) + 1;
+            if (!exemploPorTag[t]) exemploPorTag[t] = b.id;
+          });
+          if (typeof b.health === 'number') health.push({ id: b.id, health: b.health });
+          const log = b.shipping && b.shipping.logistic_type;
+          if (log) contaLogistica[log] = (contaLogistica[log] || 0) + 1;
+          if (b.listing_type_id) contaTipo[b.listing_type_id] = (contaTipo[b.listing_type_id] || 0) + 1;
+          if (b.status) contaStatus[b.status] = (contaStatus[b.status] || 0) + 1;
+        });
+      } catch (e) { /* lote com problema: segue pros proximos */ }
+    }
+    const ordena = o => Object.keys(o).sort((a, b) => o[b] - o[a]).map(k => ({ chave: k, anuncios: o[k], exemplo: exemploPorTag[k] || null }));
+    health.sort((a, b) => a.health - b.health);
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      ok: true, loja, anunciosLidos: lidos,
+      tags: ordena(contaTag),
+      tipoAnuncio: ordena(contaTipo),
+      logistica: ordena(contaLogistica),
+      status: ordena(contaStatus),
+      healthPiores: health.slice(0, 15),
+      healthMedia: health.length ? Math.round((health.reduce((s, x) => s + x.health, 0) / health.length) * 100) / 100 : null
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/debug/custo-estimado', async (req, res) => {
   try {
     const loja = req.query.loja;
