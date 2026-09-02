@@ -1382,20 +1382,55 @@ app.get('/ml/custos-anuncio', exigirLogin, async (req, res) => {
     if (!ids.length) return res.status(400).json({ ok: false, erro: 'Passe itemIds separados por virgula.' });
     const accessToken = await tokenValido(loja);
     const cab = { Authorization: `Bearer ${accessToken}` };
+    /* POSICAO DE MAIS VENDIDO NA CATEGORIA (02/09, pedido do Felipe: "o musgo e' 1o mais vendido e
+       o afiador 14o - da' pra puxar se tem tag de mais vendido na categoria?"). O Mercado Livre
+       publica o ranking de destaques por categoria em /highlights/MLB/category/{id} - a posicao no
+       array e' a colocacao. Busca 1x por categoria (varios anuncios costumam cair na mesma) e
+       guarda aqui pra nao repetir a chamada dentro do mesmo pedido. */
+    const rankingPorCategoria = {};
+    async function posicaoNaCategoria(categoriaId, itemId) {
+      if (!categoriaId || !itemId) return null;
+      if (!(categoriaId in rankingPorCategoria)) {
+        rankingPorCategoria[categoriaId] = null;
+        try {
+          const rH = await fetch(`https://api.mercadolibre.com/highlights/MLB/category/${encodeURIComponent(categoriaId)}`, { headers: cab });
+          const jH = await rH.json();
+          if (rH.ok && jH && Array.isArray(jH.content)) rankingPorCategoria[categoriaId] = jH.content;
+        } catch (e) { /* sem ranking: segue sem posicao */ }
+      }
+      const lista = rankingPorCategoria[categoriaId];
+      if (!Array.isArray(lista)) return null;
+      const idx = lista.findIndex(x => x && (x.id === itemId || x.parent_id === itemId));
+      return idx >= 0 ? { posicao: idx + 1, total: lista.length } : null;
+    }
     const itens = [];
     for (const itemId of ids) {
-      const linha = { itemId, preco: null, comissao: null, frete: null, erro: null };
+      const linha = { itemId, preco: null, comissao: null, frete: null, posicaoCategoria: null, totalRanking: null, categoriaId: null, tagMaisVendido: false, erro: null };
       try {
         const rItem = await fetch(`https://api.mercadolibre.com/items/${itemId}`, { headers: cab });
         const j = await rItem.json();
         if (!rItem.ok || !j || !j.price) { linha.erro = 'item nao encontrado'; itens.push(linha); continue; }
         linha.preco = Number(j.price) || null;
+        linha.categoriaId = j.category_id || null;
+        /* alguns anuncios ja' vem marcados pelo proprio ML como candidatos a "Mais vendido" */
+        linha.tagMaisVendido = Array.isArray(j.tags) && j.tags.some(t => String(t).indexOf('best_seller') >= 0);
+        try {
+          const pos = await posicaoNaCategoria(j.category_id, itemId);
+          if (pos) { linha.posicaoCategoria = pos.posicao; linha.totalRanking = pos.total; }
+        } catch (e) { /* sem posicao */ }
         try {
           const url = `https://api.mercadolibre.com/sites/${j.site_id || 'MLB'}/listing_prices?price=${j.price}&category_id=${j.category_id}&listing_type_id=${j.listing_type_id}`;
           const rC = await fetch(url, { headers: cab });
           const jc = await rC.json();
-          const bruto = Array.isArray(jc) ? jc[0] : jc;
-          if (bruto && typeof bruto.sale_fee_amount === 'number') linha.comissao = bruto.sale_fee_amount;
+          /* CORRIGIDO 02/09 (Felipe: "envio puxou certo mas a comissao ainda esta errada" - veio
+             R$4,37 no lugar de R$2,18, quase o dobro): quando a resposta e' uma LISTA, ela traz a
+             tarifa de CADA tipo de anuncio (Classico, Premium...). Pegar o primeiro pegava o
+             Premium (~23%) em vez do Classico (~11,5%), que e' o tipo real deste anuncio. Agora
+             casa pelo listing_type_id do proprio anuncio. */
+          const lista = Array.isArray(jc) ? jc : [jc];
+          const escolhido = lista.find(x => x && x.listing_type_id === j.listing_type_id) || lista[0];
+          if (escolhido && typeof escolhido.sale_fee_amount === 'number') linha.comissao = escolhido.sale_fee_amount;
+          linha.tipoAnuncio = (escolhido && escolhido.listing_type_id) || j.listing_type_id || null;
         } catch (e) { /* sem comissao: o front cai na media real */ }
         try {
           const rF = await fetch(`https://api.mercadolibre.com/users/${j.seller_id}/shipping_options/free?item_id=${itemId}`, { headers: cab });

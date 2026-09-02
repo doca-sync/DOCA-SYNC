@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v365</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v368</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2081,6 +2081,25 @@ function adicionarQtd(id,campo,qty){
   return {ok:true};
 }
 /* ---------- kit (produto que consome outros produtos) ---------- */
+/* SELO DE MAIS VENDIDO (pedido do Felipe 02/09: "adicione automaticamente em todas as telas onde
+   aparece o produto"). A posição vem do ranking de destaques da categoria no Mercado Livre e é
+   atualizada sozinha (ver garantirCustosAnuncio); a marcação manual da aba Ads continua valendo
+   como reserva pra anúncio que não aparece no ranking. Devolve string vazia quando não há nada a
+   mostrar, então dá pra concatenar em qualquer lugar sem checar antes. */
+function medalhaProduto(p){
+  if(!p) return '';
+  if(typeof p.mlPosicaoCategoria==='number'){
+    const cor=p.mlPosicaoCategoria<=3?'var(--gold,#d4a83c)':'var(--muted)';
+    return ` <span style="font-size:10.5px;font-weight:700;color:${cor}" title="${p.mlPosicaoCategoria}º entre os mais vendidos da categoria no Mercado Livre${p.mlTotalRanking?' (ranking de '+p.mlTotalRanking+' anúncios)':''} — atualizado sozinho pela aba Ads">🏅${p.mlPosicaoCategoria}º</span>`;
+  }
+  /* candidato NÃO é a mesma coisa que mais vendido - a tag do Mercado Livre é
+     "best_seller_candidate", ou seja, o anúncio está concorrendo ao selo, não que já o tenha.
+     Por isso não usa a medalha (senão confunde com quem está no ranking de verdade): fica um
+     marcador discreto e escrito - pedido do Felipe 02/09. */
+  if(p.mlTagMaisVendido) return ` <span class="muted" style="font-size:10px;font-weight:600" title="O Mercado Livre marca este anúncio como CANDIDATO a Mais Vendido na categoria — ainda não é o selo conquistado, e ele não aparece no ranking de destaques">◇cand.</span>`;
+  if(p.maisVendidoManual) return ` <span style="font-size:10.5px" title="Marcado manualmente como Mais Vendido (marcação sua, na aba Ads)">🏅</span>`;
+  return '';
+}
 function componentesDe(p){ return p.componentesKit||[]; }
 /* números "virtuais" de um kit pra Comprar/Coletar/Local/Reservado/Disponível - o kit em si
    nunca tem estoque próprio (fica sempre 0, de propósito, pra não contar 2x junto com os
@@ -4355,7 +4374,7 @@ function renderProdutos(){
         return `
         <tr>
           <td><span class="loja-tag">${esc(p.loja)}</span></td>
-          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}${kitv?` <span class="muted" style="font-size:10.5px" title="Kit: monta a partir de ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:''}</td>
+          <td class="mono" title="${esc(dicaSku)}">${esc(p.sku)}${medalhaProduto(p)}${p.mlAusente?' <span class="pend" title="Este anúncio não apareceu mais na última sincronização com o Mercado Livre — provavelmente foi excluído/encerrado por lá. Marque a opção Mostrar excluídos no filtro pra continuar vendo.">✕ excluído no ML</span>':''}${p.mlItemId&&p.mlStatus==='paused'?' <span title="Anúncio pausado no Mercado Livre">⏸</span>':''}${p.mlItemId&&concorrenciaLabel(p.mlConcorrenciaStatus)?` <span title="${esc(concorrenciaLabel(p.mlConcorrenciaStatus))}${(typeof p.mlConcorrenciaPreco==='number')?' · Concorrente: '+fmtMoney(p.mlConcorrenciaPreco):''} — tem outro vendedor no mesmo catálogo">⚔</span>`:''}${p.mlItemId&&p.mlPerguntas>0?` <span title="${p.mlPerguntas} pergunta${p.mlPerguntas===1?'':'s'} sem resposta no Mercado Livre">❓</span>`:''}${mestreVinc?` <button class="btn sm" style="padding:2px 7px;font-size:10.5px" data-manage="${mestreVinc.id}" title="Estoque físico compartilhado — gerenciado pelo SKU ${esc(mestreVinc.sku)}">🔗 ${esc(mestreVinc.sku)}</button>`:''}${vinculados.length?` <span class="muted" style="font-size:10.5px" title="SKUs com o mesmo estoque físico vinculados a este: ${vinculados.map(v=>esc(v.sku)).join(', ')}">🔗×${vinculados.length}</span>`:''}${kitv?` <span class="muted" style="font-size:10.5px" title="Kit: monta a partir de ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:''}</td>
           <td>${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(p.custo)}</td>
           <td class="num">${mProp!=null?mProp.toFixed(2):'<span class="muted">—</span>'}${vinculados.length?` <small class="muted" title="Soma deste + ${vinculados.map(v=>esc(v.sku)).join(', ')} — é esse total que decide quanto comprar/repor">(total: ${(m||0).toFixed(2)})</small>`:''}${mestreVinc?` <small class="muted" title="Estoque e reposição são decididos pelo total no SKU mestre ${esc(mestreVinc.sku)}, não só por este anúncio">🔗</small>`:''}</td>
           <td class="num">${kitv?`<span class="muted" title="${tituloKitv}">${fmtInt(kitv.comprar)} 🧩</span>`:`${fmtInt(mestreVinc?mestreVinc.qtd.comprar:p.qtd.comprar)}${mestreVinc?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(mestreVinc.sku)} — mostrado aqui só pra referência, não soma 2x nos totais">🔗</small>`:''}`}</td>
@@ -4768,7 +4787,7 @@ function tableComprar(list,denseLoja,curva){
       <td><input type="checkbox" class="chk-compra" data-ped="${p.id}|${c.id}" checked></td>
       <td>${cv?`<span class="curva-badge curva-${cv}" title="Curva ${cv}">${cv}</span>`:'<span class="muted">—</span>'}</td>
       <td class="mono">${esc(fmtData(c.data))}</td>
-      <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td><td>${esc(p.fornecedor)||'<span class="muted">—</span>'}</td>
+      <td class="mono">${esc(p.sku)}${medalhaProduto(p)}</td><td>${esc(p.codigo)}</td><td>${esc(p.fornecedor)||'<span class="muted">—</span>'}</td>
       <td><input type="number" min="0" value="${c.qtd}" class="qty-acao" data-qtdped="${p.id}|${c.id}" title="Ajuste aqui se o fornecedor não tiver a quantidade toda">${p.unidPorCaixa?`<div class="hint" style="margin-top:2px">${caixasTxt(c.qtd,p.unidPorCaixa)}</div>`:''}</td>
       <td class="num">${(!p.custo||p.custo<=0)?'<span class="tag-zero">sem custo</span>':fmtMoney(custoTotal)}</td>
       <td>${badgeCaixaParaCompra(p,custoTotal,denseLoja)}</td>
@@ -4896,7 +4915,7 @@ function tableColetar(list){
       ${l.map(({p,l})=>`<tr>
         <td><input type="checkbox" class="chk-coleta" data-lote="${p.id}|${l.id}" checked></td>
         <td class="mono">${esc(fmtData(l.data))}</td>
-        <td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
+        <td class="mono">${esc(p.sku)}${medalhaProduto(p)}</td><td>${esc(p.codigo)}</td>
         <td class="num">${fmtInt(l.qtd)}${p.unidPorCaixa?` - ${fmtInt(Math.ceil(l.qtd/p.unidPorCaixa))} cx`:''}</td>
         <td><input type="text" class="obs-input" placeholder="Nº do pedido" value="${esc(l.pedido||'')}" data-pedido="${p.id}|${l.id}"></td>
         <td><button class="btn sm acc" data-receber="${p.id}|${l.id}">Chegou no galpão</button></td>
@@ -5137,6 +5156,12 @@ async function garantirCustosAnuncio(loja){
       if(typeof x.comissao==='number'&&x.comissao>0){ p.mlComissao=x.comissao; mudou=true; }
       if(typeof x.frete==='number'&&x.frete>0){ p.mlFrete=x.frete; mudou=true; }
       if(typeof x.preco==='number'&&x.preco>0){ p.mlPreco=x.preco; mudou=true; }
+      /* posição de mais vendido na categoria (pedido do Felipe 02/09) - vem do ranking de
+         destaques do ML, ver /ml/custos-anuncio. null = anúncio fora do ranking da categoria. */
+      p.mlPosicaoCategoria=(typeof x.posicaoCategoria==='number')?x.posicaoCategoria:null;
+      p.mlTotalRanking=(typeof x.totalRanking==='number')?x.totalRanking:null;
+      p.mlTagMaisVendido=!!x.tagMaisVendido;
+      mudou=true;
       p.mlCustosEm=Date.now();
     });
     if(mudou){ persist(); renderAds(); }
@@ -5807,7 +5832,22 @@ function renderAds(){
           return ` <span class="muted" style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block" title="Melhor cenário dentro da meta de TACOS de ${dc.metaTolerada.toFixed(1)}%, calculado nos últimos 90 dias. Clique em ▼ pra ver o ranking completo.">💡 sugestão: ${dc.melhor.faixa}x</span>`;
         })();
         return `<tr>
-          <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:8px;display:inline-block" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
+          <td>${esc(camp.name||'')}${(()=>{
+            /* MAIS VENDIDO AUTOMÁTICO (pedido do Felipe 02/09: "o musgo é 1º mais vendido e o
+               afiador 14º - dá pra puxar essa informação?"): a posição vem do ranking de destaques
+               da categoria no próprio Mercado Livre (ver garantirCustosAnuncio). Quando existe,
+               mostra a colocação junto da medalha; a marcação manual continua valendo como reserva
+               pra quando o anúncio não estiver no ranking. */
+            const prods=itensDaCampanhaAds(camp).map(it=>state.produtos.find(x=>x.mlItemId===it.itemId)).filter(Boolean);
+            const comPos=prods.filter(p=>typeof p.mlPosicaoCategoria==='number');
+            if(comPos.length){
+              const melhor=comPos.reduce((a,b)=>b.mlPosicaoCategoria<a.mlPosicaoCategoria?b:a);
+              const cor=melhor.mlPosicaoCategoria<=3?'var(--gold,#d4a83c)':'var(--muted)';
+              return ` <span style="margin-left:8px;display:inline-block;font-size:11.5px;font-weight:700;color:${cor}" title="${esc(melhor.sku)} está em ${melhor.mlPosicaoCategoria}º lugar entre os mais vendidos da categoria no Mercado Livre${melhor.mlTotalRanking?' (ranking de '+melhor.mlTotalRanking+' anúncios)':''}. Atualizado sozinho a cada 12h.">🏅 ${melhor.mlPosicaoCategoria}º</span>`;
+            }
+            if(prods.some(p=>p.mlTagMaisVendido)) return ` <span class="muted" style="margin-left:8px;display:inline-block;font-size:11px;font-weight:600" title="O Mercado Livre marca este anúncio como CANDIDATO a Mais Vendido na categoria — ainda não é o selo conquistado. Sem medalha de propósito, pra não confundir com quem está no ranking de destaques.">◇ candidato a mais vendido</span>`;
+            return dados.tagMaisVendido[camp.id]?' <span style="margin-left:8px;display:inline-block" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':'';
+          })()}${notaRoas}${tagLucro}${sugCampTag}</td>
           <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
           <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${dentroMetaTacos?` <span class="okv" title="Gasto em Ads (${fmtMoney(custoAdsCalc||0)}) dentro da meta de TACOS — teto de ${fmtMoney((margemContrib||0)/3)} (1/3 da Margem de Contribuição)">✓</span>`:(margemContrib>0?` <span class="pend" title="Gasto em Ads (${fmtMoney(custoAdsCalc||0)}) acima da meta de TACOS — o teto é ${fmtMoney(margemContrib/3)} (1/3 da Margem de Contribuição)">⚠</span>`:'')}`:'<span class="muted">—</span>'}</td>
@@ -5921,7 +5961,12 @@ function renderAds(){
             </div>`;
           })()}
           <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;margin:2px 0 8px">
-            <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>
+            <input type="checkbox" data-adstag="${camp.id}" ${dados.tagMaisVendido[camp.id]?'checked':''}>${(()=>{
+              const prods=itensDaCampanhaAds(camp).map(it=>state.produtos.find(x=>x.mlItemId===it.itemId)).filter(Boolean);
+              const comPos=prods.filter(p=>typeof p.mlPosicaoCategoria==='number');
+              if(!comPos.length) return '';
+              return ` <span class="muted" style="font-size:11.5px">— o Mercado Livre já informa: ${comPos.map(p=>esc(p.sku)+' em '+p.mlPosicaoCategoria+'º').join(', ')} na categoria (não precisa marcar na mão)</span>`;
+            })()}
             🏅 Anúncio tem a etiqueta/selo de "Mais vendido" no Mercado Livre <span class="muted">(marque manualmente ao conferir)</span>
           </label>
         </td></tr>`:''}`;
@@ -5979,6 +6024,14 @@ function renderAds(){
   });
   el.querySelectorAll('[data-adstag]').forEach(chk=>chk.onchange=()=>{
     dados.tagMaisVendido[chk.dataset.adstag]=chk.checked;
+    /* espelha a marcação manual no(s) produto(s) da campanha, pra medalha aparecer também em
+       Produtos, Comprar, Coletar, FULL e Estoque Mínimo (ver medalhaProduto) - pedido do Felipe
+       02/09: "não tire o campo de tickar e adicione automaticamente em todas as telas". */
+    const campanhaAlvo=(campanhas||[]).find(cc=>String(cc.id)===String(chk.dataset.adstag));
+    if(campanhaAlvo) itensDaCampanhaAds(campanhaAlvo).forEach(it=>{
+      const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+      if(p) p.maisVendidoManual=chk.checked;
+    });
     persist();
     toast(chk.checked?'Marcado com a tag de Mais Vendido.':'Tag de Mais Vendido removida.');
     renderAds();
@@ -9895,7 +9948,7 @@ function renderEnvio(){
             const pjKit=projecaoEnvioItem(p,i.solicitado);
             const kv=kitVirtualQtd(p);
             const dispKit=kv?kv.disp:null;
-            return `<tr><td class="mono">🧩 ${esc(p.sku)} <button class="btn sm" data-envkitdet="${i.id}" style="padding:1px 7px;font-size:11px">${aberto?'▾':'▸'} detalhar</button></td><td>${esc(p.codigo)}</td>
+            return `<tr><td class="mono">🧩 ${esc(p.sku)}${medalhaProduto(p)} <button class="btn sm" data-envkitdet="${i.id}" style="padding:1px 7px;font-size:11px">${aberto?'▾':'▸'} detalhar</button></td><td>${esc(p.codigo)}</td>
             <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
             <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
             <td class="num ${dispKit>0?'okv':''}" title="${dispKit==null?'Kit sem componentes cadastrados':'Quantos kits dá pra montar com o estoque livre dos componentes hoje (o componente com menos é quem limita) — veja componente a componente em detalhar'}">${dispKit==null?'—':fmtInt(dispKit)}</td>
@@ -9920,7 +9973,7 @@ function renderEnvio(){
           const avisoItem=avisos.find(a=>a.envioId===e.id&&a.produtoId===i.produtoId);
           const pj=projecaoEnvioItem(p,i.solicitado);
           const dispMais=disponivel(produtoEfetivo(p));
-          return `<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.codigo)}</td>
+          return `<tr><td class="mono">${esc(p.sku)}${medalhaProduto(p)}</td><td>${esc(p.codigo)}</td>
             <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
             <td class="num ${i.geradoCompra?'pend':''}">${fmtInt(i.geradoCompra||0)}</td>
             <td class="num ${dispMais>0?'okv':''}" title="Estoque livre (galpão + comprado aguardando coleta) pra reservar mais nesse envio">${fmtInt(dispMais)}</td>
@@ -10205,7 +10258,7 @@ function openAddSkuEnvioModal(envioId){
       ${disp.map(p=>{ const base=produtoEfetivo(p); const kit=componentesDe(p).length>0;
         const rotuloLocal=kit?`<span class="muted" title="Kit: ${componentesDe(p).map(c=>esc((prodById(c.produtoId)||{}).sku||'?')+' x'+c.qtdPorUnidade).join(', ')}">🧩 kit</span>`:fmtInt(base.qtd.local);
         const rotuloColetar=kit?'':fmtInt(coletarLivre(base));
-        return `<tr><td class="mono">${esc(p.sku)}${p.vinculadoA?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(base.sku)}">🔗</small>`:''}</td>
+        return `<tr><td class="mono">${esc(p.sku)}${medalhaProduto(p)}${p.vinculadoA?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(base.sku)}">🔗</small>`:''}</td>
         <td class="num">${rotuloLocal}</td><td class="num">${rotuloColetar}</td>
         <td><input type="number" min="0" value="0" class="qty-acao" id="add_${p.id}" data-prev="${p.id}"></td>
         <td id="prev_${p.id}" style="font-size:12.5px"><span class="muted">—</span></td></tr>`; }).join('')}
@@ -11314,7 +11367,7 @@ function renderEstoqueMinimo(){
           <th>SKU</th><th class="num">Mínimo (2 meses)</th><th class="num" title="Aptas no FULL + em trânsito pro FULL + a comprar + a coletar + no galpão (livre e reservado p/ envio) — passe o mouse numa linha pra ver o detalhe">Estoque atual</th><th class="num">Comprar a mais</th><th class="num">Custo un.</th><th class="num">Capital necessário</th>
           </tr></thead><tbody>
           ${linhas.map(({p,minimo,atual,comprarAMais,capital,semCusto,detalhe})=>`<tr>
-            <td class="mono">${esc(p.sku)}</td>
+            <td class="mono">${esc(p.sku)}${medalhaProduto(p)}</td>
             <td class="num">${fmtInt(minimo)}</td>
             <td class="num" title="${esc(detalhe)}">${fmtInt(atual)}</td>
             <td class="num">${comprarAMais>0?`<b>${fmtInt(comprarAMais)}</b>`:'<span class="muted">coberto</span>'}</td>
