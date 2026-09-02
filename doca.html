@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v384</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v385</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2132,6 +2132,7 @@ function variacaoPosicao(p){
   return {delta:anterior.pos-atual.pos,de:anterior.pos,para:atual.pos,desde:anterior.data};
 }
 let rankingBuscando={};
+let rankingTentadoVazio={}; /* ver atualizarRankingLoja: evita reler a cada render quando a loja não tem nenhum anúncio no ranking */
 async function atualizarRankingLoja(loja,forcar){
   if(rankingBuscando[loja]) return;
   const cfg=(state.mlSync&&state.mlSync.cfg)||{};
@@ -2139,7 +2140,17 @@ async function atualizarRankingLoja(loja,forcar){
   const ultimo=cfg.rankingEm[loja]||0;
   /* forcar: botão "Atualizar agora" do card. Sem isso, uma leitura ruim (ex: feita antes de uma
      correção no servidor) ficava 12h travando a próxima tentativa - pedido do Felipe 02/09. */
-  if(!forcar&&Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
+  /* CORRIGIDO 02/09 (Felipe: "faltou a tag de mais vendido e posição na aba Ads" — o código da
+     medalha estava certo, faltava o DADO): o intervalo de 12h olhava só o relógio. Se a leitura
+     anterior não deixou NENHUMA posição gravada nesta loja (leitura feita antes de uma correção no
+     servidor, ou estado vindo de outro aparelho sem esses campos), ficava 12h travado sem nada na
+     tela. Agora, loja sem nenhuma posição lê de novo mesmo dentro do intervalo — se recupera só. */
+  const temAlguma=state.produtos.some(p=>p.loja===loja&&typeof p.mlPosicaoCategoria==='number');
+  /* o "sem nenhuma posição" só fura o intervalo UMA vez por sessão em cada loja - senão uma loja
+     que legitimamente não tem anúncio no ranking dispararia uma leitura a cada render de tela. */
+  if(!forcar&&!temAlguma&&rankingTentadoVazio[loja]) return;
+  if(!forcar&&temAlguma&&Date.now()-ultimo<12*3600*1000) return;   /* 1 leitura por meio-dia já forma o histórico */
+  if(!temAlguma) rankingTentadoVazio[loja]=true;
   rankingBuscando[loja]=true;
   let achadas=0;
   try{
@@ -5969,6 +5980,9 @@ function avaliarSugestoesRoas7d(loja,dados){
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
+  /* a medalha/posição também aparece aqui, então garante a leitura do ranking sem depender de
+     passar pela Visão Geral antes (pedido do Felipe 02/09). Segurado pelo mesmo intervalo. */
+  atualizarRankingLoja(c.loja);
   const dados=adsApiLoja(c.loja);
   const personalizado=adsPeriodoApi==='personalizado';
   const periodo=personalizado?adsPersonalizadoResultado:dados.periodos[adsPeriodoApi];
