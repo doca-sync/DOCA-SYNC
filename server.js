@@ -1546,6 +1546,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
        ofertas daquele produto de catalogo, entao da' pra contar os outros vendedores mesmo quando
        eu estou ganhando. 1 chamada por produto de catalogo, so' pra quem tem catalog_product_id. */
     const ofertasPorProduto = {};
+    const diagnosticoOfertas = [];
     const produtosCat = [...new Set(Object.values(extras).map(e => e.produtoCatalogo).filter(Boolean))];
     for (const pid of produtosCat) {
       try {
@@ -1555,9 +1556,21 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         ofertasPorProduto[pid] = res.map(o => ({
           itemId: o.item_id || o.id || null,
           vendedor: o.seller_id || null,
-          preco: (o.price && typeof o.price === 'number') ? o.price : (o.price && o.price.amount) || null
+          preco: (typeof o.price === 'number') ? o.price : ((o.price && o.price.amount) || null)
         }));
-      } catch (e) { /* produto sem lista de ofertas: fica sem contagem */ }
+        /* diagnostico (02/09): o formato dessa lista foi suposto, nao confirmado na documentacao.
+           Mostra a resposta crua dos 2 primeiros produtos pra dar pra conferir se seller_id/price
+           vem mesmo assim - se vier diferente, a contagem sai zerada em silencio. */
+        if (diagnosticoOfertas.length < 2) {
+          diagnosticoOfertas.push({
+            produtoCatalogo: pid, status: rp.status,
+            temResults: !!(jp && Array.isArray(jp.results)),
+            qtd: res.length,
+            amostraCrua: res.slice(0, 2),
+            interpretado: (ofertasPorProduto[pid] || []).slice(0, 2)
+          });
+        }
+      } catch (e) { if (diagnosticoOfertas.length < 2) diagnosticoOfertas.push({ produtoCatalogo: pid, erro: e.message }); }
     }
     const itens = r.rows.map(x => {
       const ex = extras[x.ml_item_id] || {};
@@ -1599,7 +1612,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, loja, categorias: categorias.length, diagnostico, itens });
+    res.json({ ok: true, loja, categorias: categorias.length, diagnostico, diagnosticoOfertas, itens });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }

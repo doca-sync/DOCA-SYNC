@@ -113,6 +113,25 @@ h4{font-family:Sora;font-weight:700;font-size:13.5px;margin:0 0 10px;letter-spac
 .total-geral .linha2 b{color:var(--violet-l)}
 .total-geral small{font-size:11.5px;font-weight:500;color:var(--muted);letter-spacing:.02em;font-family:'Plus Jakarta Sans',sans-serif}
 .card-loja-foot .valor-info{display:inline-flex;align-items:center;gap:6px}
+/* cards novos da Visão Geral (ranking, concorrência, oportunidades) - mesma linguagem visual dos
+   cards de loja: mesma borda, mesmo respiro, colunas em grade e linhas com o nome à esquerda e o
+   número à direita. Pedido do Felipe 02/09 ("deixar os cards novos mais bonitos, mesmo design"). */
+.card-vg{background:var(--paper);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin:0 0 16px}
+.card-vg>h3{margin:0 0 4px;font-family:Sora;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.card-vg>.sub{color:var(--muted);font-size:12px;margin:0 0 14px}
+.vg-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.vg-col{background:var(--bg2);border:1px solid rgba(163,163,163,.14);border-radius:11px;padding:11px 12px}
+.vg-col-tit{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;
+  letter-spacing:.06em;text-transform:uppercase;font-weight:700;margin-bottom:2px}
+.vg-col-tit .badge{flex:none}
+.vg-col-dica{font-size:11px;color:var(--muted);line-height:1.45;margin:2px 0 8px}
+.vg-ln{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0;
+  border-top:1px solid var(--line2);font-size:12.5px}
+.vg-ln:first-of-type{border-top:0}
+.vg-ln .sku{font-family:'IBM Plex Mono';font-size:12px}
+.vg-ln .dir{flex:none;font-weight:700;font-size:12px}
+.vg-ln .sub2{color:var(--muted);font-size:10.5px;display:block;margin-top:1px}
+.vg-vazio{font-size:12px;color:var(--muted);padding:6px 0}
 .valor-manual-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
 .valor-manual{font:inherit;font-size:12.5px;font-weight:700;color:var(--gold);background:var(--bg2);
   border:1px solid var(--line);border-radius:6px;padding:3px 8px;width:110px;text-align:right;color-scheme:dark}
@@ -469,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v380</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v381</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3678,133 +3697,110 @@ function produtosPausadosOuPerdendo(){
 /* CARD "RANKING DE MAIS VENDIDOS" na Visão Geral (pedido do Felipe 02/09) - quem ganhou e quem
    perdeu posição desde a leitura anterior, quem está no top 10, e os candidatos ao selo. O
    histórico vem de registrarPosicaoProduto (1 leitura por dia, guardada 120 dias). */
+/* ---------- cards novos da Visão Geral (ranking, concorrência, oportunidades) ----------
+   02/09: mesmo desenho dos cards de loja (ver .card-vg no CSS) e, a pedido do Felipe, organizados
+   POR LOJA - uma coluna por loja, na mesma ordem dos cards de cima, pra bater o olho e comparar. */
+function vgLinha(esq,dir,sub){
+  return `<div class="vg-ln"><span><span class="sku">${esq}</span>${sub?`<span class="sub2">${sub}</span>`:''}</span>${dir?`<span class="dir">${dir}</span>`:''}</div>`;
+}
+function vgColunaLoja(loja,qtd,corpo,vazio){
+  return `<div class="vg-col">
+    <div class="vg-col-tit"><span>${esc(loja)}</span>${qtd?`<span class="badge">${qtd}</span>`:''}</div>
+    ${corpo||`<div class="vg-vazio">${vazio||'Nada por aqui.'}</div>`}
+  </div>`;
+}
 function cardRankingMaisVendidos(){
   const comRanking=state.produtos.filter(p=>p.mlItemId&&Array.isArray(p.mlPosicaoHist)&&p.mlPosicaoHist.length);
   const candidatos=state.produtos.filter(p=>p.mlItemId&&p.mlTagMaisVendido&&typeof p.mlPosicaoCategoria!=='number');
   if(!comRanking.length&&!candidatos.length){
-    return `<div class="card"><h3 style="margin-top:0">🏅 Ranking de mais vendidos <button class="btn sm" id="btnRankingAgora" style="margin-left:8px">↻ Atualizar agora</button></h3>
-      <p class="hint" style="margin:0">Ainda sem leitura do ranking. Ele é buscado sozinho no Mercado Livre ao abrir esta tela (2x por dia) e vai formando o histórico — a comparação de subiu/caiu aparece a partir da segunda leitura.</p></div>`;
+    return `<div class="card-vg"><h3>🏅 Ranking de mais vendidos</h3>
+      <p class="sub">Ainda sem leitura. É buscado sozinho no Mercado Livre quando o Doca abre (no máximo 2× por dia); a comparação de subiu/caiu começa na segunda leitura.</p></div>`;
   }
-  const movs=[];
-  comRanking.forEach(p=>{ const v=variacaoPosicao(p); if(v) movs.push({p,v}); });
-  const subiu=movs.filter(m=>m.v.entrou||(m.v.delta||0)>0).sort((a,b)=>(b.v.entrou?999:b.v.delta)-(a.v.entrou?999:a.v.delta));
-  const caiu=movs.filter(m=>m.v.saiu||(m.v.delta||0)<0).sort((a,b)=>(a.v.saiu?-999:a.v.delta)-(b.v.saiu?-999:b.v.delta));
-  const top=comRanking.filter(p=>typeof p.mlPosicaoCategoria==='number'&&p.mlPosicaoCategoria<=10)
-    .sort((a,b)=>a.mlPosicaoCategoria-b.mlPosicaoCategoria);
-  const linha=(m,tipo)=>{
-    const p=m.p,v=m.v;
-    if(v.entrou) return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="okv">entrou no ranking em ${v.para}º</b></div>`;
-    if(v.saiu) return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="pend">saiu do ranking (era ${v.de}º)</b></div>`;
-    const sinal=tipo==='subiu'?'▲':'▼';
-    const cls=tipo==='subiu'?'okv':'pend';
-    return `<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span> <span class="muted" style="font-size:11px">${v.de}º → ${v.para}º</span></span><b class="${cls}">${sinal} ${Math.abs(v.delta)} posiç${Math.abs(v.delta)===1?'ão':'ões'}</b></div>`;
+  const medalhados=comRanking.filter(p=>typeof p.mlPosicaoCategoria==='number');
+  const linhaProduto=p=>{
+    const v=variacaoPosicao(p);
+    let mov='';
+    if(v){
+      if(v.entrou) mov=`<span class="okv" style="font-size:10.5px">entrou agora</span>`;
+      else if(v.saiu) mov=`<span class="pend" style="font-size:10.5px">saiu do ranking</span>`;
+      else if(v.delta>0) mov=`<span class="okv" style="font-size:10.5px">▲ ${v.delta} · era ${v.de}º</span>`;
+      else if(v.delta<0) mov=`<span class="pend" style="font-size:10.5px">▼ ${Math.abs(v.delta)} · era ${v.de}º</span>`;
+    }
+    const pos=(typeof p.mlPosicaoCategoria==='number')
+      ? `<span style="color:${p.mlPosicaoCategoria<=3?'var(--gold,#d4a83c)':'inherit'}">${p.mlPosicaoCategoria}º</span>` : '—';
+    return vgLinha(esc(p.sku),pos,mov||(p.mlTotalRanking?`de ${p.mlTotalRanking} no ranking`:''));
   };
-  return `<div class="card">
-    <h3 style="margin-top:0">🏅 Ranking de mais vendidos <button class="btn sm" id="btnRankingAgora" style="margin-left:8px">↻ Atualizar agora</button></h3>
-    <p class="hint" style="margin:0 0 10px">Posição de cada anúncio entre os mais vendidos da categoria no Mercado Livre. Lido sozinho 2x por dia; a comparação é com a leitura anterior.</p>
-    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
-      <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--ok)">▲ Ganhando posição${subiu.length?` (${subiu.length})`:''}</b>
-        ${subiu.length?subiu.slice(0,8).map(m=>linha(m,'subiu')).join('')+(subiu.length>8?`<div class="muted" style="font-size:11px">+ ${subiu.length-8} outro(s)</div>`:''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém subiu desde a última leitura.</div>'}
-      </div>
-      <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--pend,#e6a23c)">▼ Perdendo posição${caiu.length?` (${caiu.length})`:''}</b>
-        ${caiu.length?caiu.slice(0,8).map(m=>linha(m,'caiu')).join('')+(caiu.length>8?`<div class="muted" style="font-size:11px">+ ${caiu.length-8} outro(s)</div>`:''):'<div class="muted" style="font-size:12px;margin-top:4px">Ninguém caiu desde a última leitura.</div>'}
-      </div>
-      <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--gold,#d4a83c)">🏅 Top 10 hoje${top.length?` (${top.length})`:''}</b>
-        <div class="hint" style="margin:2px 0 4px">${comRanking.filter(p=>typeof p.mlPosicaoCategoria==='number').length} anúncio(s) com medalha hoje, de ${comRanking.length} lido(s).</div>
-        ${top.length?top.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b>${p.mlPosicaoCategoria}º</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum anúncio no top 10 das categorias.</div>'}
-      </div>
-      <div>
-        <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">◇ Candidatos a mais vendido</b>
-        ${candidatos.length?candidatos.slice(0,10).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="muted">concorrendo ao selo</b></div>`).join(''):'<div class="muted" style="font-size:12px;margin-top:4px">Nenhum. O Mercado Livre marca pouquíssimos anúncios como candidatos, e hoje nenhum dos seus tem essa marca — a posição no ranking ao lado é a medida que vale.</div>'}
-      </div>
+  return `<div class="card-vg">
+    <h3>🏅 Ranking de mais vendidos</h3>
+    <p class="sub">Posição entre os mais vendidos da categoria no Mercado Livre · <b>${medalhados.length}</b> com medalha hoje, de ${comRanking.length} anúncio(s) lido(s) · atualizado sozinho ao abrir o Doca.${candidatos.length?` · ${candidatos.length} candidato(s) ao selo.`:''}</p>
+    <div class="vg-cols">
+      ${STORES.map(loja=>{
+        const lista=medalhados.filter(p=>p.loja===loja).sort((a,b)=>a.mlPosicaoCategoria-b.mlPosicaoCategoria);
+        const foraAgora=comRanking.filter(p=>p.loja===loja&&typeof p.mlPosicaoCategoria!=='number'&&(()=>{const v=variacaoPosicao(p);return v&&v.saiu;})());
+        return vgColunaLoja(loja,lista.length,
+          lista.map(linhaProduto).join('')+foraAgora.map(linhaProduto).join(''),
+          'Nenhum anúncio no ranking da categoria.');
+      }).join('')}
     </div>
   </div>`;
 }
-/* CARD "OPORTUNIDADES NOS ANÚNCIOS" (02/09) - montado a partir das etiquetas que o próprio
-   Mercado Livre devolve e que o Doca passou a guardar (ver /ml/ranking-categoria). Só mostra o que
-   tem ação clara e dinheiro envolvido; nada de listar etiqueta por listar. */
-/* CARD "CONCORRÊNCIA NO CATÁLOGO" (pedido do Felipe 02/09). Separa o que MUDOU (entrou gente
-   agora, ou você recuperou) do estado atual - porque saber que entrou hoje é o que pede ação. */
 function cardConcorrenciaCatalogo(){
   const ps=state.produtos.filter(p=>p.mlItemId&&!p.mlAusente);
-  const novos=[],saiu=[],piorou=[];
-  ps.forEach(p=>{
-    const e=entrouConcorrente(p);
-    if(!e) return;
-    if(e.entrou) novos.push({p,e}); else if(e.saiu) saiu.push({p,e}); else if(e.piorou) piorou.push({p,e});
-  });
-  const perdendo=ps.filter(p=>p.mlConcorrenciaStatus==='losing');
-  const empatando=ps.filter(p=>p.mlConcorrenciaStatus==='sharing_first');
-  /* "tem alguém vendendo no meu catálogo?" (pedido do Felipe 02/09) - conta os OUTROS vendedores
-     ofertando o mesmo produto de catálogo. Aparece mesmo quando você está ganhando a compra, que é
-     justamente o caso que o status de perdendo/empatando não mostrava. */
-  const comConcorrente=ps.filter(p=>typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0)
-    .sort((a,b)=>b.mlOutrosVendedores-a.mlOutrosVendedores);
+  const comConcorrente=ps.filter(p=>typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0);
+  const perdendo=ps.filter(p=>p.mlConcorrenciaStatus==='losing'&&!(typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0));
   const sozinho=ps.filter(p=>p.mlOutrosVendedores===0).length;
-  if(!novos.length&&!saiu.length&&!piorou.length&&!perdendo.length&&!empatando.length&&!comConcorrente.length&&!sozinho) return '';
-  const precoTxt=p=>(typeof p.mlConcorrenciaPreco==='number')?` <span class="muted" style="font-size:11px">concorrente ${fmtMoney(p.mlConcorrenciaPreco)}${(typeof p.mlPreco==='number'&&p.mlPreco>0)?` · você ${fmtMoney(p.mlPreco)}`:''}</span>`:'';
-  const bloco=(titulo,cor,lista,render,dica)=>{
-    if(!lista.length) return '';
-    return `<div>
-      <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:${cor}">${titulo} (${lista.length})</b>
-      ${dica?`<div class="hint" style="margin:2px 0 4px">${dica}</div>`:''}
-      ${lista.slice(0,8).map(render).join('')}
-      ${lista.length>8?`<div class="muted" style="font-size:11px">+ ${lista.length-8} outro(s)</div>`:''}
-    </div>`;
+  const novos=ps.filter(p=>{ const e=entrouConcorrente(p); return e&&e.entrou; });
+  if(!comConcorrente.length&&!perdendo.length&&!sozinho) return '';
+  const precos=p=>{
+    const partes=[];
+    if(typeof p.mlMenorPrecoConcorrente==='number') partes.push('menor deles '+fmtMoney(p.mlMenorPrecoConcorrente));
+    else if(typeof p.mlConcorrenciaPreco==='number') partes.push('concorrente '+fmtMoney(p.mlConcorrenciaPreco));
+    if(typeof p.mlPreco==='number'&&p.mlPreco>0) partes.push('você '+fmtMoney(p.mlPreco));
+    return partes.join(' · ');
   };
-  return `<div class="card">
-    <h3 style="margin-top:0">⚔ Concorrência no catálogo</h3>
-    <p class="hint" style="margin:0 0 10px">Quem está disputando a compra nos seus anúncios de catálogo${sozinho?` · <b>${sozinho}</b> anúncio(s) de catálogo sem nenhum concorrente hoje`:''}.</p>
-    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">
-      ${bloco('👥 Vendendo no meu catálogo','var(--violet-l)',comConcorrente,
-        p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${(typeof p.mlMenorPrecoConcorrente==='number')?` <span class="muted" style="font-size:11px">menor deles ${fmtMoney(p.mlMenorPrecoConcorrente)}${(typeof p.mlPreco==='number'&&p.mlPreco>0)?` · você ${fmtMoney(p.mlPreco)}`:''}</span>`:''}</span><b class="${p.mlConcorrenciaStatus==='losing'?'pend':''}">${p.mlOutrosVendedores} vendedor${p.mlOutrosVendedores===1?'':'es'}</b></div>`,
-        'Outros vendedores ofertando o mesmo produto de catálogo — inclusive onde você está ganhando a compra.')}
-      ${bloco('🚨 Entrou concorrente','var(--pend,#e6a23c)',novos,
-        ({p,e})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span><b class="pend">${e.para==='losing'?'perdendo':'empatado'}</b></div>`,
-        'Antes você estava sozinho/ganhando. Alguém entrou desde a leitura anterior.')}
-      ${bloco('🔻 Piorou','var(--pend,#e6a23c)',piorou,
-        ({p,e})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span><b class="pend">empatado → perdendo</b></div>`,'')}
-      ${bloco('✅ Você recuperou','var(--ok)',saiu,
-        ({p})=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span><b class="okv">ganhando</b></div>`,
-        'Deixou de estar em disputa desde a leitura anterior.')}
-      ${bloco('⚔ Perdendo hoje','var(--pend,#e6a23c)',perdendo,
-        p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span></div>`,
-        'Outro vendedor está levando a venda no catálogo.')}
-      ${bloco('🤝 Empatando hoje','var(--muted)',empatando,
-        p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span>${precoTxt(p)}</span></div>`,'')}
+  const statusTxt=p=>{
+    const e=entrouConcorrente(p);
+    if(e&&e.entrou) return '<span class="pend">🚨 entrou agora</span>';
+    if(e&&e.saiu) return '<span class="okv">✅ recuperou</span>';
+    if(p.mlConcorrenciaStatus==='losing') return '<span class="pend">perdendo</span>';
+    if(p.mlConcorrenciaStatus==='sharing_first') return '<span>empatado</span>';
+    return '<span class="okv">ganhando</span>';
+  };
+  return `<div class="card-vg">
+    <h3>⚔ Concorrência no catálogo${novos.length?` <span class="badge pend">${novos.length} novo(s)</span>`:''}</h3>
+    <p class="sub">Outros vendedores ofertando os mesmos produtos de catálogo que você — inclusive onde você está ganhando a compra${sozinho?` · <b>${sozinho}</b> anúncio(s) sem nenhum concorrente hoje`:''}.</p>
+    <div class="vg-cols">
+      ${STORES.map(loja=>{
+        const lista=comConcorrente.filter(p=>p.loja===loja).sort((a,b)=>b.mlOutrosVendedores-a.mlOutrosVendedores);
+        const outros=perdendo.filter(p=>p.loja===loja);
+        return vgColunaLoja(loja,lista.length+outros.length,
+          lista.map(p=>vgLinha(esc(p.sku),`${p.mlOutrosVendedores} vend.`,[statusTxt(p),precos(p)].filter(Boolean).join(' · '))).join('')
+          +outros.map(p=>vgLinha(esc(p.sku),'',[statusTxt(p),precos(p)].filter(Boolean).join(' · '))).join(''),
+          'Nenhum concorrente detectado.');
+      }).join('')}
     </div>
   </div>`;
 }
 function cardOportunidadesAnuncios(){
   const ps=state.produtos.filter(p=>p.mlItemId&&(Array.isArray(p.mlTags)||p.mlTipoAnuncio));
-  if(!ps.length) return '';
-  const tem=(p,t)=>Array.isArray(p.mlTags)&&p.mlTags.indexOf(t)>=0;
   const pausados=ps.filter(p=>p.mlStatus==='paused');
-  const foraDoCarrinho=ps.filter(p=>Array.isArray(p.mlTags)&&!tem(p,'cart_eligible'));
-  const bloco=(titulo,lista,cor,dica)=>{
-    if(!lista.length) return '';
-    return `<div>
-      <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:${cor}">${titulo} (${lista.length})</b>
-      <div class="hint" style="margin:2px 0 4px">${dica}</div>
-      ${lista.slice(0,8).map(p=>`<div class="ln"><span>${esc(p.sku)} <span class="loja-tag">${esc(p.loja)}</span></span></div>`).join('')}
-      ${lista.length>8?`<div class="muted" style="font-size:11px">+ ${lista.length-8} outro(s)</div>`:''}
-    </div>`;
-  };
-  /* REMOVIDOS 02/09 a pedido do Felipe: "Anúncio Premium", "Fora do Full" e "Sem foto de boa
-     qualidade" - informação que ele já conhece/controla, virava só ruído no card. */
-  const blocos=[
-    bloco('⏸ Pausados',pausados,'var(--pend,#e6a23c)','Anúncio parado não vende nem pontua no ranking da categoria.'),
-
-    bloco('🛒 Fora do carrinho',foraDoCarrinho,'var(--muted)','Não elegível ao carrinho de compras, então perde venda casada.')
-  ].filter(Boolean);
-  if(!blocos.length) return '';
-  return `<div class="card">
-    <h3 style="margin-top:0">🔎 Oportunidades nos anúncios</h3>
-    <p class="hint" style="margin:0 0 10px">Lido direto do Mercado Livre junto com o ranking (2x por dia).</p>
-    <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px">${blocos.join('')}</div>
+  const foraDoCarrinho=ps.filter(p=>Array.isArray(p.mlTags)&&p.mlTags.indexOf('cart_eligible')<0);
+  if(!pausados.length&&!foraDoCarrinho.length) return '';
+  /* as ações do antigo card "Pausados / perdendo no catálogo" (encerrar de vez no ML e silenciar
+     o aviso) vieram pra cá quando aquele card foi removido, em 02/09 */
+  const acoes=p=>`${p.mlItemId?`<button class="btn sm danger" data-encerraranuncio="${esc(p.id)}" title="Encerra o anúncio de vez no Mercado Livre (IRREVERSÍVEL)">Encerrar</button> `:''}<button class="btn sm" data-pausarcatalogo="${esc(p.id)}" title="Não mostrar mais este aviso pra este SKU — dá pra reativar depois">🔕</button>`;
+  return `<div class="card-vg">
+    <h3>🔎 Anúncios que pedem atenção</h3>
+    <p class="sub">Anúncio pausado não vende nem pontua no ranking; fora do carrinho perde venda casada. Lido junto com o ranking.</p>
+    <div class="vg-cols">
+      ${STORES.map(loja=>{
+        const pa=pausados.filter(p=>p.loja===loja), fc=foraDoCarrinho.filter(p=>p.loja===loja);
+        return vgColunaLoja(loja,pa.length+fc.length,
+          pa.map(p=>vgLinha(esc(p.sku),acoes(p),'⏸ pausado')).join('')
+          +fc.map(p=>vgLinha(esc(p.sku),'','🛒 fora do carrinho')).join(''),
+          'Tudo em dia.');
+      }).join('')}
+    </div>
   </div>`;
 }
 function renderDashboard(){
@@ -3983,26 +3979,6 @@ function renderDashboard(){
         </div>`;
       }).join('')}
     </div>
-    <div class="card" style="margin:20px 0">
-      <h3 style="margin-top:0">⏸ Pausados / perdendo no catálogo</h3>
-      <div class="acoes-linha" style="flex-wrap:wrap">
-        ${STORES.map(loja=>{
-          const itens=produtosPausadosOuPerdendo().filter(p=>p.loja===loja);
-          if(!itens.length) return `<span class="badge okv" style="padding:6px 10px">${esc(loja)}: em dia</span>`;
-          return `<span class="badge pend" style="padding:6px 10px">${esc(loja)}: ${itens.length} SKU${itens.length===1?'':'s'}</span>`;
-        }).join('')}
-      </div>
-      ${STORES.filter(loja=>produtosPausadosOuPerdendo().some(p=>p.loja===loja)).map(loja=>{
-        const itens=produtosPausadosOuPerdendo().filter(p=>p.loja===loja);
-        return `<div style="margin-top:14px;border-top:1px solid var(--line2);padding-top:12px">
-          <b style="font-size:12.5px">${esc(loja)}</b>
-          <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>SKU</th><th>Título</th><th>Situação</th><th></th></tr></thead><tbody>
-          ${itens.map(p=>`<tr><td class="mono">${esc(p.sku)}</td><td>${esc(p.titulo||'')}</td><td>${[p.mlStatus==='paused'?'⏸ Pausado':'',concorrenciaLabel(p.mlConcorrenciaStatus)?'⚔ '+esc(concorrenciaLabel(p.mlConcorrenciaStatus))+(typeof p.mlConcorrenciaPreco==='number'?' (concorrente: '+fmtMoney(p.mlConcorrenciaPreco)+')':''):''].filter(Boolean).join(' · ')}</td>
-          <td style="white-space:nowrap">${p.mlItemId?`<button class="btn sm danger" data-encerraranuncio="${esc(p.id)}" title="Encerra o anúncio de vez no Mercado Livre (IRREVERSÍVEL - não dá pra reativar depois, só recadastrar do zero)">Encerrar anúncio</button> `:''}<button class="btn sm" data-pausarcatalogo="${esc(p.id)}" title="Não mostrar mais este aviso pra este SKU (produto saindo de linha: vende o que resta, não repõe) - dá pra reativar depois">🔕</button></td></tr>`).join('')}
-          </tbody></table></div>
-        </div>`;
-      }).join('')}
-    </div>
     ${prox.length?`<h3>Próximos envios FULL</h3>
       <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
         <th>Data</th><th>Loja</th><th>Coleta em</th><th>SKUs</th><th>No galpão</th><th>A coletar</th><th>Falta comprar</th>
@@ -4111,15 +4087,7 @@ function renderDashboard(){
     persist();
     renderDashboard();
   });
-  const btnRk=document.getElementById('btnRankingAgora');
-  if(btnRk) btnRk.onclick=async()=>{
-    btnRk.disabled=true; btnRk.textContent='Lendo...';
-    let total=0;
-    for(const l of STORES){ total+=(await atualizarRankingLoja(l,true))||0; }
-    toast(total>0?`Ranking atualizado: ${total} anúncio(s) posicionado(s).`
-                 :'Ranking lido, mas nenhum anúncio apareceu no ranking das categorias. Se você esperava algum, me avise.');
-    renderAll();
-  };
+
 }
 /* ---------- produtos ---------- */
 function mlSyncCfg(){ return state.mlSync.cfg; }
@@ -11786,7 +11754,12 @@ renderAll();
    Encadeado com o alerta de despesas vencendo (pedido do Felipe 23/08) - os dois usam o mesmo
    modal, então não dá pra abrir junto, um mostra depois que o outro for fechado. */
 mostrarAlertaTarefasDoDia(mostrarAlertaDespesasDoDia);
-tentarReconectar();
+tentarReconectar().then(()=>{
+  /* ranking de mais vendidos + concorrencia no catalogo: lidos sozinhos quando o Doca abre
+     (o proprio atualizarRankingLoja segura em no maximo 1 leitura a cada 12h por loja, pra
+     nao repetir a cada F5). Pedido do Felipe 02/09: tirar o botao e deixar automatico. */
+  STORES.forEach(l=>atualizarRankingLoja(l));
+});
 /* sincroniza com o Mercado Livre sozinho assim que o Doca abre, se o backend já estiver
    configurado — não precisa clicar em nada nem dar F5. Passa por TODAS as lojas (STORES),
    uma de cada vez (não em paralelo, pra não sobrecarregar o backend/servidor gratuito),
