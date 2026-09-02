@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v385</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v386</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6082,6 +6082,17 @@ function renderAds(){
       ${!adsLucroErro&&adsLucroResultado&&(adsLucroResultado.avisos||[]).some(a=>/ads/i.test(a))?`<p class="hint" style="color:#e6a23c;margin-top:6px">${(adsLucroResultado.avisos||[]).filter(a=>/ads/i.test(a)).map(a=>'⚠ '+esc(a)).join('<br>')}</p>`:''}
       ${adsFiltro==='lucro'&&adsLucroResultado&&adsLucroPeriodoCalculado!==adsPeriodoApi&&!adsLucroCarregando?`<p class="hint" style="color:#e6a23c;margin-top:6px">⚠ Recalculando o Lucro pro novo período selecionado...</p>`:''}
       <p class="hint">TACOS é calculado aqui em cima do que a API devolve.${linhas.length?' '+fmtInt(linhas.length)+' campanha(s) em '+rotuloPeriodo+'.':''}${periodoComp&&campanhas.length?' Setas comparam com os últimos 30 dias.':''}${adsLucroResultado&&adsLucroResultado.periodo?' Lucro calculado pro período de '+fmtData(adsLucroResultado.periodo.de)+' a '+fmtData(adsLucroResultado.periodo.ate)+'.':''}</p>
+      ${(()=>{
+        /* diagnóstico da medalha (02/09): a posição não aparecia na aba Ads e o código estava
+           certo, então o problema está em algum elo da cadeia campanha → item de Ads → produto →
+           posição. Isto mostra ONDE ela se perde, em vez de eu ficar corrigindo no escuro. */
+        const comPos=state.produtos.filter(p=>p.loja===c.loja&&typeof p.mlPosicaoCategoria==='number');
+        const itensAds=((adsLucroResultado&&adsLucroResultado.ads&&adsLucroResultado.ads.itens)||[]);
+        const casados=itensAds.filter(it=>state.produtos.some(p=>p.mlItemId===it.itemId));
+        const casadosComPos=itensAds.filter(it=>{ const p=state.produtos.find(y=>y.mlItemId===it.itemId); return p&&typeof p.mlPosicaoCategoria==='number'; });
+        if(comPos.length&&casadosComPos.length) return '';
+        return `<p class="hint" style="color:var(--warn)">🏅 Medalhas: ${comPos.length} produto(s) desta loja com posição gravada · ${itensAds.length} item(ns) de Ads no período, ${casados.length} casado(s) com SKU do Doca, ${casadosComPos.length} com posição. ${!comPos.length?'A leitura do ranking ainda não trouxe posição pra esta loja.':'Os anúncios que aparecem em Ads não são os que estão no ranking.'}</p>`;
+      })()}
       ${adsLucroCarregando?(adsLucroProgresso&&adsLucroProgresso.total?barraProgresso(adsLucroProgresso.feito,adsLucroProgresso.total,'💰 '+(adsLucroProgresso.etapa||'Calculando custo/lucro do período...')):barraIndeterminada('💰 Calculando custo/lucro do período...')):''}
       ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
