@@ -469,7 +469,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v359</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v361</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5090,6 +5090,44 @@ function itensDaCampanhaAds(camp){
 /* Margem de Contribuição do(s) produto(s) desta campanha, no período calculado em Lucro — mesma
    fórmula usada no ranking do Resumo Financeiro. Retorna null se ainda não calculou ou não achou
    o produto no período (sem vendas). */
+/* META DE TACOS POR PRODUTO (pedido do Felipe 02/09: "meta de TACOS = 1/3 da margem, mas em cima
+   do custo unitário do produto - se a margem unitária é 18%, a meta é 6%; aí o Doca faz as contas
+   do quanto vendeu e vê se está dentro").
+   Fórmula da margem, exatamente como ele definiu:
+       margem = valor de venda − CMV − tarifa de envio − imposto − comissão
+   Tudo por unidade (divide pela quantidade vendida no período), então a meta não muda de acordo
+   com o volume - é uma característica do produto, não do mês.
+   Com a margem unitária em %, a meta de TACOS é 1/3 dela, e o teto de Ads em reais sai aplicando
+   essa meta no faturamento que o produto REALMENTE fez no período. "Dentro" = gasto de Ads do
+   produto <= esse teto.
+   Obs.: o preço unitário sai da venda real (valor/qtd) porque o Doca não guarda preço de tabela -
+   é o número mais fiel ao que de fato entrou, já com promoção/desconto aplicados. */
+function metaTacosPorProduto(camp,loja){
+  if(!adsLucroResultado) return [];
+  const aliquota=finLoja(loja).aliquotaImposto||0;
+  const itensAds=itensDaCampanhaAds(camp);
+  const linhas=[];
+  itensAds.forEach(ia=>{
+    const iv=((adsLucroResultado.itensVendidos)||[]).find(x=>x.itemId===ia.itemId);
+    if(!iv||!(iv.qtd>0)||!(iv.valor>0)) return;
+    const p=state.produtos.find(x=>x.mlItemId===ia.itemId);
+    const custoUnit=p&&p.custo?p.custo:0;
+    const precoUnit=iv.valor/iv.qtd;
+    const comissaoUnit=(iv.tarifa||0)/iv.qtd;   /* comissão do Mercado Livre */
+    const freteUnit=(iv.freteMl||0)/iv.qtd;     /* tarifa de envio */
+    const impostoUnit=precoUnit*(aliquota/100);
+    const margemUnit=precoUnit-custoUnit-comissaoUnit-freteUnit-impostoUnit;
+    const margemPct=precoUnit>0?(margemUnit/precoUnit*100):0;
+    const metaPct=margemPct/3;
+    const tetoAds=iv.valor*(metaPct/100);
+    const gastoAds=Number(ia.cost)||0;
+    const tacosReal=iv.valor>0?(gastoAds/iv.valor*100):0;
+    linhas.push({itemId:ia.itemId,sku:(p&&p.sku)||ia.itemId,semCusto:!(custoUnit>0),
+      qtd:iv.qtd,faturamento:iv.valor,precoUnit,custoUnit,comissaoUnit,freteUnit,impostoUnit,
+      margemUnit,margemPct,metaPct,tetoAds,gastoAds,tacosReal,dentro:gastoAds<=tetoAds});
+  });
+  return linhas.sort((a,b)=>b.faturamento-a.faturamento);
+}
 function margemContribuicaoCampanha(camp,loja){
   if(!adsLucroResultado) return null;
   const itensAds=itensDaCampanhaAds(camp);
@@ -5652,7 +5690,23 @@ function renderAds(){
         const aberto=adsDetalheAberto.has(String(camp.id));
         const comp=mapaComp[camp.id];
         const tacosComp=comp?calcTacos(comp):null;
-        const tacosAlto=tacos>c.margemPct;
+        /* CORRIGIDO 02/09 (Felipe: "a meta de TACOS do MUSGO é 6,02% e o TACOS real está 5,96%,
+           por que não aparece o tick verde?"): as duas porcentagens da linha vinham de contas
+           DIFERENTES, então comparar uma com a outra na tela não queria dizer nada.
+             - meta       = (Margem de Contribuição / 3) / faturamento apurado no Lucro
+             - TACOS real = custo da API do Mercado Ads / (total_amount + organic_units_amount)
+           Bases e fontes distintas: no MUSGO dava 5,96% "real" contra 6,02% de meta (parecendo
+           dentro), enquanto o dinheiro dizia o contrário - Ads R$183,79 contra um teto de R$179,53
+           (=538,58/3), ou seja, ACIMA da meta. O tick sempre seguiu o dinheiro (custoAds <= margem/3),
+           por isso não aparecia. Agora o TACOS exibido usa a MESMA base da meta (o mesmo custo de
+           Ads e o mesmo faturamento que entram na conta do tick), então "real <= meta" na tela
+           passa a bater exatamente com o tick. Sem dado do Lucro apurado, cai no cálculo da API
+           como antes. A seta de tendência continua comparando período com período pela API, que é
+           a mesma fonte nos dois lados. */
+        const temBaseLucro=(margemContrib!=null&&faturamentoContrib>0&&custoAdsCalc!=null);
+        const tacosExib=temBaseLucro?(custoAdsCalc/faturamentoContrib*100):tacos;
+        const dentroMetaTacos=(margemContrib>0&&custoAdsCalc!=null&&custoAdsCalc<=margemContrib/3);
+        const tacosAlto=tacosExib>c.margemPct;
         const av=avalAtual.get(camp.id);
         const notaRoas=av?` <span style="margin-left:8px;display:inline-block;font-size:11.5px;font-weight:700" class="${av.score>=100?'okv':(av.score>=65?'pend':'muted')}" title="${[
           ...av.criterios.map((ok,idx)=>['ROAS > objetivo','Ganho de Leilões > 50%','10 vendas/dia','TACOS caindo (15d e 30d)','CVR subindo/igual (15d e 30d)'][idx]+': '+(ok?'✓':'✗')),
@@ -5672,9 +5726,9 @@ function renderAds(){
           <td>${esc(camp.name||'')}${dados.tagMaisVendido[camp.id]?' <span style="margin-left:8px;display:inline-block" title="Marcado manualmente: anúncio com a etiqueta de Mais Vendido">🏅</span>':''}${notaRoas}${tagLucro}${sugCampTag}</td>
           <td class="num">${margemContrib!=null?fmtMoney(margemContrib):'<span class="muted">—</span>'}</td>
           <td class="num">${fmtMoney(custoAdsCalc||0)}</td>
-          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${(margemContrib>0&&custoAdsCalc<=margemContrib/3)?' <span class="okv" title="Gasto em Ads dentro da meta de TACOS (1/3 da Margem Bruta/Contribuição)">✓</span>':''}`:'<span class="muted">—</span>'}</td>
+          <td class="num">${lucroBruto!=null?`<b class="${lucroBruto>=0?'okv':'pend'}">${fmtMoney(lucroBruto)}</b>${dentroMetaTacos?` <span class="okv" title="Gasto em Ads (${fmtMoney(custoAdsCalc||0)}) dentro da meta de TACOS — teto de ${fmtMoney((margemContrib||0)/3)} (1/3 da Margem de Contribuição)">✓</span>`:(margemContrib>0?` <span class="pend" title="Gasto em Ads (${fmtMoney(custoAdsCalc||0)}) acima da meta de TACOS — o teto é ${fmtMoney(margemContrib/3)} (1/3 da Margem de Contribuição)">⚠</span>`:'')}`:'<span class="muted">—</span>'}</td>
           <td class="num">${(margemContrib>0&&faturamentoContrib>0)?`<b>${(margemContrib/3/faturamentoContrib*100).toFixed(2)}%</b>`:'<span class="muted">—</span>'}</td>
-          <td class="num"><b class="${tacosAlto?'pend':'okv'}">${tacos.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
+          <td class="num"><b class="${tacosAlto?'pend':'okv'}" title="${temBaseLucro?`Ads ${fmtMoney(custoAdsCalc)} ÷ faturamento ${fmtMoney(faturamentoContrib)} — mesma base da coluna de meta ao lado, então dá pra comparar as duas direto`:'Calculado pela API do Mercado Ads (sem apuração de Lucro no período pra usar a mesma base da meta)'}">${tacosExib.toFixed(2)}%</b>${setaTrendAds(tacos,tacosComp,false)}</td>
           <td class="num" title="% das vendas totais do produto anunciado geradas pelo anúncio patrocinado (igual ao card 'Aporte para publicidade' do painel do Mercado Ads)">${calcAporteAds(m).toFixed(0)}%${setaTrendAds(calcAporteAds(m),comp?calcAporteAds(comp):null,true)}</td>
           <td class="num">${m.sov!=null?Number(m.sov).toFixed(2)+'%':'—'}${setaTrendAds(m.sov||0,comp?comp.sov:null,true)}</td>
           <td class="num">${(m.ctr||0).toFixed(2)}%${setaTrendAds(m.ctr||0,comp?comp.ctr:null,true)}</td>
@@ -5695,6 +5749,33 @@ function renderAds(){
             <div><span class="muted" style="font-size:11px">Vendas (ads + orgânica)</span><br>${fmtInt(m.units_quantity||0)} + ${fmtInt(m.organic_units_quantity||0)} = ${fmtInt((m.units_quantity||0)+(m.organic_units_quantity||0))}</div>
             <div><span class="muted" style="font-size:11px">CPC</span><br>${fmtMoney(m.cpc||0)}</div>
           </div>
+          ${(()=>{
+            /* meta de TACOS por produto, na margem UNITÁRIA (pedido do Felipe 02/09) - ver
+               metaTacosPorProduto. Fica aqui no detalhe porque uma campanha pode ter mais de um
+               anúncio, cada um com sua margem e portanto sua própria meta. */
+            const linhasProd=metaTacosPorProduto(camp,c.loja);
+            if(!linhasProd.length) return '';
+            return `<div style="margin:0 0 10px">
+              <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">🎯 Meta de TACOS por produto (1/3 da margem unitária)</b>
+              <p class="hint" style="margin:4px 0 6px">Margem por unidade = preço de venda − custo do produto − comissão − tarifa de envio − imposto. A meta é 1/3 dessa margem; o teto em reais é a meta aplicada no que o produto faturou no período.</p>
+              <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+                <th>SKU</th><th>Un.</th><th>Faturou</th><th title="Preço de venda − custo − comissão − tarifa de envio − imposto, por unidade">Margem/un.</th><th>Margem %</th><th title="1/3 da margem unitária">Meta TACOS</th><th title="Meta aplicada no faturamento do período">Teto de Ads</th><th>Gasto Ads</th><th>TACOS real</th><th></th>
+              </tr></thead><tbody>
+              ${linhasProd.map(l=>`<tr>
+                <td class="mono">${esc(l.sku)}${l.semCusto?' <span class="tag-zero" title="Sem custo unitário cadastrado em Produtos — a margem sai inflada e a meta fica maior do que deveria">sem custo</span>':''}</td>
+                <td class="num">${fmtInt(l.qtd)}</td>
+                <td class="num">${fmtMoney(l.faturamento)}</td>
+                <td class="num" title="Preço ${fmtMoney(l.precoUnit)} − custo ${fmtMoney(l.custoUnit)} − comissão ${fmtMoney(l.comissaoUnit)} − envio ${fmtMoney(l.freteUnit)} − imposto ${fmtMoney(l.impostoUnit)}">${fmtMoney(l.margemUnit)}</td>
+                <td class="num">${l.margemPct.toFixed(1)}%</td>
+                <td class="num"><b>${l.metaPct.toFixed(2)}%</b></td>
+                <td class="num">${fmtMoney(l.tetoAds)}</td>
+                <td class="num">${fmtMoney(l.gastoAds)}</td>
+                <td class="num"><b class="${l.dentro?'okv':'pend'}">${l.tacosReal.toFixed(2)}%</b></td>
+                <td>${l.dentro?`<span class="okv" title="Gasto de ${fmtMoney(l.gastoAds)} dentro do teto de ${fmtMoney(l.tetoAds)}">✓ dentro</span>`:`<span class="pend" title="Gasto de ${fmtMoney(l.gastoAds)} passou ${fmtMoney(l.gastoAds-l.tetoAds)} do teto de ${fmtMoney(l.tetoAds)}">⚠ ${fmtMoney(l.gastoAds-l.tetoAds)} acima</span>`}</td>
+              </tr>`).join('')}
+              </tbody></table></div>
+            </div>`;
+          })()}
           ${(()=>{ const pi=pontoInflexaoAds(c.loja,camp.id,10); if(!pi) return `<p class="hint" style="margin:6px 0 10px">📊 Ainda não há histórico suficiente pra achar o ponto de inflexão TACOS × ROAS desta campanha — vai se formando a cada vez que clicar em Atualizar (1 leitura por dia).</p>`;
             return `<div class="aviso" style="margin:0 0 10px;flex-direction:column;align-items:stretch;gap:6px">
               <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--violet-l)">📊 TACOS × ROAS — histórico desta campanha</b>
