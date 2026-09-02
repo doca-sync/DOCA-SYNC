@@ -1513,7 +1513,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     for (let i = 0; i < ids0.length; i += 20) {
       const lote = ids0.slice(i, i + 20).join(',');
       try {
-        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping`, { headers: cab });
+        const rr = await fetch(`https://api.mercadolibre.com/items?ids=${lote}&attributes=id,tags,listing_type_id,status,shipping,catalog_listing,catalog_product_id`, { headers: cab });
         const jj = await rr.json();
         (Array.isArray(jj) ? jj : []).forEach(w => {
           const b = w && w.body; if (!b || !b.id) return;
@@ -1521,20 +1521,40 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
             tags: Array.isArray(b.tags) ? b.tags : [],
             tipoAnuncio: b.listing_type_id || null,
             status: b.status || null,
-            logistica: (b.shipping && b.shipping.logistic_type) || null
+            logistica: (b.shipping && b.shipping.logistic_type) || null,
+            /* CORRIGIDO 02/09 (Felipe: "quase todos meus anuncios sao de catalogo - o afiador e'
+               tradicional e o musgo e' catalogo"): no anuncio de CATALOGO o ranking de destaques
+               lista o PRODUTO de catalogo, nao o anuncio. Sem o catalog_product_id nao tinha como
+               casar, e por isso TODAS as posicoes voltavam null. */
+            catalogo: !!b.catalog_listing,
+            produtoCatalogo: b.catalog_product_id || null
           };
         });
       } catch (e) { /* lote com problema: segue */ }
     }
     const itens = r.rows.map(x => {
-      const lista = ranking[x.categoria_id];
-      let posicao = null, total = null;
-      if (Array.isArray(lista)) {
-        const idx = lista.findIndex(c => c && (c.id === x.ml_item_id || c.parent_id === x.ml_item_id));
-        if (idx >= 0) { posicao = idx + 1; total = lista.length; }
-      }
       const ex = extras[x.ml_item_id] || {};
-      return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total,
+      const lista = ranking[x.categoria_id];
+      let posicao = null, total = null, casouPor = null;
+      if (Array.isArray(lista)) {
+        /* casa de tres jeitos, porque o ranking mistura anuncio e produto de catalogo:
+             1) pelo id do anuncio          (anuncio tradicional, ex: AFIADOR19)
+             2) pelo produto de catalogo    (anuncio de catalogo, ex: MUSGO)
+             3) pelo parent_id              (variacoes) */
+        const idx = lista.findIndex(c => {
+          if (!c) return false;
+          if (c.id === x.ml_item_id || c.parent_id === x.ml_item_id) return true;
+          if (ex.produtoCatalogo && (c.id === ex.produtoCatalogo || c.parent_id === ex.produtoCatalogo)) return true;
+          return false;
+        });
+        if (idx >= 0) {
+          posicao = idx + 1; total = lista.length;
+          const achado = lista[idx];
+          casouPor = (achado && (achado.id === x.ml_item_id || achado.parent_id === x.ml_item_id)) ? 'anuncio' : 'catalogo';
+        }
+      }
+      return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total, casouPor,
+        catalogo: !!ex.catalogo, produtoCatalogo: ex.produtoCatalogo || null,
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
