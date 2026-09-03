@@ -1323,6 +1323,32 @@ function tokenMpDaLoja(loja) {
   const chave = normalizarChaveLoja(loja);
   return process.env[`MP_ACCESS_TOKEN_${chave}`] || process.env.MP_ACCESS_TOKEN || null;
 }
+/* NOVO 03/09 (Felipe: reduzir a defasagem do saldo/a-receber - ver /mp/webhook/relatorio): senha
+   de criptografia usada pra validar que uma notificacao de relatorio pronto realmente veio do
+   Mercado Pago (assinatura BCrypt). Essa senha e' cadastrada no painel "Relatorios e faturamento"
+   de CADA loja no Mercado Pago (junto com a URL de notificacao), e precisa ser copiada aqui pra
+   uma variavel de ambiente - mesma convencao de nome por loja que tokenMpDaLoja. */
+function senhaWebhookMp(loja) {
+  const chave = normalizarChaveLoja(loja);
+  return process.env[`MP_WEBHOOK_SENHA_${chave}`] || process.env.MP_WEBHOOK_SENHA || null;
+}
+/* Valida a assinatura de uma notificacao de relatorio do Mercado Pago (doc: developers.mercadopago
+   .com.br/pt/docs/reports/{released-money,account-money}/generate, secao "Notificacoes" ->
+   "Senha para criptografia"): signature = BCrypt(transaction_id + '-' + senha + '-' +
+   generation_date). Retorna true/false quando conseguiu validar, ou null se o modulo bcryptjs nao
+   estiver instalado (nesse caso precisa rodar "npm install bcryptjs" no projeto do backend antes
+   de confiar nesse webhook). */
+function verificarAssinaturaRelatorioMp(transactionId, generationDate, signature, senha) {
+  let bcrypt;
+  try { bcrypt = require('bcryptjs'); } catch (e) { return null; }
+  try {
+    const texto = `${transactionId}-${senha}-${generationDate}`;
+    return bcrypt.compareSync(texto, signature || '');
+  } catch (e) {
+    console.error('[mp-webhook] erro ao validar assinatura:', e.message);
+    return false;
+  }
+}
 /* rota de diagnostico - testa os candidatos mais prováveis de endpoint de saldo/conta e devolve
    a resposta CRUA de cada um. Ex.: /debug/mp?loja=TorvShop */
 app.get('/debug/mp', async (req, res) => {
@@ -1733,6 +1759,87 @@ async function mpFetch(loja, path, opts) {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json', ...((opts && opts.headers) || {}) }
   });
 }
+/* NOVO 03/09 (Felipe: "a aba de fluxo de caixa esta desatualizada" - o saldo do Mercado Pago
+   ficava preso ao ritmo em que a PROPRIA conta gera relatorios em lote, e o Doca so' descobria um
+   relatorio novo perguntando de tempos em tempos - ver passoSaldoMp/passoAReceberMp). O Mercado
+   Pago tem um mecanismo de webhook PRA ISSO: assim que um relatorio de Liberacoes ou de Dinheiro
+   em conta fica pronto, ele avisa essa URL na hora (documentado em developers.mercadopago.com.br
+   /pt/docs/reports/{released-money,account-money}/generate, secao "Notificacoes"). Isso elimina o
+   atraso do polling (ate 20min) - nao elimina o atraso de o Mercado Pago GERAR o relatorio (isso
+   continua no ritmo dele), mas some junto com a geracao automatica diaria configurada em
+   /mp/relatorios/configurar-diario, que garante no maximo ~1 dia de defasagem mesmo pra loja de
+   baixo volume, em vez de ficar na mao do proximo pedido on-demand.
+   CONFIGURACAO NECESSARIA (feita 1x por loja, so' dá pelo painel, nao tem campo pra isso na API):
+   1) entrar no painel do Mercado Pago DESSA loja -> Relatorios e faturamento -> configuracoes do
+      relatorio de Liberacoes E do de Dinheiro em conta;
+   2) em cada um, cadastrar a URL de notificacao: <BACKEND>/mp/webhook/relatorio?loja=<NOME-LOJA>
+      (o nome da loja EXATAMENTE como aparece em LOJAS_VALIDAS, ex: "Dor Block");
+   3) gerar/copiar a "senha de criptografia" de cada relatorio e colocar na variavel de ambiente
+      MP_WEBHOOK_SENHA_<LOJA> (mesma normalizacao de nome de tokenMpDaLoja) aqui no Render - se as
+      2 senhas (Liberacoes e Dinheiro em conta) vierem diferentes, usar qualquer uma das 2 pras
+      2 (a validacao so' usa a mesma senha pra saber se "e' dessa loja", nao precisa bater 1:1 com
+      o tipo de relatorio).
+   Responde 200 IMEDIATAMENTE (padrao dos outros webhooks deste arquivo, ex: /ml/webhook) e
+   processa depois, pra nunca fazer o Mercado Pago esperar por timeout/re-tentar. */
+app.post('/mp/webhook/relatorio', async (req, res) => {
+  res.sendStatus(200);
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) { console.error('[mp-webhook] loja invalida/faltando na querystring da notificacao:', loja); return; }
+    const { transaction_id, generation_date, files, report_type, type, signature } = req.body || {};
+    const senha = senhaWebhookMp(loja);
+    if (!senha) { console.error(`[mp-webhook] faltou a variavel MP_WEBHOOK_SENHA_${normalizarChaveLoja(loja)} (ou MP_WEBHOOK_SENHA) no Render - ignorando notificacao de`, loja); return; }
+    const valido = verificarAssinaturaRelatorioMp(transaction_id, generation_date, signature, senha);
+    if (valido === false) { console.error('[mp-webhook] assinatura invalida - ignorando notificacao de', loja, '(confira a senha de criptografia cadastrada no painel do Mercado Pago x a variavel MP_WEBHOOK_SENHA_' + normalizarChaveLoja(loja) + ')'); return; }
+    if (valido === null) console.error('[mp-webhook] bcryptjs nao instalado no backend (rode "npm install bcryptjs") - processando a notificacao MESMO ASSIM, sem conseguir confirmar que veio de verdade do Mercado Pago.');
+    const arquivo = (Array.isArray(files) ? files.find(f => (f.type || '').toLowerCase() === 'csv') || files[0] : null);
+    if (!arquivo || !arquivo.url) { console.error('[mp-webhook] notificacao sem arquivo utilizavel para', loja, JSON.stringify(req.body || {})); return; }
+    const accessToken = tokenMpDaLoja(loja);
+    if (!accessToken) { console.error('[mp-webhook] loja sem MP_ACCESS_TOKEN configurado:', loja); return; }
+    const rDown = await fetch(arquivo.url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!rDown.ok) { console.error('[mp-webhook] falha ao baixar arquivo do relatorio:', loja, rDown.status); return; }
+    const texto = await rDown.text();
+    const tipoTexto = `${report_type || type || ''}`.toLowerCase();
+    if (tipoTexto.includes('release')) {
+      const ok = await aplicarRelatorioLiberacoes(loja, texto, generation_date);
+      console.log(`[mp-webhook] Liberacoes (saldo) aplicado via webhook - ${loja}:`, ok);
+    } else if (tipoTexto.includes('settlement') || tipoTexto.includes('account')) {
+      const ok = await aplicarRelatorioDinheiroConta(loja, texto);
+      console.log(`[mp-webhook] Dinheiro em conta (a receber) aplicado via webhook - ${loja}:`, ok);
+    } else {
+      console.error('[mp-webhook] tipo de relatorio nao reconhecido na notificacao, ignorando:', loja, report_type, type);
+    }
+  } catch (e) {
+    console.error('[mp-webhook] erro ao processar notificacao:', e.message);
+  }
+});
+/* NOVO 03/09: liga a geracao AUTOMATICA e diaria dos 2 relatorios pra 1 loja, via API - so' precisa
+   rodar 1x por loja (ex: POST /mp/relatorios/configurar-diario?loja=TorvStore). O que NAO da' pra
+   fazer por API (so' pelo painel) e' cadastrar a URL de notificacao/senha do webhook acima - ver
+   comentario em /mp/webhook/relatorio. Devolve a resposta CRUA do Mercado Pago pra cada relatorio,
+   pra conferir se aceitou (ainda nao testado contra conta real - primeira chamada de verdade e' o
+   teste). Tenta criar (POST) e, se já existir configuração, tenta atualizar (PUT). */
+app.post('/mp/relatorios/configurar-diario', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const chave = normalizarChaveLoja(loja);
+    const hora = Math.min(23, Math.max(0, parseInt(req.query.hora || '6', 10)));
+    const resultados = {};
+    for (const [nome, caminho] of [['release_report', '/v1/account/release_report/config'], ['settlement_report', '/v1/account/settlement_report/config']]) {
+      const corpo = { file_name_prefix: `${nome}-${chave}`, frequency: { type: 'daily', hour: hora }, display_timezone: 'GMT-03' };
+      try {
+        const r1 = await mpFetch(loja, caminho, { method: 'POST', body: JSON.stringify(corpo) });
+        const j1 = await r1.json().catch(() => null);
+        if (r1.ok) { resultados[nome] = { ok: true, verbo: 'POST', status: r1.status, corpo: j1 }; continue; }
+        const r2 = await mpFetch(loja, caminho, { method: 'PUT', body: JSON.stringify(corpo) });
+        const j2 = await r2.json().catch(() => null);
+        resultados[nome] = { ok: r2.ok, verbo: 'PUT', status: r2.status, corpo: j2, tentativaPostAntes: { status: r1.status, corpo: j1 } };
+      } catch (e) { resultados[nome] = { ok: false, erro: e.message }; }
+    }
+    res.json({ ok: true, loja, resultados });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.post('/debug/mp/relatorio/pedir', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -2158,6 +2265,33 @@ async function upsertFinanceiroMp(loja, patch) {
      linha.prazo_liberacao_dias ?? null, linha.receita_diaria_media ?? null, linha.receita_atualizado_em ?? null]
   );
 }
+/* NOVO 03/09 (extraido de dentro de passoSaldoMp, pra poder ser chamado tanto pelo polling normal
+   quanto pelo webhook de relatorio pronto - ver /mp/webhook/relatorio): recebe o TEXTO CRU (CSV)
+   de um relatorio de Liberacoes ja baixado e grava o saldo. geradoEmFallback e' usado como "as of"
+   quando nenhuma linha do relatorio tem DATE preenchida (raro, mas ja aconteceu com relatorio
+   vazio/so' de cabecalho). Retorna true se conseguiu gravar algo, false se o relatorio nao tinha
+   dado usavel. */
+async function aplicarRelatorioLiberacoes(loja, texto, geradoEmFallback) {
+  const { linhas } = parseCsvPontoEVirgula(texto);
+  const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
+  const ultima = comData.length ? comData[comData.length - 1] : null;
+  const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
+  if (isNaN(saldo)) return false;
+  /* ACHADO 27/08 (pedido do Felipe: saldo mostrado no Doca nao batia com o saldo real do app do
+     Mercado Pago). Usa a DATA DA ULTIMA LINHA do proprio relatorio (a transacao mais recente que
+     compoe esse saldo) como "as of" - nao o momento em que o Doca processou o relatorio, que
+     mentiria sobre o quao "fresco" o saldo e' de verdade (o release_report e' sempre um snapshot
+     em lote do Mercado Pago, nunca "ao vivo" - testado /v1/account/balance, da' 404). Se nao tiver
+     DATE em nenhuma linha, cai pro generation_date do relatorio (fallback). */
+  const dataUltimaLinha = ultima.DATE ? new Date(ultima.DATE) : null;
+  const asOf = (dataUltimaLinha && !isNaN(dataUltimaLinha.getTime())) ? dataUltimaLinha : new Date(geradoEmFallback || Date.now());
+  await upsertFinanceiroMp(loja, {
+    saldo_disponivel: saldo,
+    saldo_atualizado_em: asOf,
+    saldo_report_id: null, saldo_pedido_em: null
+  });
+  return true;
+}
 async function passoSaldoMp(loja, row) {
   // JANELA_FRESCOR_MS: 8h -> 20h (25/08, achado com dado real da TorvStore via
   // /debug/mp/relatorio/listar). O Mercado Pago so' gera um release_report NOVO pra essa loja a
@@ -2193,34 +2327,8 @@ async function passoSaldoMp(loja, row) {
       if (idadeMs < JANELA_FRESCOR_MS) {
         const rDown = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(maisRecente.file_name)}`, { method: 'GET' });
         const texto = await rDown.text();
-        const { linhas } = parseCsvPontoEVirgula(texto);
-        const comData = linhas.filter(l => (l.DATE || '').trim().length > 0);
-        const ultima = comData.length ? comData[comData.length - 1] : null;
-        const saldo = ultima ? parseFloat(ultima.BALANCE_AMOUNT) : NaN;
-        if (!isNaN(saldo)) {
-          /* ACHADO 27/08 (pedido do Felipe: saldo mostrado no Doca nao batia com o saldo real do
-             app do Mercado Pago). Antes gravava saldo_atualizado_em como new Date() (o momento em
-             que O NOSSO SERVIDOR processou o relatorio) - isso MENTE sobre o quao "fresco" o saldo
-             e', porque o release_report e' um relatorio em LOTE que o Mercado Pago gera de tempos
-             em tempos (pra TorvStore, historicamente a cada 10-15h, aceito ate' 20h de idade pela
-             JANELA_FRESCOR_MS acima) - o saldo em si e' de QUANDO O RELATORIO FOI MONTADO, nao de
-             quando o Doca o leu. Ex. real: relatorio criado as 19h49 (BRT), Doca processou as
-             21h27 - o rotulo antigo dizia "atualizado as 21h27", enganando por 1h38 (e podendo ser
-             bem mais, ate' a idade maxima aceita). Agora usa a DATA DA ULTIMA LINHA do proprio
-             relatorio (a transacao mais recente que compoe esse saldo) - se nao tiver, cai pra
-             date_created do relatorio. Nao existe endpoint de saldo "ao vivo" no Mercado Pago
-             (testado /v1/account/balance - 404); o release_report (BALANCE_AMOUNT) e' o mesmo
-             caminho oficial da documentacao "Relatorio de Liberacoes" que o Felipe mandou - so' que
-             ele e' inerentemente um snapshot em lote, nunca vai ser "ao vivo" de verdade. */
-          const dataUltimaLinha = ultima.DATE ? new Date(ultima.DATE) : null;
-          const asOf = (dataUltimaLinha && !isNaN(dataUltimaLinha.getTime())) ? dataUltimaLinha : new Date(maisRecente.date_created);
-          await upsertFinanceiroMp(loja, {
-            saldo_disponivel: saldo,
-            saldo_atualizado_em: asOf,
-            saldo_report_id: null, saldo_pedido_em: null
-          });
-          return;
-        }
+        const aplicado = await aplicarRelatorioLiberacoes(loja, texto, maisRecente.date_created);
+        if (aplicado) return;
       }
     }
   } catch (e) {
@@ -2242,6 +2350,104 @@ async function passoSaldoMp(loja, row) {
     await upsertFinanceiroMp(loja, { saldo_report_id: String(corpo.id), saldo_pedido_em: new Date() });
   }
 }
+/* NOVO 03/09 (extraido de dentro de passoAReceberMp, mesmo motivo do aplicarRelatorioLiberacoes
+   acima - reaproveitado pelo webhook em /mp/webhook/relatorio). Recebe o TEXTO CRU (CSV) de um
+   relatorio de Dinheiro em conta (settlement_report) ja baixado. Retorna true se conseguiu gravar
+   algo. */
+async function aplicarRelatorioDinheiroConta(loja, texto) {
+  const { linhas } = parseCsvPontoEVirgula(texto);
+  if (!linhas.length) return false;
+  const pendentes = linhas.filter(l => (l.IS_RELEASED || '').toUpperCase() === 'FALSE');
+  const aReceber = Math.round(pendentes.reduce((s, l) => {
+    const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+    return s + (isNaN(v) ? 0 : v);
+  }, 0) * 100) / 100;
+  /* agenda de liberacoes: agrupa as linhas pendentes por MONEY_RELEASE_DATE (dia em que
+     o Mercado Pago vai liberar aquele valor) - e' isso que da pra montar a projecao de
+     caixa dia a dia, em vez de so' saber o total parado. Linha sem data valida cai fora
+     da agenda (mas continua contando no total a_receber acima). */
+  const porData = {};
+  pendentes.forEach(l => {
+    const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+    if (isNaN(v)) return;
+    const dataBruta = (l.MONEY_RELEASE_DATE || '').trim();
+    const data = dataBruta ? dataBruta.slice(0, 10) : null;
+    if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
+    porData[data] = (porData[data] || 0) + v;
+  });
+  const agendaLiberacoes = Object.keys(porData).sort().map(data => ({
+    data, valor: Math.round(porData[data] * 100) / 100
+  }));
+  /* prazo de liberacao + receita diaria media (27/08, pedido do Felipe - coluna "Projetado"
+     do Fluxo de Caixa) - usa o MESMO relatorio ja baixado acima, sem gastar chamada nova:
+     1) prazo de liberacao empirico da loja: MEDIANA de dias entre TRANSACTION_DATE e
+        MONEY_RELEASE_DATE das linhas SETTLEMENT/SETTLEMENT_SHIPPING.
+        CORRIGIDO 27/08 (2a volta, com prova real do Felipe): a 1a versao usava TODAS as
+        linhas, inclusive as ainda pendentes (IS_RELEASED=false) - e a MONEY_RELEASE_DATE
+        de uma linha pendente e' só uma estimativa/teto conservador (a maioria aparecia
+        cravada em D+28) que o proprio Mercado Pago revisa pra baixo assim que a entrega e'
+        confirmada. O Felipe provou isso com um pedido real: venda 14/08 23:02, entrega
+        19/08 14:54, dinheiro caiu 27/08 - exatamente D+8 apos a ENTREGA, batendo com a
+        regra oficial de reputacao boa (MercadoLider Gold, confirmado) + Full + produto
+        novo. Ou seja, so' as linhas JA LIBERADAS DE VERDADE (IS_RELEASED=true) refletem o
+        prazo real; as pendentes inflavam a mediana pra D+28 por engano. Tambem exclui
+        linhas cujo SOURCE_ID teve uma DISPUTE (essas liberam na hora por causa da disputa
+        resolvida, nao pelo prazo normal de entrega - contaminaria a mediana pro lado
+        curto demais).
+     2) receita liquida diaria media dos ultimos 15 dias (por TRANSACTION_DATE, mesma janela
+        usada no CMV de Previsao de Compra) - essa conta TODAS as linhas (pendente ou nao),
+        porque a venda ja aconteceu independente de quando libera. */
+  const idsComDisputa = new Set();
+  linhas.forEach(l => { if ((l.TRANSACTION_TYPE || '').toUpperCase() === 'DISPUTE' && l.SOURCE_ID) idsComDisputa.add(l.SOURCE_ID); });
+  const diasLag = [];
+  const porDiaReceita = {};
+  let dataMaisRecenteTx = null;
+  linhas.forEach(l => {
+    const tipo = (l.TRANSACTION_TYPE || '').toUpperCase();
+    if (tipo !== 'SETTLEMENT' && tipo !== 'SETTLEMENT_SHIPPING') return;
+    const dtTx = l.TRANSACTION_DATE ? new Date(l.TRANSACTION_DATE) : null;
+    if (!dtTx || isNaN(dtTx.getTime())) return;
+    if (!dataMaisRecenteTx || dtTx > dataMaisRecenteTx) dataMaisRecenteTx = dtTx;
+    const jaLiberada = (l.IS_RELEASED || '').toUpperCase() === 'TRUE';
+    const semDisputa = !l.SOURCE_ID || !idsComDisputa.has(l.SOURCE_ID);
+    if (jaLiberada && semDisputa) {
+      const dtRel = l.MONEY_RELEASE_DATE ? new Date(l.MONEY_RELEASE_DATE) : null;
+      if (dtRel && !isNaN(dtRel.getTime())) {
+        const lag = Math.round((dtRel.getTime() - dtTx.getTime()) / 864e5);
+        if (lag >= 0) diasLag.push(lag);
+      }
+    }
+    const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
+    if (!isNaN(v)) {
+      const diaTx = dtTx.toISOString().slice(0, 10);
+      porDiaReceita[diaTx] = (porDiaReceita[diaTx] || 0) + v;
+    }
+  });
+  let prazoLiberacaoDias = null;
+  if (diasLag.length) {
+    const ordenado = diasLag.slice().sort((a, b) => a - b);
+    const meio = Math.floor(ordenado.length / 2);
+    prazoLiberacaoDias = ordenado.length % 2 ? ordenado[meio] : Math.round((ordenado[meio - 1] + ordenado[meio]) / 2);
+  }
+  let receitaDiariaMedia = null;
+  if (dataMaisRecenteTx) {
+    const limite = new Date(dataMaisRecenteTx.getTime() - 15 * 864e5);
+    const diasNoIntervalo = Object.keys(porDiaReceita).filter(d => new Date(d + 'T12:00:00Z') >= limite);
+    if (diasNoIntervalo.length) {
+      const total = diasNoIntervalo.reduce((s, d) => s + porDiaReceita[d], 0);
+      receitaDiariaMedia = Math.round((total / diasNoIntervalo.length) * 100) / 100;
+    }
+  }
+  await upsertFinanceiroMp(loja, {
+    a_receber: aReceber, a_receber_atualizado_em: new Date(),
+    areceber_report_id: null, areceber_pedido_em: null,
+    agenda_liberacoes: agendaLiberacoes,
+    prazo_liberacao_dias: prazoLiberacaoDias,
+    receita_diaria_media: receitaDiariaMedia,
+    receita_atualizado_em: new Date()
+  });
+  return true;
+}
 async function passoAReceberMp(loja, row) {
   const JANELA_FRESCOR_MS = 6 * 60 * 60 * 1000;
   try {
@@ -2256,99 +2462,8 @@ async function passoAReceberMp(loja, row) {
       if (idadeMs < JANELA_FRESCOR_MS) {
         const rDown = await mpFetch(loja, `/v1/account/settlement_report/${encodeURIComponent(maisRecente.file_name)}`, { method: 'GET' });
         const texto = await rDown.text();
-        const { linhas } = parseCsvPontoEVirgula(texto);
-        if (linhas.length) {
-          const pendentes = linhas.filter(l => (l.IS_RELEASED || '').toUpperCase() === 'FALSE');
-          const aReceber = Math.round(pendentes.reduce((s, l) => {
-            const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
-            return s + (isNaN(v) ? 0 : v);
-          }, 0) * 100) / 100;
-          /* agenda de liberacoes: agrupa as linhas pendentes por MONEY_RELEASE_DATE (dia em que
-             o Mercado Pago vai liberar aquele valor) - e' isso que da pra montar a projecao de
-             caixa dia a dia, em vez de so' saber o total parado. Linha sem data valida cai fora
-             da agenda (mas continua contando no total a_receber acima). */
-        const porData = {};
-          pendentes.forEach(l => {
-            const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
-            if (isNaN(v)) return;
-            const dataBruta = (l.MONEY_RELEASE_DATE || '').trim();
-            const data = dataBruta ? dataBruta.slice(0, 10) : null;
-            if (!data || !/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
-            porData[data] = (porData[data] || 0) + v;
-          });
-          const agendaLiberacoes = Object.keys(porData).sort().map(data => ({
-            data, valor: Math.round(porData[data] * 100) / 100
-          }));
-          /* prazo de liberacao + receita diaria media (27/08, pedido do Felipe - coluna "Projetado"
-             do Fluxo de Caixa) - usa o MESMO relatorio ja baixado acima, sem gastar chamada nova:
-             1) prazo de liberacao empirico da loja: MEDIANA de dias entre TRANSACTION_DATE e
-                MONEY_RELEASE_DATE das linhas SETTLEMENT/SETTLEMENT_SHIPPING.
-                CORRIGIDO 27/08 (2a volta, com prova real do Felipe): a 1a versao usava TODAS as
-                linhas, inclusive as ainda pendentes (IS_RELEASED=false) - e a MONEY_RELEASE_DATE
-                de uma linha pendente e' só uma estimativa/teto conservador (a maioria aparecia
-                cravada em D+28) que o proprio Mercado Pago revisa pra baixo assim que a entrega e'
-                confirmada. O Felipe provou isso com um pedido real: venda 14/08 23:02, entrega
-                19/08 14:54, dinheiro caiu 27/08 - exatamente D+8 apos a ENTREGA, batendo com a
-                regra oficial de reputacao boa (MercadoLider Gold, confirmado) + Full + produto
-                novo. Ou seja, so' as linhas JA LIBERADAS DE VERDADE (IS_RELEASED=true) refletem o
-                prazo real; as pendentes inflavam a mediana pra D+28 por engano. Tambem exclui
-                linhas cujo SOURCE_ID teve uma DISPUTE (essas liberam na hora por causa da disputa
-                resolvida, nao pelo prazo normal de entrega - contaminaria a mediana pro lado
-                curto demais).
-             2) receita liquida diaria media dos ultimos 15 dias (por TRANSACTION_DATE, mesma janela
-                usada no CMV de Previsao de Compra) - essa conta TODAS as linhas (pendente ou nao),
-                porque a venda ja aconteceu independente de quando libera. */
-          const idsComDisputa = new Set();
-          linhas.forEach(l => { if ((l.TRANSACTION_TYPE || '').toUpperCase() === 'DISPUTE' && l.SOURCE_ID) idsComDisputa.add(l.SOURCE_ID); });
-          const diasLag = [];
-          const porDiaReceita = {};
-          let dataMaisRecenteTx = null;
-          linhas.forEach(l => {
-            const tipo = (l.TRANSACTION_TYPE || '').toUpperCase();
-            if (tipo !== 'SETTLEMENT' && tipo !== 'SETTLEMENT_SHIPPING') return;
-            const dtTx = l.TRANSACTION_DATE ? new Date(l.TRANSACTION_DATE) : null;
-            if (!dtTx || isNaN(dtTx.getTime())) return;
-            if (!dataMaisRecenteTx || dtTx > dataMaisRecenteTx) dataMaisRecenteTx = dtTx;
-            const jaLiberada = (l.IS_RELEASED || '').toUpperCase() === 'TRUE';
-            const semDisputa = !l.SOURCE_ID || !idsComDisputa.has(l.SOURCE_ID);
-            if (jaLiberada && semDisputa) {
-              const dtRel = l.MONEY_RELEASE_DATE ? new Date(l.MONEY_RELEASE_DATE) : null;
-              if (dtRel && !isNaN(dtRel.getTime())) {
-                const lag = Math.round((dtRel.getTime() - dtTx.getTime()) / 864e5);
-                if (lag >= 0) diasLag.push(lag);
-              }
-            }
-            const v = parseFloat(l.SETTLEMENT_NET_AMOUNT);
-            if (!isNaN(v)) {
-              const diaTx = dtTx.toISOString().slice(0, 10);
-              porDiaReceita[diaTx] = (porDiaReceita[diaTx] || 0) + v;
-            }
-          });
-          let prazoLiberacaoDias = null;
-          if (diasLag.length) {
-            const ordenado = diasLag.slice().sort((a, b) => a - b);
-            const meio = Math.floor(ordenado.length / 2);
-            prazoLiberacaoDias = ordenado.length % 2 ? ordenado[meio] : Math.round((ordenado[meio - 1] + ordenado[meio]) / 2);
-          }
-          let receitaDiariaMedia = null;
-          if (dataMaisRecenteTx) {
-            const limite = new Date(dataMaisRecenteTx.getTime() - 15 * 864e5);
-            const diasNoIntervalo = Object.keys(porDiaReceita).filter(d => new Date(d + 'T12:00:00Z') >= limite);
-            if (diasNoIntervalo.length) {
-              const total = diasNoIntervalo.reduce((s, d) => s + porDiaReceita[d], 0);
-              receitaDiariaMedia = Math.round((total / diasNoIntervalo.length) * 100) / 100;
-            }
-          }
-          await upsertFinanceiroMp(loja, {
-            a_receber: aReceber, a_receber_atualizado_em: new Date(),
-            areceber_report_id: null, areceber_pedido_em: null,
-            agenda_liberacoes: agendaLiberacoes,
-            prazo_liberacao_dias: prazoLiberacaoDias,
-            receita_diaria_media: receitaDiariaMedia,
-            receita_atualizado_em: new Date()
-          });
-          return;
-        }
+        const aplicado = await aplicarRelatorioDinheiroConta(loja, texto);
+        if (aplicado) return;
       }
     }
   } catch (e) {
