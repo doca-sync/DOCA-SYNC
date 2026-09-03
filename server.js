@@ -1770,22 +1770,35 @@ async function mpFetch(loja, path, opts) {
    /mp/relatorios/configurar-diario, que garante no maximo ~1 dia de defasagem mesmo pra loja de
    baixo volume, em vez de ficar na mao do proximo pedido on-demand.
    CONFIGURACAO NECESSARIA (feita 1x por loja, so' dá pelo painel, nao tem campo pra isso na API):
-   1) entrar no painel do Mercado Pago DESSA loja -> Relatorios e faturamento -> configuracoes do
-      relatorio de Liberacoes E do de Dinheiro em conta;
-   2) em cada um, cadastrar a URL de notificacao: <BACKEND>/mp/webhook/relatorio?loja=<NOME-LOJA>
-      (o nome da loja EXATAMENTE como aparece em LOJAS_VALIDAS, ex: "Dor Block");
-   3) gerar/copiar a "senha de criptografia" de cada relatorio e colocar na variavel de ambiente
-      MP_WEBHOOK_SENHA_<LOJA> (mesma normalizacao de nome de tokenMpDaLoja) aqui no Render - se as
-      2 senhas (Liberacoes e Dinheiro em conta) vierem diferentes, usar qualquer uma das 2 pras
-      2 (a validacao so' usa a mesma senha pra saber se "e' dessa loja", nao precisa bater 1:1 com
-      o tipo de relatorio).
+   1) entrar no painel do Mercado Pago DESSA loja -> Relatorios -> Liberacoes -> "Arquivo e
+      notificacoes" -> secao "Notificacoes Webhook" (repetir depois pro relatorio de Extrato de
+      conta/Dinheiro em conta);
+   2) em "URL ou endereco IP", cadastrar: <BACKEND>/mp/webhook/relatorio/<NOME-LOJA> (o nome da
+      loja EXATAMENTE como aparece em LOJAS_VALIDAS, ex: "Dor Block" - se o campo do Mercado Pago
+      nao aceitar "?" numa query string, por isso o nome da loja vai no CAMINHO da URL, nao depois
+      de "?loja=" - route abaixo aceita os 2 formatos, por seguranca);
+   3) em "Senha para criptografia", INVENTAR uma senha (o Mercado Pago nao gera sozinho - minimo 8
+      caracteres) e colocar essa MESMA senha na variavel de ambiente MP_WEBHOOK_SENHA_<LOJA>
+      (mesma normalizacao de nome de tokenMpDaLoja) aqui no Render - se as 2 senhas (Liberacoes e
+      Dinheiro em conta) vierem diferentes, usar qualquer uma das 2 pras 2 (a validacao so' usa a
+      senha pra saber se "e' dessa loja", nao precisa bater 1:1 com o tipo de relatorio).
    Responde 200 IMEDIATAMENTE (padrao dos outros webhooks deste arquivo, ex: /ml/webhook) e
    processa depois, pra nunca fazer o Mercado Pago esperar por timeout/re-tentar. */
-app.post('/mp/webhook/relatorio', async (req, res) => {
+/* casa o nome da loja de forma tolerante (sem diferenciar maiusculas/minusculas, espaco/traco/
+   underscore) - pra nao depender do Felipe acertar exatamente "Dor Block" com espaco codificado
+   certinho (%20) dentro de uma URL colada num campo de painel de terceiro. Aceita "TorvStore",
+   "torvstore", "Dor-Block", "dor_block" etc, todos apontando pra loja certa em LOJAS_VALIDAS. */
+function lojaPorApelido(txt) {
+  const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const alvo = norm(txt);
+  if (!alvo) return null;
+  return LOJAS_VALIDAS.find(l => norm(l) === alvo) || null;
+}
+async function processarWebhookRelatorioMp(req, res) {
   res.sendStatus(200);
   try {
-    const loja = req.query.loja;
-    if (!LOJAS_VALIDAS.includes(loja)) { console.error('[mp-webhook] loja invalida/faltando na querystring da notificacao:', loja); return; }
+    const loja = lojaPorApelido(req.params.loja || req.query.loja);
+    if (!loja) { console.error('[mp-webhook] loja invalida/faltando na notificacao (path ou querystring):', req.params.loja || req.query.loja); return; }
     const { transaction_id, generation_date, files, report_type, type, signature } = req.body || {};
     const senha = senhaWebhookMp(loja);
     if (!senha) { console.error(`[mp-webhook] faltou a variavel MP_WEBHOOK_SENHA_${normalizarChaveLoja(loja)} (ou MP_WEBHOOK_SENHA) no Render - ignorando notificacao de`, loja); return; }
@@ -1812,7 +1825,13 @@ app.post('/mp/webhook/relatorio', async (req, res) => {
   } catch (e) {
     console.error('[mp-webhook] erro ao processar notificacao:', e.message);
   }
-});
+}
+/* mesma rota em 2 formatos - .../mp/webhook/relatorio/TorvStore (caminho, preferido - alguns
+   campos de "URL de notificacao" no painel do Mercado Pago rejeitam "?" numa query string) e
+   .../mp/webhook/relatorio?loja=TorvStore (querystring, caso o formato acima nao sirva por algum
+   motivo). Cadastrar so' UM dos dois por relatorio, o que o campo aceitar. */
+app.post('/mp/webhook/relatorio/:loja', processarWebhookRelatorioMp);
+app.post('/mp/webhook/relatorio', processarWebhookRelatorioMp);
 /* NOVO 03/09: liga a geracao AUTOMATICA e diaria dos 2 relatorios pra 1 loja, via API - so' precisa
    rodar 1x por loja (ex: POST /mp/relatorios/configurar-diario?loja=TorvStore). O que NAO da' pra
    fazer por API (so' pelo painel) e' cadastrar a URL de notificacao/senha do webhook acima - ver
