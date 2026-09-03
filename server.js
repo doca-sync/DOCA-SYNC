@@ -1846,8 +1846,8 @@ app.get('/mp/webhook/relatorio', (req, res) => res.sendStatus(200));
    teste). Tenta criar (POST) e, se já existir configuração, tenta atualizar (PUT). */
 app.post('/mp/relatorios/configurar-diario', async (req, res) => {
   try {
-    const loja = req.query.loja;
-    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const loja = lojaPorApelido(req.params.loja || req.query.loja);
+    if (!loja) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const chave = normalizarChaveLoja(loja);
     const hora = Math.min(23, Math.max(0, parseInt(req.query.hora || '6', 10)));
     const resultados = {};
