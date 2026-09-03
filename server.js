@@ -1832,6 +1832,12 @@ async function processarWebhookRelatorioMp(req, res) {
    motivo). Cadastrar so' UM dos dois por relatorio, o que o campo aceitar. */
 app.post('/mp/webhook/relatorio/:loja', processarWebhookRelatorioMp);
 app.post('/mp/webhook/relatorio', processarWebhookRelatorioMp);
+/* alguns botoes de "Testar conexao" de paineis de terceiro mandam um GET/HEAD simples so' pra
+   conferir se a URL responde, antes de mandar a notificacao de verdade (que e' sempre POST) - sem
+   isso, esse teste dava 404 (rota so' aceitava POST) e parecia "falha de conexao" mesmo com o
+   servidor funcionando normalmente. */
+app.get('/mp/webhook/relatorio/:loja', (req, res) => res.sendStatus(200));
+app.get('/mp/webhook/relatorio', (req, res) => res.sendStatus(200));
 /* NOVO 03/09: liga a geracao AUTOMATICA e diaria dos 2 relatorios pra 1 loja, via API - so' precisa
    rodar 1x por loja (ex: POST /mp/relatorios/configurar-diario?loja=TorvStore). O que NAO da' pra
    fazer por API (so' pelo painel) e' cadastrar a URL de notificacao/senha do webhook acima - ver
