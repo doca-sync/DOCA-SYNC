@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v392</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v395</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4055,14 +4055,26 @@ function renderDashboard(){
       const porLoja={}; rupturasPorLoja.forEach(g=>{ porLoja[g.loja]=g.itens; });
       const linhaRup=r=>{
         const st=statusAcaoFull(r.p);
-        const zeraTxt=r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`;
+        /* CORRIGIDO 03/09 (Felipe: "BOCÃO, PERLON80 e TESOURARETA já estão sem estoque, mas todo
+           dia aparece 'zerando agora'"): "zerando agora" é previsão de quem AINDA tem estoque e
+           acaba hoje. Quem já está com 0 no Full não está zerando - já zerou, e o anúncio já
+           parou de vender. Some as duas coisas num texto só confundia o que é urgência futura com
+           o que já é venda perdida acontecendo. */
+        /* AJUSTADO 03/09 (Felipe): o Mercado Livre pausa o anúncio sozinho quando o Full zera,
+           então não existe "vendendo sem estoque" - a mensagem é só o fato: sem estoque. */
+        const semEstoqueFull=!(r.k&&r.k.full>0);
+        const zeraTxt=semEstoqueFull
+          ?'<b class="pend">SEM ESTOQUE</b>'
+          :(r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`);
         const envioTxt=r.zeraAntesDoEnvio
           ?`<span class="pend">🚨 FULL só em ${fmtData(r.proximoFullProduto.data)} — depois da ruptura, precisa antecipar</span>`
           :(r.proximoFullProduto?`FULL em ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
             :(r.emGracaEnvio?`confirmado em ${fmtData(r.dataEnvioConfirmado)}, aguardando o ML`
             :'<span class="pend">sem FULL programado</span>'));
         const esqSku=`${r.curva?`<span class="curva-badge curva-${r.curva}">${r.curva}</span> `:''}${esc(r.p.sku)}`;
-        const sub=`${zeraTxt} (${fmtData(r.diaZero)}) · média ${(r.k.media||0).toFixed(2)}/dia<br><span class="acao-${st.tipo}">${st.texto}</span> · ${envioTxt}`;
+        /* a data projetada de ruptura só faz sentido pra quem ainda tem estoque - em quem já zerou
+           ela vira uma data no passado repetida todo dia, sem informação nova */
+        const sub=`${zeraTxt}${semEstoqueFull?'':` (${fmtData(r.diaZero)})`} · média ${(r.k.media||0).toFixed(2)}/dia<br><span class="acao-${st.tipo}">${st.texto}</span> · ${envioTxt}`;
         const dir=`<button class="btn sm" data-pausarrup="${r.p.id}" title="Produto saindo de linha: vender o que resta, não repor — some deste aviso" style="padding:1px 7px;font-size:11px">🔕</button>`;
         return vgLinha(esqSku,dir,sub);
       };
@@ -11365,7 +11377,9 @@ function renderPrevisao(){
         <td class="mono">${esc(fullSku(i))}
           ${i.semId&&!p?' <span class="pend" title="O painel não trouxe SKU nem Código ML para este item — estou usando o nome do anúncio">sem SKU</span>':''}
           ${p?(i.produtoId?' <span class="okv" title="Ligado à mão ao cadastro">🔗</span>':''):` <button class="btn sm" data-fvinc="${i.id}" title="Ligar este código a um SKU já cadastrado">🔗 vincular</button>`}
-          ${k.rompe?` <span class="pend" title="O estoque acaba em ${fmtData(k.diaRuptura)}, antes do envio">zera ${fmtData(k.diaRuptura)}</span>`:''}
+          ${k.rompe?(k.full>0
+            ? ` <span class="pend" title="O estoque acaba em ${fmtData(k.diaRuptura)}, antes do envio">zera ${fmtData(k.diaRuptura)}</span>`
+            : ` <span class="pend" title="Já está zerado no Full — o anúncio parou de vender. A data de ruptura já passou, por isso não mostra data aqui.">sem estoque</span>`):''}
           ${k.vendasIncoer?' <span class="pend">vendas incoerentes</span>':''}
           ${i.enviado&&envioById(i.enviado.envioId)?` <span class="tagcri" title="Estas ${fmtInt(i.enviado.qtd)} un. já entraram no envio ${esc(i.enviado.envio)}. Para mudar a quantidade, edite lá — assim a reserva e a compra acompanham.">✓ no FULL ${esc(i.enviado.envio)}</span>`:''}</td>
         <td class="num"><span class="det">${fmtInt(k.full)}<span class="i">i</span><span class="pop">
