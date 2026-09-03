@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v399</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v400</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3849,12 +3849,34 @@ function cardOportunidadesAnuncios(){
 }
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
+  /* CORRIGIDO 03/09 (Felipe: card da loja mostrando 0/0/0/0 em Comprar/Coletar/Local/Reservado
+     mesmo com estoque real existindo): SKU vinculado (p.vinculadoA) e SKU de kit sempre têm
+     p.qtd zerado DE PROPÓSITO (o estoque de verdade mora no mestre/nos componentes - ver
+     produtoEfetivo/kitVirtualQtd). A tabela de Produtos já resolve isso pra exibir (mestreVinc||p,
+     kitVirtualQtd), mas os cards da Visão Geral somavam p.qtd cru - por isso uma loja cujo único
+     SKU é vinculado a um mestre de OUTRA loja (ex: TorvShop -> ALICATE da Orbix) aparecia com tudo
+     zerado, mesmo tendo estoque físico disponível de verdade. sumStat resolve pelo mesmo caminho
+     da tabela de Produtos, só pra exibição nesses 4 números - dedup por SKU mestre dentro da MESMA
+     loja (não conta o mesmo mestre 2x se 2 SKUs daqui apontam pra ele). Os valores em R$ (valor
+     em estoque, capital de giro, patrimônio) continuam SEM resolver, de propósito, pra não contar
+     2x no total geral entre lojas diferentes - só os contadores de unidades (informativos) mudam. */
   const totals=STORES.map(loja=>{
     const ps=state.produtos.filter(p=>p.loja===loja);
     const sum=f=>ps.reduce((a,p)=>a+(typeof f==='function'?f(p):p.qtd[f]),0);
+    const sumStat=campo=>{
+      const vistos=new Set();
+      return ps.reduce((a,p)=>{
+        const kv=kitVirtualQtd(p);
+        if(kv) return a+(kv[campo]||0);
+        const base=produtoEfetivo(p);
+        if(base!==p){ if(vistos.has(base.id)) return a; vistos.add(base.id); }
+        const valor=campo==='local'?totalNoGalpao(base):campo==='reservado'?reservadoDe(base):(base.qtd[campo]||0);
+        return a+valor;
+      },0);
+    };
     const fin=finLoja(loja), full=fullResumo(loja), faturaMl=faturaMlPendenteLoja(loja);
-    return {loja,count:ps.length,comprar:sum('comprar'),coletar:sum('coletar'),local:sum(totalNoGalpao),
-      reservado:sum(reservadoDe),valor:sum(valorEstoque),valorColetar:sum(p=>(p.custo||0)*p.qtd.coletar),
+    return {loja,count:ps.length,comprar:sumStat('comprar'),coletar:sumStat('coletar'),local:sumStat('local'),
+      reservado:sumStat('reservado'),valor:sum(valorEstoque),valorColetar:sum(p=>(p.custo||0)*p.qtd.coletar),
       capitalGiro:sum(capitalGiroComprar),fin,full,faturaMl,
       patrimonio:sum(valorEstoque)+full.valor+(fin.mercadoPago||0)+(fin.aReceber||0)-(fin.imposto||0)-faturaMl};
   });
