@@ -1841,50 +1841,44 @@ app.get('/mp/webhook/relatorio', (req, res) => res.sendStatus(200));
 /* NOVO 03/09: liga a geracao AUTOMATICA e diaria dos 2 relatorios pra 1 loja, via API - so' precisa
    rodar 1x por loja (ex: POST /mp/relatorios/configurar-diario?loja=TorvStore). O que NAO da' pra
    fazer por API (so' pelo painel) e' cadastrar a URL de notificacao/senha do webhook acima - ver
-   comentario em /mp/webhook/relatorio. Devolve a resposta CRUA do Mercado Pago pra cada relatorio,
-   pra conferir se aceitou. Tenta criar (POST) e, se já existir configuração, tenta atualizar (PUT).
-   "columns" e' obrigatorio (achado testando contra a TorvStore de verdade, 03/09) - so' pede as
-   colunas que o codigo realmente le (ver aplicarRelatorioLiberacoes/aplicarRelatorioDinheiroConta),
-   nos identificadores em minusculo que a API espera (a tela "Colunas" do painel mostra a mesma
-   lista, com nome amigavel ao lado de cada identificador). "execute_after_withdrawal" tambem e'
-   obrigatorio pro relatorio de Liberacoes especificamente. */
+   comentario em /mp/webhook/relatorio.
+   CORRIGIDO 03/09 (testando contra a TorvStore de verdade): "columns" e' obrigatorio e os nomes
+   certos de identificador nao sao obvios (chutar deu "Invalid columns"); alem disso a conta JA
+   TINHA uma configuracao de settlement_report salva (erro de chave duplicada ao tentar criar uma
+   nova). Em vez de adivinhar o payload inteiro, agora faz GET da configuracao ATUAL primeiro (se
+   existir) e manda ela de volta via PUT so' com "frequency" trocado - todo o resto (colunas,
+   nome de arquivo, timezone etc) fica exatamente como a loja ja tinha configurado (a mao ou por
+   algum pedido anterior), sem chute nenhum. So' cai pra POST com um payload minimo (sem columns -
+   nesse caso a API parece aceitar um padrao, ja que so' reclamou de columns quando tinha outros
+   campos junto) na primeira vez, quando ainda nao existe config nenhuma (GET 404). */
 app.post('/mp/relatorios/configurar-diario', async (req, res) => {
   try {
     const loja = lojaPorApelido(req.params.loja || req.query.loja);
     if (!loja) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const chave = normalizarChaveLoja(loja);
     const hora = Math.min(23, Math.max(0, parseInt(req.query.hora || '6', 10)));
-    const configs = {
-      release_report: {
-        caminho: '/v1/account/release_report/config',
-        corpo: {
-          file_name_prefix: `release-report-${chave}`,
-          frequency: { type: 'daily', hour: hora },
-          display_timezone: 'GMT-03',
-          include_withdrawal_at_end: true,
-          execute_after_withdrawal: false,
-          columns: ['date', 'balance_amount', 'source_id', 'description'].map(key => ({ key }))
-        }
-      },
-      settlement_report: {
-        caminho: '/v1/account/settlement_report/config',
-        corpo: {
-          file_name_prefix: `settlement-report-${chave}`,
-          frequency: { type: 'daily', hour: hora },
-          display_timezone: 'GMT-03',
-          columns: ['transaction_date', 'transaction_type', 'source_id', 'settlement_net_amount', 'is_released', 'money_release_date'].map(key => ({ key }))
-        }
-      }
-    };
+    const caminhos = { release_report: '/v1/account/release_report/config', settlement_report: '/v1/account/settlement_report/config' };
     const resultados = {};
-    for (const [nome, { caminho, corpo }] of Object.entries(configs)) {
+    for (const [nome, caminho] of Object.entries(caminhos)) {
       try {
-        const r1 = await mpFetch(loja, caminho, { method: 'POST', body: JSON.stringify(corpo) });
-        const j1 = await r1.json().catch(() => null);
-        if (r1.ok) { resultados[nome] = { ok: true, verbo: 'POST', status: r1.status, corpo: j1 }; continue; }
-        const r2 = await mpFetch(loja, caminho, { method: 'PUT', body: JSON.stringify(corpo) });
-        const j2 = await r2.json().catch(() => null);
-        resultados[nome] = { ok: r2.ok, verbo: 'PUT', status: r2.status, corpo: j2, tentativaPostAntes: { status: r1.status, corpo: j1 } };
+        const rGet = await mpFetch(loja, caminho, { method: 'GET' });
+        const jGet = await rGet.json().catch(() => null);
+        if (rGet.ok && jGet && typeof jGet === 'object') {
+          // existe configuracao - reaproveita tudo, so' troca a frequencia. Tira campos read-only
+          // (ex: "scheduled") que a API pode nao aceitar de volta num PUT.
+          const corpo = { ...jGet, frequency: { type: 'daily', hour: hora } };
+          delete corpo.scheduled;
+          const rPut = await mpFetch(loja, caminho, { method: 'PUT', body: JSON.stringify(corpo) });
+          const jPut = await rPut.json().catch(() => null);
+          resultados[nome] = { ok: rPut.ok, verbo: 'PUT (config existente)', status: rPut.status, corpo: jPut, configAnterior: jGet };
+        } else {
+          // sem configuracao ainda - tenta criar com o minimo, sem "columns" (deixa a API decidir
+          // um padrao, ja que nao sabemos os identificadores certos sem ver uma config real antes)
+          const corpo = { file_name_prefix: `${nome}-${chave}`, frequency: { type: 'daily', hour: hora }, display_timezone: 'GMT-03' };
+          const rPost = await mpFetch(loja, caminho, { method: 'POST', body: JSON.stringify(corpo) });
+          const jPost = await rPost.json().catch(() => null);
+          resultados[nome] = { ok: rPost.ok, verbo: 'POST (sem config previa)', status: rPost.status, corpo: jPost, getAnterior: { status: rGet.status, corpo: jGet } };
+        }
       } catch (e) { resultados[nome] = { ok: false, erro: e.message }; }
     }
     res.json({ ok: true, loja, resultados });
