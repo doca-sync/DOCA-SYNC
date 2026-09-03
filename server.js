@@ -1842,17 +1842,42 @@ app.get('/mp/webhook/relatorio', (req, res) => res.sendStatus(200));
    rodar 1x por loja (ex: POST /mp/relatorios/configurar-diario?loja=TorvStore). O que NAO da' pra
    fazer por API (so' pelo painel) e' cadastrar a URL de notificacao/senha do webhook acima - ver
    comentario em /mp/webhook/relatorio. Devolve a resposta CRUA do Mercado Pago pra cada relatorio,
-   pra conferir se aceitou (ainda nao testado contra conta real - primeira chamada de verdade e' o
-   teste). Tenta criar (POST) e, se já existir configuração, tenta atualizar (PUT). */
+   pra conferir se aceitou. Tenta criar (POST) e, se já existir configuração, tenta atualizar (PUT).
+   "columns" e' obrigatorio (achado testando contra a TorvStore de verdade, 03/09) - so' pede as
+   colunas que o codigo realmente le (ver aplicarRelatorioLiberacoes/aplicarRelatorioDinheiroConta),
+   nos identificadores em minusculo que a API espera (a tela "Colunas" do painel mostra a mesma
+   lista, com nome amigavel ao lado de cada identificador). "execute_after_withdrawal" tambem e'
+   obrigatorio pro relatorio de Liberacoes especificamente. */
 app.post('/mp/relatorios/configurar-diario', async (req, res) => {
   try {
     const loja = lojaPorApelido(req.params.loja || req.query.loja);
     if (!loja) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     const chave = normalizarChaveLoja(loja);
     const hora = Math.min(23, Math.max(0, parseInt(req.query.hora || '6', 10)));
+    const configs = {
+      release_report: {
+        caminho: '/v1/account/release_report/config',
+        corpo: {
+          file_name_prefix: `release-report-${chave}`,
+          frequency: { type: 'daily', hour: hora },
+          display_timezone: 'GMT-03',
+          include_withdrawal_at_end: true,
+          execute_after_withdrawal: false,
+          columns: ['date', 'balance_amount', 'source_id', 'description'].map(key => ({ key }))
+        }
+      },
+      settlement_report: {
+        caminho: '/v1/account/settlement_report/config',
+        corpo: {
+          file_name_prefix: `settlement-report-${chave}`,
+          frequency: { type: 'daily', hour: hora },
+          display_timezone: 'GMT-03',
+          columns: ['transaction_date', 'transaction_type', 'source_id', 'settlement_net_amount', 'is_released', 'money_release_date'].map(key => ({ key }))
+        }
+      }
+    };
     const resultados = {};
-    for (const [nome, caminho] of [['release_report', '/v1/account/release_report/config'], ['settlement_report', '/v1/account/settlement_report/config']]) {
-      const corpo = { file_name_prefix: `${nome}-${chave}`, frequency: { type: 'daily', hour: hora }, display_timezone: 'GMT-03' };
+    for (const [nome, { caminho, corpo }] of Object.entries(configs)) {
       try {
         const r1 = await mpFetch(loja, caminho, { method: 'POST', body: JSON.stringify(corpo) });
         const j1 = await r1.json().catch(() => null);
