@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v395</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v396</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -10130,6 +10130,12 @@ function addTarefa(titulo,data,hora,repetirMensal,obs,resetaTipo){
   snapshot('nova tarefa');
   state.tarefas.unshift({id:gerarId('t'),listaId:listaAtual,titulo:(titulo||'').trim().toUpperCase(),data:data||'',hora:hora||'',repetirMensal:!!repetirMensal,obs:(obs||'').trim(),subs:[],criadoEm:Date.now(),resetaTipo:resetaTipo||null});
   persist();
+  /* CORRIGIDO 03/09 (Felipe: "escrevo a tarefa, aperto Enter e ela não aparece; só aparece quando
+     clico fora"): o persist() adia o redesenho enquanto o foco está num campo de texto - proteção
+     pra um save em segundo plano não atrapalhar quem está digitando (23/08). Só que aqui quem
+     pediu o redesenho foi a própria pessoa, ao dar Enter, e o foco continua no campo pra escrever
+     a próxima - então a tarefa só aparecia no clique seguinte. Redesenha na hora. */
+  renderTarefas();
 }
 function updateTarefa(id,patch){
   const t=state.tarefas.find(x=>x.id===id); if(!t) return;
@@ -10203,6 +10209,7 @@ function addSub(tid,titulo){
   if(!t.subs) t.subs=[];
   t.subs.push({id:gerarId('s'),titulo:tit.toUpperCase(),feito:false});
   persist();
+  renderTarefas();   /* mesmo motivo do addTarefa: o Enter da subtarefa também ficava esperando o blur */
 }
 function alternarSub(tid,sid){
   const t=state.tarefas.find(x=>x.id===tid); if(!t) return;
