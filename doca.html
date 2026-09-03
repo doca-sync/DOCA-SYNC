@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v388</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v390</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4430,6 +4430,15 @@ function aplicarItemSincronizado(p,item,loja){
   registrarConcorrencia(p);   /* forma o histórico do card "entrou no meu catálogo" */
   p.mlPerguntas=item.perguntas_sem_resposta||0;
   p.mlTransferencia=(typeof item.transferencia_full==='number')?item.transferencia_full:null;
+  /* CORRIGIDO 03/09 (Felipe: AMASSADORCATALOGO, caboiphone e termômetro já excluídos no ML e ainda
+     aparecendo): o Mercado Livre continua devolvendo o anúncio ENCERRADO por um tempo na listagem.
+     Como aqui limpava a marca de ausente e mandava recriar a linha do Full, o anúncio morto
+     ressuscitava a cada sincronização - inclusive depois de o Felipe apagar tudo na mão.
+     Anúncio encerrado agora conta como ausente e não volta pra lista do Full. */
+  if(item.status==='closed'){
+    if(!p.mlAusente){ p.mlAusente=true; p.mlAusenteDesde=Date.now(); }
+    return;
+  }
   p.mlAusente=false; p.mlAusenteDesde=null;
   mlAtualizarFullDoSinc(p,item,loja);
 }
@@ -10783,7 +10792,18 @@ function openPdfPreviewModal(){
 }
 /* ================= PREVISÃO FULL ================= */
 function fullCfg(){ return state.full.cfg; }
-function fullItensLoja(loja){ return state.full.itens.filter(i=>i.loja===(loja||fullCfg().loja)); }
+/* CORRIGIDO 03/09 (Felipe: "vi SKU que não tem mais no Mercado Livre, ex o termômetro, já foi
+   excluído lá e ainda estava aparecendo" - foi por isso que ele apagou a lista inteira na mão):
+   anúncio excluído/encerrado no ML continuava na lista do Full, entrando na conta de estoque, de
+   valor parado e até no alerta de ruptura. Some da lista assim que a sincronização marca o
+   produto como ausente (some do ML) ou encerrado. Não apaga nada: se o anúncio voltar, a linha
+   volta junto, com o histórico. */
+function fullItemVisivel(i){
+  const p=fullProduto(i);
+  if(!p) return true;                     /* item sem produto vinculado: mantém, senão some sem explicação */
+  return !p.mlAusente&&p.mlStatus!=='closed';
+}
+function fullItensLoja(loja){ return state.full.itens.filter(i=>i.loja===(loja||fullCfg().loja)&&fullItemVisivel(i)); }
 /* casa com o cadastro do Doca: SKU primeiro, depois Código ML */
 function fullProduto(i){
   if(i.produtoId){ const v=prodById(i.produtoId); if(v) return v; }
@@ -11345,9 +11365,22 @@ function renderPrevisao(){
             return s;})()}</span></span></td>
         <td class="num">${k.cob===Infinity?'∞':Math.round(k.cob)+' d'}</td>
         <td class="num">${k.aguentaAte?(()=>{ const antecipa=k.aguentaAte<c.envio; return `<span class="${antecipa?'pend':'okv'}" title="${antecipa?'Estoque atual acaba antes do envio previsto ('+fmtData(c.envio)+') — precisa antecipar':'Estoque atual aguenta até depois do envio previsto ('+fmtData(c.envio)+')'}">${fmtData(k.aguentaAte)}</span>`; })():'<span class="muted">—</span>'}</td>
-        <td class="num">${pe?fmtInt(pe.qtd.comprar||0):'<span class="muted">—</span>'}${viaVinculo?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(pe.sku)} — comprar/coletar/disponível aparecem por lá, não neste SKU">🔗</small>`:''}</td>
-        <td class="num">${pe?fmtInt(pe.qtd.coletar||0):'<span class="muted">—</span>'}</td>
-        <td class="num">${pe?fmtInt(disponivel(pe)):'<span class="muted">—</span>'}</td>
+        ${(()=>{
+          /* CORRIGIDO 03/09 (Felipe: "KITPET na aba Produtos consta como disponível, mas no Full
+             não - talvez porque é um kit"): kit não tem estoque próprio (fica 0 de propósito, pra
+             não contar 2x junto com os componentes), então estas 3 colunas apareciam zeradas aqui
+             enquanto a aba Produtos mostrava o número certo. A aba Produtos já usava kitVirtualQtd
+             (quantos kits dá pra montar hoje, limitado pelo componente que tem menos) - agora o
+             Full usa a MESMA conta. SKU vinculado continua resolvendo pro mestre, como já fazia. */
+          const kv=p?kitVirtualQtd(p):null;
+          const cel=(v,extra)=>`<td class="num">${v==null?'<span class="muted">—</span>':fmtInt(v)}${extra||''}</td>`;
+          if(kv){
+            const dica=` <small class="muted" title="Kit: número de kits que dá pra montar com o estoque dos componentes hoje (quem tem menos limita). O kit não tem estoque próprio.">🧩</small>`;
+            return cel(kv.comprar,dica)+cel(kv.coletar)+cel(kv.disp);
+          }
+          const dicaVinc=viaVinculo?` <small class="muted" title="Estoque compartilhado com o SKU mestre ${esc(pe.sku)} — comprar/coletar/disponível aparecem por lá, não neste SKU">🔗</small>`:'';
+          return cel(pe?(pe.qtd.comprar||0):null,dicaVinc)+cel(pe?(pe.qtd.coletar||0):null)+cel(pe?disponivel(pe):null);
+        })()}
         <td>${p&&p.unidPorCaixa?`<div class="hint" style="margin:0 0 2px">${caixasTxt(k.qtd,p.unidPorCaixa)}</div>`:''}<span class="det"><input type="number" min="0" class="qty-acao" data-fq="${i.id}" value="${k.qtd}"><span class="i">i</span><span class="pop">
           <span class="ln"><span>Demanda de ${c.cobertura} dias</span><b>${Math.round(k.dem)}</b></span>
           <span class="ln"><span>Estoque FULL hoje</span><b>−${fmtInt(k.full)}</b></span>
@@ -11357,7 +11390,7 @@ function renderPrevisao(){
         <td><button class="btn sm danger-outline" data-fdel="${i.id}" title="Remover da lista">✕</button></td></tr>`;}).join('')}
       </tbody></table></div>`
      :(l.length?`<p class="empty-inline">Nenhum produto precisa de envio nesta data.</p>`
-      :`<p class="empty-inline">Nenhum dado desta loja ainda. Use "🤖 Copiar prompt", rode no Cowork e cole o resultado aqui.</p>`)}
+      :`<p class="empty-inline">Nenhum SKU desta loja no Full ainda. Use <b>Produtos → Atualizar (Mercado Livre)</b> pra puxar o que está no Full agora.</p>`)}
   </div>`;
   document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; persist(); };
   document.getElementById('fEnvio').onclick=()=>abrirSeletorData(c.envio,(iso)=>{
