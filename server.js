@@ -4310,7 +4310,17 @@ const loja = req.query.loja || req.body?.loja;
      chamada extra pro log real de recebimento (buscarRecebimentosFull) - resto do catalogo fica
      sem nada em processamento na maior parte do tempo, gastar a chamada a toa so' deixa o /sync
      mais lento sem necessidade. */
-  const pendentesSet = new Set(String(req.query.pendentes || req.body?.pendentes || '').split(',').map(s => s.trim()).filter(Boolean));
+  /* NOVO 03/09 (Felipe: confirmação automática do "Virou FULL"): além dos itens que o front já
+     avisa terem algo "em processamento" (pendentes=), também aceita aguardando= com os itens
+     que estão dentro de um envio ainda programado no Doca (nem confirmado ainda) - pra também
+     puxar o log real de recebimento (buscarRecebimentosFull) desses e o front conseguir
+     detectar sozinho que o envio já chegou, sem precisar clicar em nada (ver
+     autoConfirmarEnviosChegados no doca.html). Mesmo tratamento pros dois: só liga se algo
+     pediu, pra não gastar chamada de API à toa no resto do catálogo. */
+  const pendentesSet = new Set(
+    [String(req.query.pendentes || req.body?.pendentes || ''), String(req.query.aguardando || req.body?.aguardando || '')]
+      .join(',').split(',').map(s => s.trim()).filter(Boolean)
+  );
   let logId = null;
   try {
     const logInsert = await pool.query(

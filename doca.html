@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v397</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v398</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4371,6 +4371,20 @@ function mlAtualizarFullDoSinc(p,item,loja){
       .map(({data,qtdOriginal})=>({data,qtdOriginal}));
   }
 }
+/* junta os mlItemId de todo item que está dentro de um envio AINDA programado (state.envios,
+   não confirmado) desta loja - usado só pra avisar o backend que vale a pena consultar o log
+   real de recebimento desses também (ver autoConfirmarEnviosChegados). */
+function itensAguardandoFullPorLoja(loja){
+  const ids=new Set();
+  state.envios.filter(e=>e.loja===loja).forEach(e=>{
+    e.itens.forEach(i=>{
+      if(i.kitDeItemId) return;
+      const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
+      if(pLoja&&pLoja.mlItemId) ids.add(pLoja.mlItemId);
+    });
+  });
+  return ids;
+}
 /* chama o backend hospedado: primeiro manda sincronizar (POST /sync), depois busca o resultado (GET /data) */
 async function mlSincronizarLoja(loja){
   const base=backendUrl();
@@ -4380,8 +4394,15 @@ async function mlSincronizarLoja(loja){
      chamada extra do log real de recebimento (buscarRecebimentosFull) nesses - resto do catálogo
      não tem nada pendente na maior parte do tempo, não faz sentido consultar sempre. */
   const pendentes=state.produtos.filter(p=>p.loja===loja&&p.mlItemId&&p.filaProcessamento&&p.filaProcessamento.length).map(p=>p.mlItemId);
+  /* NOVO 03/09 (Felipe: "quando der entrada não preciso mais apertar, o botão some sozinho"):
+     além dos já confirmados aguardando o ML mostrar (acima), avisa também os anúncios que estão
+     dentro de um envio AINDA programado - é o que permite detectar sozinho, na sincronização,
+     que o Full já recebeu de verdade um envio antes mesmo de clicar "Virou FULL"
+     (ver autoConfirmarEnviosChegados). */
+  const aguardando=[...itensAguardandoFullPorLoja(loja)];
   const qsPendentes=pendentes.length?`&pendentes=${encodeURIComponent(pendentes.join(','))}`:'';
-  const rSync=await fetch(`${base}/sync?loja=${encodeURIComponent(loja)}${qsPendentes}`,{method:'POST'});
+  const qsAguardando=aguardando.length?`&aguardando=${encodeURIComponent(aguardando.join(','))}`:'';
+  const rSync=await fetch(`${base}/sync?loja=${encodeURIComponent(loja)}${qsPendentes}${qsAguardando}`,{method:'POST'});
   let jSync; try{ jSync=await rSync.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+rSync.status+'). Confira a URL.'); }
   if(!rSync.ok||!jSync.ok) throw new Error(jSync.erro||('Falha ao sincronizar (status '+rSync.status+').'));
   const rData=await fetch(`${base}/data?loja=${encodeURIComponent(loja)}`);
@@ -4529,7 +4550,38 @@ function aplicarSincronizacaoAutomatica(resultado){
   });
   const mudouAusentes=marcarAusentesNoML(resultado.loja,resultado.produtos);
   if(vinculados>0||importados>0||mudouAusentes) persist();
+  autoConfirmarEnviosChegados(resultado.loja);
   return {vinculados,importados};
+}
+/* NOVO 03/09 (Felipe: "quando der entrada não preciso mais apertar, e o botão some sozinho"):
+   depois de aplicar uma sincronização, confere se algum envio AINDA programado (state.envios)
+   já tem, pra TODOS os seus itens (menos os componentes explodidos de kit, que nunca ganham
+   registro próprio - ver confirmarEnvioFull), um recebimento real batendo no Full
+   (p.recebimentosFull, vindo do log oficial do Mercado Livre - buscarRecebimentosFull no
+   server.js) datado a partir da data programada da coleta (ou da criação do envio, o que for
+   mais cedo, com 1 dia de folga pra fuso/atraso do log). Se bater em TODOS os itens, confirma o
+   envio sozinho - mesma função de quando se clica "Virou FULL" - e avisa por toast. Só confirma
+   quando fecha 100%; se faltar 1 item, deixa como está e tenta de novo na próxima sincronização
+   (não confirma parcial, pra não zerar errado um item que ainda nem saiu do galpão). */
+function autoConfirmarEnviosChegados(loja){
+  const candidatos=state.envios.filter(e=>e.loja===loja);
+  candidatos.forEach(e=>{
+    const itensReais=e.itens.filter(i=>!i.kitDeItemId);
+    if(!itensReais.length) return;
+    const d=new Date(e.criadoEm||Date.now());
+    const refCriacao=_dataISO(d.getFullYear(),d.getMonth(),d.getDate());
+    const refData=_somaDiasISO((e.data&&e.data<refCriacao)?e.data:refCriacao,-1);
+    const tudoChegou=itensReais.every(i=>{
+      const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
+      if(!pLoja||!pLoja.mlItemId||!(i.solicitado>0)) return false;
+      const recebido=(pLoja.recebimentosFull||[]).filter(x=>x.data>=refData).reduce((s,x)=>s+(Number(x.qtd)||0),0);
+      return recebido>=i.solicitado;
+    });
+    if(tudoChegou){
+      confirmarEnvioFull(e.id,true);
+      toast(`🤖 "${e.nome}" confirmado sozinho como FULL — o Mercado Livre já registrou a entrada.`);
+    }
+  });
 }
 /* modal com o botão Atualizar: sincroniza com o backend e mostra os anúncios do Mercado Livre
    comparados com o cadastro do Doca (vínculo por mlItemId salvo, ou por SKU quando bate) */
