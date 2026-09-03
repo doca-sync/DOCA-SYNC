@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v398</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v399</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -9413,12 +9413,28 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Fechamento Amauri</title>
     <style>${relatorioDarkCss()}
+      /* NOVO 03/09 (Felipe: "melhore a disposição do relatório do Amauri pra dar pra ver bem no
+         computador e no celular"): a tabela "Por produto" tem 14 colunas — larga demais pro
+         container padrão de 720px (relatorioDarkCss é compartilhado com outros relatórios mais
+         simples, por isso as mudanças de largura ficam só aqui, escopadas a este relatório).
+         Em telas largas, aproveita mais espaço horizontal antes de precisar rolar. Em telas
+         estreitas, em vez de espremer/quebrar o texto de cada coluna (o que quebrava o SKU letra
+         por letra), fixa a coluna do SKU (position:sticky) e deixa as outras rolarem por baixo -
+         sempre dá pra saber de qual produto é a linha, mesmo rolando pra ver os números da direita. */
+      body{max-width:1040px}
+      @media(min-width:760px){ body{padding:28px 34px} }
+      table.tbl-amauri{min-width:900px}
+      table.tbl-amauri th,table.tbl-amauri td{white-space:nowrap}
+      table.tbl-amauri th:first-child,table.tbl-amauri td:first-child{
+        position:sticky;left:0;background:var(--bg);z-index:1;padding-right:10px;
+        box-shadow:2px 0 4px -2px rgba(0,0,0,.5);
+      }
       .totais{width:auto;min-width:320px}
       .totais td.n{font-weight:700;color:var(--gold)}</style></head><body>
     <h1>Fechamento Amauri — TorvStore</h1>
     <div class="sub">Período: ${fmtData(amauriResumoResultado.periodo.de)} a ${fmtData(amauriResumoResultado.periodo.ate)} · gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <h2>Por produto</h2>
-    <div class="tbl-scroll"><table><thead><tr>
+    <div class="tbl-scroll"><table class="tbl-amauri"><thead><tr>
       <th>SKU</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo produto</th><th class="n">Coleta</th><th class="n">Embalagem</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Margem líquida</th><th class="n">Reembolso</th><th class="n">Repasse total</th>
     </tr></thead><tbody>
       ${linhas.map(l=>`<tr>
@@ -9429,6 +9445,7 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
         <td class="n">${fmtMoney(l.margemLiquida)}</td><td class="n">${fmtMoney(l.reembolsoAmauri)}</td><td class="n"><b>${fmtMoney(l.repasseTotal)}</b></td>
       </tr>`).join('')}
     </tbody></table></div>
+    <p class="sub" style="margin-top:6px">↔ Arraste a tabela pros lados pra ver todas as colunas — o SKU fica fixo.</p>
     <h2>Totais do período</h2>
     <div class="tbl-scroll"><table class="totais"><tbody>
       ${linha('Margem líquida total (soma dos produtos)',totalMargem)}
@@ -9443,8 +9460,6 @@ function imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,
       ${linha('Total já pago',totalPago)}
       ${linha('Saldo a pagar (repasse do período − já pago)',totalRepasse-totalPago)}
     </tbody></table></div>
-    <div class="assin">Conferido por: ______________________________<br>Data: ______ / ______ / __________</div>
-    <div class="rod">Tarifa ML e Frete ML são descontados automático, direto da API do Mercado Livre. Os demais custos e o percentual de repasse são os configurados na aba Amauri no momento do cálculo.</div>
     <div class="share-box no-print">
       <button class="btn-share" onclick="window.print()">🖨️ Imprimir</button>
     </div>
