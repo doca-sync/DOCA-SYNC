@@ -1864,13 +1864,21 @@ app.post('/mp/relatorios/configurar-diario', async (req, res) => {
         const rGet = await mpFetch(loja, caminho, { method: 'GET' });
         const jGet = await rGet.json().catch(() => null);
         if (rGet.ok && jGet && typeof jGet === 'object') {
-          // existe configuracao - reaproveita tudo, so' troca a frequencia. Tira campos read-only
-          // (ex: "scheduled") que a API pode nao aceitar de volta num PUT.
-          const corpo = { ...jGet, frequency: { type: 'daily', hour: hora } };
-          delete corpo.scheduled;
-          const rPut = await mpFetch(loja, caminho, { method: 'PUT', body: JSON.stringify(corpo) });
-          const jPut = await rPut.json().catch(() => null);
-          resultados[nome] = { ok: rPut.ok, verbo: 'PUT (config existente)', status: rPut.status, corpo: jPut, configAnterior: jGet };
+          if (jGet.frequency && jGet.frequency.type === 'daily') {
+            // ja esta diario, nao precisa mudar nada (evita reenviar um PUT desnecessario)
+            resultados[nome] = { ok: true, verbo: 'ja estava diario (nenhuma mudanca necessaria)', configAtual: jGet };
+          } else {
+            // existe configuracao - reaproveita tudo, so' troca a frequencia (preservando os
+            // outros campos de frequency, tipo "value"/"format", que a API pode exigir de volta).
+            // Tira campos read-only (ex: "scheduled", "webhook") que a API gera sozinha e nao
+            // aceita de volta num PUT.
+            const corpo = { ...jGet, frequency: { ...(jGet.frequency || {}), type: 'daily', hour: hora } };
+            delete corpo.scheduled;
+            delete corpo.webhook;
+            const rPut = await mpFetch(loja, caminho, { method: 'PUT', body: JSON.stringify(corpo) });
+            const jPut = await rPut.json().catch(() => null);
+            resultados[nome] = { ok: rPut.ok, verbo: 'PUT (config existente)', status: rPut.status, corpo: jPut, configAnterior: jGet };
+          }
         } else {
           // sem configuracao ainda - tenta criar com o minimo, sem "columns" (deixa a API decidir
           // um padrao, ja que nao sabemos os identificadores certos sem ver uma config real antes)
