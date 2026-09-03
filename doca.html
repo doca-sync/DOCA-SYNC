@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v390</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v391</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -11392,7 +11392,13 @@ function renderPrevisao(){
      :(l.length?`<p class="empty-inline">Nenhum produto precisa de envio nesta data.</p>`
       :`<p class="empty-inline">Nenhum SKU desta loja no Full ainda. Use <b>Produtos → Atualizar (Mercado Livre)</b> pra puxar o que está no Full agora.</p>`)}
   </div>`;
-  document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; persist(); };
+  /* CORRIGIDO 03/09 (Felipe: "só funciona depois que eu seleciono a loja e clico na tela; se não
+     clicar, continua na loja anterior"): o persist() adia o renderAll enquanto o foco está num
+     <select> - regra criada pra que um save em segundo plano não feche o dropdown no meio da
+     escolha (23/08). Só que ela também segurava o render pedido pela PRÓPRIA escolha da pessoa, e
+     a tela só virava no clique seguinte. Tira o foco do select antes de gravar: o dropdown já
+     fechou nesse ponto, então a proteção não é mais necessária, e a tela troca na hora. */
+  document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; e.target.blur(); persist(); renderFull(); };
   document.getElementById('fEnvio').onclick=()=>abrirSeletorData(c.envio,(iso)=>{
     snapshot('mudança da data da previsão');
     /* antes, mudar a data zerava o ajuste manual de TODO produto (de todas as lojas, não só
