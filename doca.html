@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v400</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v401</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3861,7 +3861,10 @@ function renderDashboard(){
      em estoque, capital de giro, patrimônio) continuam SEM resolver, de propósito, pra não contar
      2x no total geral entre lojas diferentes - só os contadores de unidades (informativos) mudam. */
   const totals=STORES.map(loja=>{
-    const ps=state.produtos.filter(p=>p.loja===loja);
+    /* CORRIGIDO 03/09 (Felipe: card mostrando "4 SKUs" na TorvShop, sendo que 3 já foram
+       cancelados/excluídos no Mercado Livre e só 1 está ativo): exclui p.mlAusente daqui, igual a
+       aba Produtos já faz por padrão (só mostra excluído se marcar a caixinha "Mostrar excluídos"). */
+    const ps=state.produtos.filter(p=>p.loja===loja&&!p.mlAusente);
     const sum=f=>ps.reduce((a,p)=>a+(typeof f==='function'?f(p):p.qtd[f]),0);
     const sumStat=campo=>{
       const vistos=new Set();
