@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v402</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v403</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5620,22 +5620,31 @@ async function garantirCustosAnuncio(loja,forcar){
    `realizado` (opcional) traz as médias reais do período pra servir de referência e de reserva:
    o preço do anúncio só é aceito quando bate com o recebido por unidade (anúncio com faixa de
    quantidade tem preço de pack, ver a correção do AFIADOR19). */
-/* SEMÁFORO DE ADS — 3 estados (02/09, pedido do Felipe). Antes eram 2 sinais soltos e meio
-   sobrepostos ("dentro da meta" de um lado, "lucro > ads" do outro). Agora é um só, com a mesma
-   leitura na aba Ads e nos relatórios de Finanças:
+/* SEMÁFORO DE ADS — 4 estados (02/09, pedido do Felipe; 4º nível adicionado 04/09 a pedido dele:
+   "queria colocar algo entre o verde e o amarelo quando o lucro é maior que gasto em ads"). Antes
+   eram 2 sinais soltos e meio sobrepostos ("dentro da meta" de um lado, "lucro > ads" do outro).
+   Agora é um só, com a mesma leitura na aba Ads e nos relatórios de Finanças:
      ✓ verde    = dentro da meta de TACOS (gasto <= 1/3 da margem) → o ideal
-     ⚠ amarelo  = passou da meta, mas o produto ainda dá lucro depois do Ads → atenção
+     ✦ azul     = passou da meta, mas o lucro (margem − Ads) ainda é MAIOR que o próprio gasto em
+                  Ads → ainda muito bom, só não bateu a meta apertada de 1/3
+     ⚠ amarelo  = ainda dá lucro depois do Ads, mas o lucro já é MENOR que o gasto em Ads → atenção
      ✕ vermelho = o Ads comeu o lucro todo (gasto >= margem) → está pagando pra vender
-   `teto` pode vir null (sem dado pra calcular a meta) - aí só distingue lucro x prejuízo. */
+   `teto` pode vir null (sem dado pra calcular a meta) - aí só distingue lucro x prejuízo (não dá
+   pra saber se bateu a meta de 1/3, então pula direto pro degrau azul/amarelo/vermelho). */
 function semaforoAds(margem,gastoAds,teto){
   if(gastoAds==null||margem==null) return null;
   if(teto!=null&&gastoAds<=teto){
     return {nivel:'ok',icone:'✓',cor:'var(--ok)',
       titulo:`Dentro da meta de TACOS — Ads de ${fmtMoney(gastoAds)} contra um teto de ${fmtMoney(teto)}.`};
   }
+  const lucro=margem-gastoAds;
+  if(lucro>gastoAds){
+    return {nivel:'otimo',icone:'✦',cor:'var(--info)',
+      titulo:`Passou da meta de TACOS, mas o lucro (${fmtMoney(lucro)}) ainda é maior que o gasto em Ads (${fmtMoney(gastoAds)})${teto!=null?` — o teto era ${fmtMoney(teto)}, estourou ${fmtMoney(gastoAds-teto)}`:''}.`};
+  }
   if(margem>gastoAds){
     return {nivel:'atencao',icone:'⚠',cor:'var(--warn)',
-      titulo:`Ainda dá lucro (margem ${fmtMoney(margem)} contra Ads de ${fmtMoney(gastoAds)}), mas passou da meta de TACOS${teto!=null?` — o teto era ${fmtMoney(teto)}, estourou ${fmtMoney(gastoAds-teto)}`:''}.`};
+      titulo:`Ainda dá lucro (${fmtMoney(lucro)}), mas o gasto em Ads (${fmtMoney(gastoAds)}) já é maior que esse lucro${teto!=null?` — a meta de TACOS era ${fmtMoney(teto)}`:''}.`};
   }
   return {nivel:'ruim',icone:'✕',cor:'var(--danger)',
     titulo:`O Ads consumiu o lucro: margem ${fmtMoney(margem)} contra ${fmtMoney(gastoAds)} de Ads${teto!=null?` (teto da meta: ${fmtMoney(teto)})`:''}.`};
@@ -6338,7 +6347,7 @@ function renderAds(){
         /* UNIFICADO 02/09: 3 estados num selo só (ver semaforoAds) - antes eram dois avisos
            separados que podiam se contradizer na leitura. */
         const semAds=semaforoAds(margemContrib,custoAdsCalc,mt?mt.tetoAds:(margemContrib>0?margemContrib/3:null));
-        const tagLucro=!semAds?'':` <span style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block;color:${semAds.cor}" title="${esc(semAds.titulo)}">${semAds.icone} ${semAds.nivel==='ok'?'dentro da meta':(semAds.nivel==='atencao'?'acima da meta, com lucro':'ads > lucro')}</span>`;
+        const tagLucro=!semAds?'':` <span style="font-size:11px;font-weight:700;margin-left:8px;display:inline-block;color:${semAds.cor}" title="${esc(semAds.titulo)}">${semAds.icone} ${semAds.nivel==='ok'?'dentro da meta':(semAds.nivel==='otimo'?'lucro > Ads':(semAds.nivel==='atencao'?'acima da meta, com lucro':'ads > lucro'))}</span>`;
         const sugCampTag=(()=>{
           const sug=adsSugestaoRoasArr()[c.loja];
           const dc=sug&&sug.porCampanha[camp.id];
