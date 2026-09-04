@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v401</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v402</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3473,6 +3473,22 @@ function atualizarFinanceiro(loja,patch){
 function faturaMlPendenteLoja(loja){
   return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&!d.pago).reduce((s,d)=>s+(Number(d.valor)||0),0);
 }
+/* CORRIGIDO 04/09 (Felipe: a Visão Geral deveria mostrar um Balanço Patrimonial de verdade -
+   Ativo (saldo em conta + a receber + estoque) menos Passivo (tudo que ainda deve) - e o
+   "Patrimônio da loja" só descontava Fatura ML + o Imposto "termômetro" do mês corrente, deixando
+   de fora qualquer outra despesa não paga (ex: pagamento a alguém específico, tipo Dione/Sandra) e
+   usando a base de imposto ERRADA pra esse fim). Passivo de verdade = TODAS as despesas não pagas
+   dessa loja, de qualquer origem - com 1 exceção: a despesa de Imposto do ciclo "ainda em
+   andamento" (impostoRefMes = mês corrente, projeção sobre faturamento que nem fechou ainda) não
+   é uma dívida de verdade ainda, só uma prévia - some daqui (o "Imposto" que já é dívida de
+   verdade é o do ciclo anterior, com faturamento já fechado, vencendo dia 20 deste mês). */
+function despesasNaoPagasLoja(loja){
+  const refMesAtual=mesAtualStr();
+  return despesasArr().filter(d=>d.loja===loja&&!d.pago&&!(d.origem==='imposto'&&d.impostoRefMes===refMesAtual));
+}
+function passivoLoja(loja){
+  return despesasNaoPagasLoja(loja).reduce((s,d)=>s+(Number(d.valor)||0),0);
+}
 /* recalcula o campo "Imposto" da Visão Geral automaticamente: faturamento do mês corrente × a
    alíquota configurada em Finanças → Resumo Financeiro pra essa loja. Se a alíquota ainda não foi
    configurada (0%), o imposto fica em R$0,00 mesmo (não é um erro, só falta configurar). */
@@ -3549,6 +3565,45 @@ async function sincronizarImpostoDespesaMes(loja){
     const [a,m]=mesVencimento.split('-').map(Number);
     const dNext=new Date(Date.UTC(a,m,1));
     mesVencimento=`${dNext.getUTCFullYear()}-${String(dNext.getUTCMonth()+1).padStart(2,'0')}`;
+  }
+  persist();
+}
+/* despesa automática do repasse Amauri (pedido do Felipe 04/09): a TorvStore fecha a parceria com
+   o Amauri todo início de mês (dia 1/2), pagando o repasse do mês que ACABOU DE FECHAR (metade da
+   margem líquida dos produtos marcados + reembolso de qualquer custo que ele adiantou do próprio
+   bolso - ver calcularLinhaAmauriProduto). Até agora esse valor só existia dentro da aba Amauri
+   (pagamentos registrados manualmente por lá, sem ligação nenhuma com Despesas/Fluxo de Caixa) -
+   por isso o Garantido nunca "via" essa saída chegando. Agora entra sozinho como despesa, mesmo
+   padrão do Imposto: casa por loja+amauriRefMes (upsert, não duplica), e atualiza o valor sozinho
+   conforme os custos da Amauri forem ajustados/confirmados no mês seguinte. Vencimento fixo dia 2
+   (o "dia 1 ou 2" que o Felipe citou) - ajustável direto na despesa se precisar. Marcar como "pago"
+   continua sendo feito na aba Despesas, igual qualquer outra despesa - é isso que faz ela contar
+   certo no Fluxo de Caixa quando for paga de verdade. */
+async function sincronizarRepasseAmauriDespesa(){
+  const a=amauriState();
+  if(!a.produtoIds.length) return; // ninguém marcado na parceria - nada a calcular
+  const base=backendUrl();
+  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  const mesFechamento=mesAtualStr();
+  const refMes=mesAnteriorStr(mesFechamento);
+  const de=`${refMes}-01`;
+  const [anoRef,mmRef]=refMes.split('-').map(Number);
+  const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
+  const resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
+  const linhas=amauriProdutosMarcados().map(p=>calcularLinhaAmauriProduto(p,resumo));
+  const totalRepasse=Math.round(linhas.reduce((s,l)=>s+l.repasseTotal,0)*100)/100;
+  const arr=despesasArr();
+  let d=arr.find(x=>x.origem==='amauri_repasse'&&x.loja==='TorvStore'&&x.amauriRefMes===refMes);
+  if(!(totalRepasse>0)){
+    if(d&&!d.pago){ arr.splice(arr.indexOf(d),1); persist(); } // recalculou e não deu mais repasse (ex: produto desmarcado) - some sozinha se ainda não foi paga
+    return;
+  }
+  if(d){
+    d.valor=totalRepasse; d.dataPagamento=`${mesFechamento}-02`;
+  }else{
+    arr.push({id:gerarId('desp'),descricao:`Repasse Amauri — parceria (base ${mesLabel(refMes)})`,valor:totalRepasse,dataPagamento:`${mesFechamento}-02`,
+      pago:false,recorrente:true,loja:'TorvStore',origem:'amauri_repasse',faturaKey:null,origemRecorrenciaId:null,
+      amauriRefMes:refMes,criadoEm:Date.now()});
   }
   persist();
 }
@@ -3878,14 +3933,19 @@ function renderDashboard(){
       },0);
     };
     const fin=finLoja(loja), full=fullResumo(loja), faturaMl=faturaMlPendenteLoja(loja);
+    /* CORRIGIDO 04/09 (Felipe: Visão Geral deveria ser um Balanço Patrimonial de verdade, com o
+       saldo do Mercado Pago atualizado e TODA dívida em aberto descontada - não só Fatura ML e o
+       Imposto "termômetro" do mês corrente) - ver despesasNaoPagasLoja/passivoLoja. */
+    const despesasPendentes=despesasNaoPagasLoja(loja);
+    const passivo=despesasPendentes.reduce((s,d)=>s+(Number(d.valor)||0),0);
     return {loja,count:ps.length,comprar:sumStat('comprar'),coletar:sumStat('coletar'),local:sumStat('local'),
       reservado:sumStat('reservado'),valor:sum(valorEstoque),valorColetar:sum(p=>(p.custo||0)*p.qtd.coletar),
-      capitalGiro:sum(capitalGiroComprar),fin,full,faturaMl,
-      patrimonio:sum(valorEstoque)+full.valor+(fin.mercadoPago||0)+(fin.aReceber||0)-(fin.imposto||0)-faturaMl};
+      capitalGiro:sum(capitalGiroComprar),fin,full,faturaMl,despesasPendentes,passivo,
+      patrimonio:sum(valorEstoque)+full.valor+(fin.mercadoPago||0)+(fin.aReceber||0)-passivo};
   });
   const tv=totals.reduce((a,t)=>a+t.valor,0), tc=totals.reduce((a,t)=>a+t.capitalGiro,0), tvc=totals.reduce((a,t)=>a+t.valorColetar,0);
   const tmp=totals.reduce((a,t)=>a+(t.fin.mercadoPago||0),0), trec=totals.reduce((a,t)=>a+(t.fin.aReceber||0),0);
-  const timp=totals.reduce((a,t)=>a+(t.fin.imposto||0),0), tfat=totals.reduce((a,t)=>a+(t.faturaMl||0),0);
+  const tpassivo=totals.reduce((a,t)=>a+t.passivo,0);
   /* classificação de curva A/B/C por loja, usada no alerta de ruptura logo abaixo */
   const curvasPorLoja={}; STORES.forEach(l=>curvasPorLoja[l]=classificarCurvaLoja(l));
   const diasAlertaRuptura=fullCfg().diasAlertaRuptura||10;
@@ -3946,18 +4006,18 @@ function renderDashboard(){
                 <span class="ln"><span>Atualizado</span><b>${t.fin.aReceberAtualizadoEm?esc(fLidoTxt(new Date(t.fin.aReceberAtualizadoEm).getTime())):'aguardando 1ª leitura'}</b></span>
                 <span class="obs">Valor ainda não liberado, puxado direto do Mercado Pago.</span></span></span></span></div>`
             :`<div class="valor-manual-row"><span class="muted">A receber:</span> <input type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)" class="valor-manual" data-areceber="${esc(t.loja)}" value="${t.fin.aReceber?String(t.fin.aReceber).replace('.',','):''}"></div>`}
-          <div><span class="muted">Imposto:</span> <span class="valor-info"><b>${fmtMoney(t.fin.imposto||0)}</b>
+          <div><span class="muted">Imposto (acumulando este mês):</span> <span class="valor-info"><b>${fmtMoney(t.fin.imposto||0)}</b>
               <span class="det"><span class="i">i</span><span class="pop">
                 <span class="ln"><span>Origem</span><b>automático</b></span>
                 <span class="ln"><span>Alíquota</span><b>${t.fin.aliquotaImposto||0}%</b></span>
                 <span class="ln"><span>Faturamento do mês (base)</span><b>${fmtMoney(t.fin.impostoFaturamentoBase||0)}</b></span>
                 <span class="ln"><span>Atualizado</span><b>${t.fin.impostoAtualizadoEm?esc(fLidoTxt(t.fin.impostoAtualizadoEm)):'aguardando 1ª leitura'}</b></span>
-                <span class="obs">Faturamento do mês corrente × alíquota configurada em Finanças → Resumo Financeiro.</span></span></span></span></div>
-          <div><span class="muted">Fatura Mercado Livre:</span> <span class="valor-info"><b>${fmtMoney(t.faturaMl)}</b>
+                <span class="obs">Faturamento do mês corrente × alíquota, ainda em andamento — é só uma prévia, o mês ainda não fechou. Não é o que está descontado no Passivo abaixo (esse usa o imposto de verdade, já devido, com base no mês fechado).</span></span></span></span></div>
+          <div><span class="muted">Passivo (dívidas em aberto):</span> <span class="valor-info"><b>${fmtMoney(t.passivo)}</b>
               <span class="det"><span class="i">i</span><span class="pop">
-                <span class="ln"><span>Origem</span><b>automático</b></span>
-                <span class="obs">Soma das faturas do Mercado Livre ainda não pagas dessa loja (aba Finanças). Já descontada do patrimônio abaixo.</span></span></span></span></div>
-          <div><span class="muted">Patrimônio da loja:</span> <b>${fmtMoney(t.patrimonio)}</b></div>
+                ${t.despesasPendentes.length?t.despesasPendentes.slice().sort((a,b)=>(a.dataPagamento||'').localeCompare(b.dataPagamento||'')).map(d=>`<span class="ln"><span>${esc(d.descricao||'(sem descrição)')}${d.dataPagamento?' ('+fmtData(d.dataPagamento)+')':''}</span><b>${fmtMoney(Number(d.valor)||0)}</b></span>`).join(''):'<span class="ln"><span>Nenhuma dívida em aberto</span><b>R$ 0,00</b></span>'}
+                <span class="obs">Soma de todas as despesas não pagas dessa loja (Finanças → Despesas) — fatura do Mercado Livre, imposto já devido, e qualquer outra despesa cadastrada. Já descontada do patrimônio abaixo.</span></span></span></span></div>
+          <div><span class="muted">Patrimônio da loja (Balanço):</span> <b>${fmtMoney(t.patrimonio)}</b></div>
         </div></div>`).join('')}
     </div>
     <div class="total-geral">
@@ -3971,7 +4031,8 @@ function renderDashboard(){
       <div class="linha2 destaque"><span>Valor total do estoque (galpão + FULL):</span> <b>${fmtMoney(tv+fullValorTodasLojas())}</b></div>
       <div class="linha2"><span>Total em conta (Mercado Pago):</span> <b>${fmtMoney(tmp)}</b></div>
       <div class="linha2"><span>Total a receber:</span> <b>${fmtMoney(trec)}</b></div>
-      <div class="linha2 destaque"><span>Patrimônio total (estoque + FULL + contas + a receber − imposto − fatura ML):</span> <b>${fmtMoney(tv+fullValorTodasLojas()+tmp+trec-timp-tfat)}</b></div>
+      <div class="linha2"><span>Total de passivo (dívidas em aberto):</span> <b>${fmtMoney(tpassivo)}</b></div>
+      <div class="linha2 destaque"><span>Patrimônio total (estoque + FULL + contas + a receber − passivo):</span> <b>${fmtMoney(tv+fullValorTodasLojas()+tmp+trec-tpassivo)}</b></div>
     </div>
     <div class="card" style="margin:20px 0">
       <h3 style="margin-top:0">❓ Perguntas sem resposta no Mercado Livre</h3>
@@ -12103,6 +12164,14 @@ tentarReconectar().then(()=>{
       renderFinancas();
     }catch(e){
       console.error(`Sincronização automática da despesa de Imposto falhou ao abrir o Doca (loja ${loja}):`,e.message);
+    }
+    if(loja==='TorvStore'){
+      try{
+        await sincronizarRepasseAmauriDespesa();
+        renderFinancas();
+      }catch(e){
+        console.error('Sincronização automática da despesa de Repasse Amauri falhou ao abrir o Doca:',e.message);
+      }
     }
   }
 })();
