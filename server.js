@@ -1794,6 +1794,56 @@ function lojaPorApelido(txt) {
   if (!alvo) return null;
   return LOJAS_VALIDAS.find(l => norm(l) === alvo) || null;
 }
+/* CORRIGIDO 04/09 (2a volta - achado real via log do Render: "falha ao baixar arquivo do
+   relatorio: 404" nas 4 lojas, depois que o fix anterior - so' completar o "https://" - ja tinha
+   resolvido o erro de URL invalida): a URL que vem DENTRO da notificacao
+   (www.mercadopago.com/balance/reports/settlement_v2/statements/{id}/download?format=csv) e' um
+   link do PAINEL WEB do Mercado Pago, nao um endpoint de API - por isso 404 quando chamado direto
+   com Bearer token, mesmo com o "https://" completado. A doc oficial (developers.mercadopago.com
+   /pt/docs/reports > "Baixar relatorio") so documenta um jeito de baixar de verdade via API:
+   GET https://api.mercadopago.com/v1/account/release_report/{file_name}      (Liberacoes)
+   GET https://api.mercadopago.com/v1/account/settlement_report/{file_name}   (Dinheiro em conta)
+   - exatamente o mesmo padrao ja usado (e comprovadamente funcionando) em /debug/mp/relatorio/
+   baixar e /debug/mp/dinheiro/baixar. Em vez de confiar cegamente numa unica tentativa, tenta
+   varios candidatos em ordem e loga qual funcionou (ou todos os que falharam), pra nao ficar no
+   escuro se ainda assim nao bater com o formato de algum outro tipo de notificacao. */
+async function baixarArquivoRelatorioMp(loja, accessToken, arquivoUrl, tipoTexto) {
+  const candidatos = [];
+  const comProtocolo = /^https?:\/\//i.test(arquivoUrl) ? arquivoUrl : `https://${arquivoUrl}`;
+  try {
+    const u = new URL(comProtocolo);
+    const partes = u.pathname.split('/').filter(Boolean);
+    const idxDownload = partes.indexOf('download');
+    const fileName = idxDownload > 0 ? partes[idxDownload - 1] : partes[partes.length - 1];
+    if (fileName) {
+      const ehRelease = tipoTexto.includes('release');
+      const ehSettlement = tipoTexto.includes('settlement') || tipoTexto.includes('account') || u.pathname.toLowerCase().includes('settlement');
+      if (ehRelease) candidatos.push({ nome: `endpoint oficial /v1/account/release_report/${fileName}`, url: `https://api.mercadopago.com/v1/account/release_report/${fileName}` });
+      if (ehSettlement || !ehRelease) candidatos.push({ nome: `endpoint oficial /v1/account/settlement_report/${fileName}`, url: `https://api.mercadopago.com/v1/account/settlement_report/${fileName}` });
+      if (!ehRelease && !ehSettlement) candidatos.push({ nome: `endpoint oficial /v1/account/release_report/${fileName} (tipo desconhecido, tentando tambem)`, url: `https://api.mercadopago.com/v1/account/release_report/${fileName}` });
+    }
+    if (u.hostname !== 'api.mercadopago.com') {
+      const alt = new URL(comProtocolo); alt.hostname = 'api.mercadopago.com';
+      candidatos.push({ nome: 'mesmo caminho da notificacao, trocando pro host da API', url: alt.toString() });
+    }
+  } catch (e) { /* URL da notificacao veio malformada - segue so' com a tentativa literal abaixo */ }
+  candidatos.push({ nome: 'URL da notificacao, como veio (so completando https://)', url: comProtocolo });
+  const tentativas = [];
+  for (const cand of candidatos) {
+    try {
+      const r = await fetch(cand.url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (r.ok) {
+        console.log(`[mp-webhook] arquivo do relatorio baixado com sucesso via "${cand.nome}" -`, loja);
+        return await r.text();
+      }
+      tentativas.push(`${cand.nome} -> HTTP ${r.status}`);
+    } catch (e) {
+      tentativas.push(`${cand.nome} -> erro: ${e.message}`);
+    }
+  }
+  console.error('[mp-webhook] falha ao baixar arquivo do relatorio (todas as tentativas):', loja, '|', tentativas.join(' | '));
+  return null;
+}
 async function processarWebhookRelatorioMp(req, res) {
   res.sendStatus(200);
   try {
@@ -1809,18 +1859,13 @@ async function processarWebhookRelatorioMp(req, res) {
     if (!arquivo || !arquivo.url) { console.error('[mp-webhook] notificacao sem arquivo utilizavel para', loja, JSON.stringify(req.body || {})); return; }
     const accessToken = tokenMpDaLoja(loja);
     if (!accessToken) { console.error('[mp-webhook] loja sem MP_ACCESS_TOKEN configurado:', loja); return; }
-    // CORRIGIDO 04/09 (achado real via log do Render: "Failed to parse URL from www.mercadopago.com/...")
-    // - a notificacao do Mercado Pago manda a URL do arquivo SEM o protocolo (sem "https://" na
-    // frente), e o fetch do Node exige uma URL absoluta completa. Completa antes de baixar.
-    const urlArquivo = /^https?:\/\//i.test(arquivo.url) ? arquivo.url : `https://${arquivo.url}`;
-    const rDown = await fetch(urlArquivo, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!rDown.ok) { console.error('[mp-webhook] falha ao baixar arquivo do relatorio:', loja, rDown.status); return; }
-    const texto = await rDown.text();
     const tipoTexto = `${report_type || type || ''}`.toLowerCase();
+    const texto = await baixarArquivoRelatorioMp(loja, accessToken, arquivo.url, tipoTexto);
+    if (texto == null) return;
     if (tipoTexto.includes('release')) {
       const ok = await aplicarRelatorioLiberacoes(loja, texto, generation_date);
       console.log(`[mp-webhook] Liberacoes (saldo) aplicado via webhook - ${loja}:`, ok);
-    } else if (tipoTexto.includes('settlement') || tipoTexto.includes('account')) {
+    } else if (tipoTexto.includes('settlement') || tipoTexto.includes('account') || /settlement/i.test(arquivo.url)) {
       const ok = await aplicarRelatorioDinheiroConta(loja, texto);
       console.log(`[mp-webhook] Dinheiro em conta (a receber) aplicado via webhook - ${loja}:`, ok);
     } else {
