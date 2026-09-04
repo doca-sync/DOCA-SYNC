@@ -1809,7 +1809,11 @@ async function processarWebhookRelatorioMp(req, res) {
     if (!arquivo || !arquivo.url) { console.error('[mp-webhook] notificacao sem arquivo utilizavel para', loja, JSON.stringify(req.body || {})); return; }
     const accessToken = tokenMpDaLoja(loja);
     if (!accessToken) { console.error('[mp-webhook] loja sem MP_ACCESS_TOKEN configurado:', loja); return; }
-    const rDown = await fetch(arquivo.url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    // CORRIGIDO 04/09 (achado real via log do Render: "Failed to parse URL from www.mercadopago.com/...")
+    // - a notificacao do Mercado Pago manda a URL do arquivo SEM o protocolo (sem "https://" na
+    // frente), e o fetch do Node exige uma URL absoluta completa. Completa antes de baixar.
+    const urlArquivo = /^https?:\/\//i.test(arquivo.url) ? arquivo.url : `https://${arquivo.url}`;
+    const rDown = await fetch(urlArquivo, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!rDown.ok) { console.error('[mp-webhook] falha ao baixar arquivo do relatorio:', loja, rDown.status); return; }
     const texto = await rDown.text();
     const tipoTexto = `${report_type || type || ''}`.toLowerCase();
