@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v403</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v404</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6181,6 +6181,130 @@ function avaliarSugestoesRoas7d(loja,dados){
   });
   return resultado;
 }
+/* ================= ESTUDO DE CURVA DE RANQUEAMENTO (04/09, pedido do Felipe) =================
+   "data que o produto foi cadastrado, começou a vender, começou a dar mais lucro do que gasto em
+   ads e quando começou a ficar dentro da meta de tacos, pra entendermos a curva de ranqueamento
+   de produtos (...) os anúncios que não ficarem dentro da média a gente analisa pra ver se vale a
+   pena descontinuar ou insistir mais um pouco".
+   Roda sob demanda (botão na aba Ads) pra 1 loja de cada vez - é um job pesado no backend (lê
+   Ads dia a dia dos últimos N meses + todos os pedidos do período). O backend devolve só os dados
+   BRUTOS (série diária de vendas e de Ads por produto); a conta de margem/lucro/meta de TACOS é
+   feita aqui, com a MESMA fórmula já usada em toda a aba Ads (ver metaTacosUnit) - pra não ter
+   dois critérios diferentes de "meta de TACOS" no Doca.
+   LIMITAÇÃO CONHECIDA: a margem usa o preço/custo ATUAIS do produto pra todos os dias analisados,
+   porque o Doca não guarda histórico de preço/custo dia a dia - é uma aproximação, não o valor
+   exato que valia em cada dia do passado (fica dito na tela). */
+let estudoRankLoja=null,estudoRankResultado=null,estudoRankCarregando=false,estudoRankErro=null,estudoRankProgresso=null;
+async function rodarEstudoRanqueamento(loja){
+  const base=backendUrl();
+  if(!base){ toast('⚠ Configure a URL do backend antes (a mesma do Atualizar do Mercado Livre).'); return; }
+  estudoRankCarregando=true; estudoRankErro=null; estudoRankResultado=null; estudoRankProgresso=null; estudoRankLoja=loja; renderAds();
+  try{
+    const r=await fetch(`${base}/estudo/ranqueamento/iniciar?loja=${encodeURIComponent(loja)}&meses=6`);
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao iniciar o estudo.');
+    const jobId=j.jobId;
+    const poll=async()=>{
+      const r2=await fetch(`${base}/estudo/ranqueamento/status?id=${encodeURIComponent(jobId)}`);
+      const j2=await r2.json();
+      if(!r2.ok||!j2.ok) throw new Error(j2.erro||'Falha ao consultar o andamento.');
+      estudoRankProgresso=j2.progresso;
+      if(j2.status==='rodando'){ renderAds(); setTimeout(()=>{ poll().catch(e=>{ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }); },1500); return; }
+      if(j2.status==='erro') throw new Error(j2.erro||'Falha desconhecida no estudo.');
+      estudoRankResultado=processarEstudoRanqueamento(j2.resultado);
+      estudoRankCarregando=false; renderAds();
+    };
+    await poll();
+  }catch(e){ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }
+}
+function mediana(arr){
+  if(!arr||!arr.length) return null;
+  const s=arr.slice().sort((a,b)=>a-b);
+  const meio=Math.floor(s.length/2);
+  return s.length%2?s[meio]:(s[meio-1]+s[meio])/2;
+}
+function processarEstudoRanqueamento(resultado){
+  if(!resultado) return null;
+  const aliquota=finLoja(resultado.loja).aliquotaImposto||0;
+  const hoje=new Date();
+  const linhas=(resultado.itens||[]).map(it=>{
+    const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+    const dataCriacao=it.dateCreated?new Date(it.dateCreated):null;
+    const diasNoAr=dataCriacao?Math.round((hoje-dataCriacao)/864e5):null;
+    const diasAtePrimeiraVenda=(it.primeiraVendaData&&dataCriacao)?Math.round((new Date(it.primeiraVendaData+'T00:00:00')-dataCriacao)/864e5):null;
+    const m=p?metaTacosUnit(p,aliquota,null):null;
+    if(!m||!p){
+      return {itemId:it.itemId,sku:(p&&p.sku)||it.sku||it.itemId,semDados:true,
+        motivo:!p?'Produto não encontrado no Doca (sem SKU vinculado a este anúncio)':'Sem preço de anúncio ou custo cadastrado pra calcular margem',
+        dataCriacao,diasNoAr,diasAtePrimeiraVenda,janelaTruncada:it.janelaTruncada};
+    }
+    const margemUnit=m.margemUnit,metaPct=m.metaPct;
+    const adsPorDia=new Map((it.seriesAds||[]).map(d=>[d.date,d]));
+    const dias=(it.seriesVendas||[]).map(d=>{
+      const ads=adsPorDia.get(d.date)||{};
+      const custoAdsDia=Number(ads.cost)||0;
+      const receitaAdsDia=(Number(ads.total_amount)||0)+(Number(ads.organic_units_amount)||0);
+      const margemDia=margemUnit*(d.unidades||0);
+      const tacosDia=receitaAdsDia>0?(custoAdsDia/receitaAdsDia*100):(custoAdsDia>0?999:0);
+      return {date:d.date,lucroDia:margemDia-custoAdsDia,tacosDia};
+    });
+    /* "sustentado" = 7 dias SEGUIDOS batendo o critério, pra não marcar um único dia bom como se
+       fosse a virada de verdade (mesmo raciocínio de janela de 7 dias já usado no resto da aba Ads). */
+    function primeiroDiaSustentado(campo,bate){
+      for(let i=6;i<dias.length;i++){
+        let ok=true;
+        for(let k=i-6;k<=i;k++){ if(!bate(dias[k][campo])){ ok=false; break; } }
+        if(ok) return dias[i].date;
+      }
+      return null;
+    }
+    const dataLucro=dias.length>=7?primeiroDiaSustentado('lucroDia',v=>v>0):null;
+    const dataTacos=dias.length>=7?primeiroDiaSustentado('tacosDia',v=>v<=metaPct):null;
+    const diasAteLucro=(dataLucro&&dataCriacao)?Math.round((new Date(dataLucro+'T00:00:00')-dataCriacao)/864e5):null;
+    const diasAteTacos=(dataTacos&&dataCriacao)?Math.round((new Date(dataTacos+'T00:00:00')-dataCriacao)/864e5):null;
+    return {itemId:it.itemId,sku:(p&&p.sku)||it.sku||it.itemId,semDados:false,dataCriacao,diasNoAr,
+      diasAtePrimeiraVenda,diasAteLucro,diasAteTacos,margemPct:m.margemPct,metaPct,
+      janelaTruncada:it.janelaTruncada,aindaSemLucroSustentado:!dataLucro};
+  });
+  const comDados=linhas.filter(l=>!l.semDados);
+  const medianaLucro=mediana(comDados.filter(l=>l.diasAteLucro!=null).map(l=>l.diasAteLucro));
+  const medianaTacos=mediana(comDados.filter(l=>l.diasAteTacos!=null).map(l=>l.diasAteTacos));
+  linhas.forEach(l=>{
+    if(l.semDados) return;
+    /* candidato a rever: já no ar por bem mais tempo que a mediana dos outros pra "lucro > Ads",
+       e ainda não chegou lá nem uma vez sustentado - pedido do Felipe: "os anúncios que não
+       ficarem dentro da média a gente analisa pra ver se vale a pena descontinuar". */
+    l.candidatoDescontinuar=!!(l.aindaSemLucroSustentado&&medianaLucro!=null&&l.diasNoAr!=null&&l.diasNoAr>medianaLucro*1.5);
+  });
+  return {loja:resultado.loja,meses:resultado.meses,geradoEm:resultado.geradoEm,avisos:resultado.avisos||[],linhas,medianaLucro,medianaTacos};
+}
+function renderEstudoRankTabela(rk){
+  if(!rk.linhas.length) return '<p class="hint">Nenhum produto com campanha de Ads ativa (com gasto nos últimos 30 dias) pra analisar.</p>';
+  const linhasOrdenadas=rk.linhas.slice().sort((a,b)=>{
+    if(!!a.semDados!==!!b.semDados) return a.semDados?1:-1;
+    return (b.diasNoAr||0)-(a.diasNoAr||0);
+  });
+  return `<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
+      <th>Produto</th><th class="num">Dias no ar</th><th class="num">Dias até 1ª venda</th>
+      <th class="num">Dias até lucro &gt; Ads<br><span class="muted" style="font-weight:400">(7 dias seguidos)</span></th>
+      <th class="num">Dias até meta TACOS<br><span class="muted" style="font-weight:400">(7 dias seguidos)</span></th><th></th>
+    </tr></thead><tbody>
+    ${linhasOrdenadas.map(l=>{
+      if(l.semDados) return `<tr><td>${esc(l.sku)}</td><td colspan="4" class="muted">${esc(l.motivo)}</td><td></td></tr>`;
+      const tagLucro=l.diasAteLucro!=null?fmtInt(l.diasAteLucro):'<span class="muted" title="Ainda não teve 7 dias seguidos com lucro maior que o gasto em Ads, dentro do período analisado">— ainda não</span>';
+      const tagTacos=l.diasAteTacos!=null?fmtInt(l.diasAteTacos):'<span class="muted" title="Ainda não teve 7 dias seguidos dentro da meta de TACOS, dentro do período analisado">— ainda não</span>';
+      const alerta=l.candidatoDescontinuar?` <span title="No ar há ${fmtInt(l.diasNoAr)} dia(s) e ainda não teve 7 dias seguidos de lucro maior que o gasto em Ads — bem acima da mediana dos outros produtos analisados (${rk.medianaLucro!=null?fmtInt(rk.medianaLucro)+' dia(s)':'—'}). Candidato a rever: descontinuar ou dar mais um tempo/investimento?" style="color:var(--danger);font-weight:700;cursor:help">⚠ rever</span>`:'';
+      return `<tr><td>${esc(l.sku)}${l.janelaTruncada?` <span class="muted" title="Anúncio mais antigo que a janela de ${rk.meses} meses analisada — os dias foram contados só a partir do início da janela, não da data real de cadastro">*</span>`:''}</td>
+        <td class="num">${l.diasNoAr!=null?fmtInt(l.diasNoAr):'—'}</td>
+        <td class="num">${l.diasAtePrimeiraVenda!=null?fmtInt(l.diasAtePrimeiraVenda):'<span class="muted">sem venda</span>'}</td>
+        <td class="num">${tagLucro}</td>
+        <td class="num">${tagTacos}</td>
+        <td>${alerta}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table></div>
+    <p class="hint" style="margin-top:8px">Mediana "dias até lucro &gt; Ads": ${rk.medianaLucro!=null?fmtInt(rk.medianaLucro)+' dia(s)':'—'} · Mediana "dias até meta TACOS": ${rk.medianaTacos!=null?fmtInt(rk.medianaTacos)+' dia(s)':'—'}. Margem calculada com o preço/custo ATUAIS do produto (o Doca não guarda histórico dia a dia) — serve como aproximação da curva, não como valor exato de cada dia passado. Gerado em ${new Date(rk.geradoEm).toLocaleString('pt-BR')}.${rk.avisos.length?'<br>'+rk.avisos.map(a=>'⚠ '+esc(a)).join('<br>'):''}</p>`;
+}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -6308,6 +6432,15 @@ function renderAds(){
       ${adsLucroCarregando?(adsLucroProgresso&&adsLucroProgresso.total?barraProgresso(adsLucroProgresso.feito,adsLucroProgresso.total,'💰 '+(adsLucroProgresso.etapa||'Calculando custo/lucro do período...')):barraIndeterminada('💰 Calculando custo/lucro do período...')):''}
       ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
+    </div>
+    <div class="card">
+      <div class="acoes-linha" style="flex-wrap:wrap;align-items:center">
+        <button class="btn sm" id="btnEstudoRank" ${estudoRankCarregando?'disabled':''}>${estudoRankCarregando?'Rodando estudo...':'📊 Estudo de curva de ranqueamento (6 meses)'}</button>
+        <span style="flex:1;font-size:12px;color:var(--muted)">Cadastro do anúncio → 1ª venda → lucro passar o gasto em Ads → bater a meta de TACOS — pra achar quem está fora da curva normal e vale a pena rever (descontinuar ou insistir).</span>
+      </div>
+      ${estudoRankCarregando?barraProgresso((estudoRankProgresso&&estudoRankProgresso.feito)||0,(estudoRankProgresso&&estudoRankProgresso.total)||1,'📊 '+((estudoRankProgresso&&estudoRankProgresso.etapa)||'Rodando...')):''}
+      ${estudoRankErro?`<p class="hint" style="color:#e66;margin-top:8px">⚠ ${esc(estudoRankErro)}</p>`:''}
+      ${(estudoRankResultado&&estudoRankLoja===c.loja)?renderEstudoRankTabela(estudoRankResultado):''}
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos tbl-ads"><thead><tr>
       <th>Campanha</th>
@@ -6502,6 +6635,8 @@ function renderAds(){
     </tbody></table></div>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
+  const btnEstudoRank=document.getElementById('btnEstudoRank');
+  if(btnEstudoRank) btnEstudoRank.onclick=()=>rodarEstudoRanqueamento(c.loja);
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
   document.getElementById('adFiltro').onchange=e=>{
     /* só troca a ordenação — NÃO recalcula mais nada aqui. O cálculo de Lucro Bruto e a

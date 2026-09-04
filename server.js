@@ -3594,6 +3594,158 @@ app.get('/debug/ads/estudo-diario-loja/status', (req, res) => {
   if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
   res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
+/* ================= ESTUDO DE CURVA DE RANQUEAMENTO (04/09, pedido do Felipe) =================
+   "entende quando é hora de descontinuar um produto (...) data que o produto foi cadastrado,
+   começou a vender, começou a dar mais lucro do que gasto em ads e quando começou a ficar dentro
+   da meta de tacos, pra entendermos a curva de ranqueamento de produtos".
+   Cada produto tem 1 campanha só (confirmado com o Felipe 04/09) - por isso o gasto DIARIO da
+   campanha JA E' o gasto diario daquele produto, sem precisar ratear entre produtos de uma mesma
+   campanha.
+   Validado com dado real antes de escrever isso (04/09): a API de Ads aceita aggregation_type=
+   DAILY numa chamada so', mas com um teto real de 90 dias por chamada ("difference between dates
+   must be less than equals to 90 days") - por isso buscarAdsDiarioCampanhaPeriodo encadeia
+   janelas de 90 em 90 dias. Testado numa campanha de mais de 1 ano (SUPORTE LISO, TorvStore) e
+   voltou dado diario real (nao zerado) ate' 90 dias atras sem problema.
+   Fica em memoria (Map), assim como os outros jobs de estudo acima - some se o servidor reiniciar/
+   dormir, mas e' rodado sob demanda mesmo (nao e' algo que precisa persistir). */
+async function buscarAdsDiarioCampanhaPeriodo(loja, siteId, advertiserId, campanhaId, desdeMs, ateMs) {
+  const accessToken = await tokenValido(loja);
+  const metricas = 'cost,clicks,prints,total_amount,organic_units_amount,organic_units_quantity,units_quantity,direct_units_quantity,roas,acos';
+  const dias = [];
+  let fimJanela = ateMs;
+  while (fimJanela >= desdeMs) {
+    let inicioJanela = fimJanela - 89 * 864e5;
+    if (inicioJanela < desdeMs) inicioJanela = desdeMs;
+    const de = dataYMD(inicioJanela), ate = dataYMD(fimJanela);
+    const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?campaign_ids=${campanhaId}&date_from=${de}&date_to=${ate}&metrics=${metricas}&aggregation_type=DAILY`;
+    try {
+      const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+      (j.results || []).forEach(r => dias.push(r));
+    } catch (e) { /* um pedaco falhou - segue com os outros, melhor dado parcial que travar tudo */ }
+    fimJanela = inicioJanela - 864e5;
+    await sleep(150);
+  }
+  return dias.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+}
+const estudoRankJobs = new Map();
+async function rodarEstudoRanking(jobId, loja, mesesParam) {
+  const job = estudoRankJobs.get(jobId);
+  try {
+    const meses = Math.min(12, Math.max(1, parseInt(mesesParam, 10) || 6));
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const { primeiro } = await buscarAdvertiserId(loja);
+    if (!primeiro) throw new Error('Nenhum advertiser_id encontrado pra essa loja (sem Ads configurado).');
+    const siteId = primeiro.site_id, advertiserId = primeiro.advertiser_id;
+    const avisos = [];
+    job.progresso = { etapa: 'lendo produtos ativos', feito: 0, total: 1 };
+    const { rows: produtos } = await pool.query(
+      `select ml_item_id, sku, titulo from ml_produtos where loja = $1 and status = 'active' and ml_item_id is not null`,
+      [loja]
+    );
+    if (!produtos.length) {
+      job.status = 'concluido';
+      job.resultado = { loja, meses, geradoEm: new Date().toISOString(), itens: [], avisos: ['Nenhum produto ativo encontrado (rode uma sincronizacao normal do Doca antes).'] };
+      return;
+    }
+    job.progresso = { etapa: 'mapeando produto -> campanha de ads', feito: 0, total: 1 };
+    const hoje = Date.now();
+    let mapaItens = [];
+    try {
+      mapaItens = await buscarItensAdsPeriodo(loja, siteId, advertiserId, dataYMD(hoje - 29 * 864e5), dataYMD(hoje), null);
+    } catch (e) {
+      avisos.push('Falha ao mapear produto->campanha (' + e.message + ') - nenhum produto vai entrar no estudo.');
+    }
+    const campanhaPorItem = new Map(mapaItens.map(it => [String(it.itemId), it.campaignId]));
+    const comCampanha = produtos.filter(p => campanhaPorItem.has(String(p.ml_item_id)));
+    const semCampanha = produtos.filter(p => !campanhaPorItem.has(String(p.ml_item_id)));
+    if (semCampanha.length) avisos.push(`${semCampanha.length} produto(s) sem campanha de Ads com gasto nos ultimos 30 dias, ficaram fora do estudo: ${semCampanha.map(p => p.sku || p.ml_item_id).join(', ')}`);
+    job.progresso = { etapa: 'lendo data de cadastro dos anuncios', feito: 0, total: comCampanha.length };
+    const detalhesItem = [];
+    for (const p of comCampanha) {
+      try {
+        const r = await fetch(`https://api.mercadolibre.com/items/${p.ml_item_id}?attributes=id,date_created`, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const j = await r.json();
+        detalhesItem.push({ ...p, dateCreated: j.date_created || null, campanhaId: campanhaPorItem.get(String(p.ml_item_id)) });
+      } catch (e) {
+        detalhesItem.push({ ...p, dateCreated: null, campanhaId: campanhaPorItem.get(String(p.ml_item_id)) });
+      }
+      job.progresso.feito++;
+      await sleep(120);
+    }
+    const limiteAntigoMs = hoje - meses * 30 * 864e5;
+    let minJanelaMs = hoje;
+    detalhesItem.forEach(it => {
+      const criadoMs = it.dateCreated ? new Date(it.dateCreated).getTime() : null;
+      it.janelaDesdeMs = inicioDoDiaBR(criadoMs ? Math.max(criadoMs, limiteAntigoMs) : limiteAntigoMs);
+      if (it.janelaDesdeMs < minJanelaMs) minJanelaMs = it.janelaDesdeMs;
+    });
+    job.progresso = { etapa: 'lendo pedidos do periodo (pode demorar alguns minutos)', feito: 0, total: 1 };
+    const log = { avisos: [] };
+    const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, new Date(minJanelaMs).toISOString(), new Date(hoje).toISOString(), log, 'order.date_closed');
+    avisos.push(...log.avisos);
+    const vendasPorItemDia = new Map();
+    for (const pedido of pedidos) {
+      if (pedido.status === 'cancelled' || pedido.status === 'invalid') continue;
+      const dia = diaBR(pedido.date_closed || pedido.date_created);
+      for (const oi of (pedido.order_items || [])) {
+        const itemId = oi.item && oi.item.id; if (!itemId) continue;
+        const chave = itemId + '|' + dia;
+        const atual = vendasPorItemDia.get(chave) || { unidades: 0, receita: 0 };
+        atual.unidades += oi.quantity || 0;
+        atual.receita += (oi.quantity || 0) * (oi.unit_price || 0);
+        vendasPorItemDia.set(chave, atual);
+      }
+    }
+    job.progresso = { etapa: 'lendo historico diario de ads (90 em 90 dias)', feito: 0, total: detalhesItem.length };
+    const resultadoItens = [];
+    for (const it of detalhesItem) {
+      const seriesVendas = [];
+      for (let cursor = it.janelaDesdeMs; cursor <= hoje; cursor += 864e5) {
+        const dia = dataYMD(cursor);
+        const v = vendasPorItemDia.get(it.ml_item_id + '|' + dia) || { unidades: 0, receita: 0 };
+        seriesVendas.push({ date: dia, unidades: v.unidades, receita: v.receita });
+      }
+      const primeiraVenda = seriesVendas.find(d => d.unidades > 0);
+      let seriesAds = [];
+      try {
+        seriesAds = await buscarAdsDiarioCampanhaPeriodo(loja, siteId, advertiserId, it.campanhaId, it.janelaDesdeMs, hoje);
+      } catch (e) {
+        avisos.push(`Falha ao ler Ads de ${it.sku || it.ml_item_id}: ${e.message}`);
+      }
+      resultadoItens.push({
+        itemId: it.ml_item_id, sku: it.sku, titulo: it.titulo, campanhaId: it.campanhaId,
+        dateCreated: it.dateCreated,
+        janelaAnalisadaDesde: dataYMD(it.janelaDesdeMs),
+        janelaTruncada: !!(it.dateCreated && new Date(it.dateCreated).getTime() < limiteAntigoMs),
+        primeiraVendaData: primeiraVenda ? primeiraVenda.date : null,
+        seriesVendas, seriesAds
+      });
+      job.progresso.feito++;
+    }
+    job.resultado = { loja, meses, geradoEm: new Date().toISOString(), itens: resultadoItens, avisos };
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro'; job.erro = e.message;
+  }
+}
+app.get('/estudo/ranqueamento/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const meses = req.query.meses;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const jobId = gerarJobIdAds();
+    estudoRankJobs.set(jobId, { status: 'rodando', progresso: { etapa: 'iniciando', feito: 0, total: 1 }, resultado: null, erro: null, criadoEm: Date.now() });
+    rodarEstudoRanking(jobId, loja, meses);
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/estudo/ranqueamento/status', (req, res) => {
+  const jobId = req.query.id;
+  const job = estudoRankJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
+  res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
+});
 /* ---------- sincronizacao "de verdade" de Ads (grava no banco, pro Doca so' ler) ---------- */
 async function sincronizarAdsLoja(loja) {
   const { primeiro } = await buscarAdvertiserId(loja);
