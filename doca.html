@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v404</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v405</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6195,19 +6195,37 @@ function avaliarSugestoesRoas7d(loja,dados){
    porque o Doca não guarda histórico de preço/custo dia a dia - é uma aproximação, não o valor
    exato que valia em cada dia do passado (fica dito na tela). */
 let estudoRankLoja=null,estudoRankResultado=null,estudoRankCarregando=false,estudoRankErro=null,estudoRankProgresso=null;
+/* CORRIGIDO 04/09 (Felipe: "Failed to execute 'json' on 'Response': Unexpected end of JSON
+   input"): o backend gratuito do Render "dorme" depois de um tempo sem uso e demora até 50s+ pra
+   acordar - a primeira chamada às vezes volta com o corpo vazio nesse meio-tempo, e chamar
+   .json() direto numa resposta vazia dá esse erro cru e pouco explicativo. Tenta de novo sozinho
+   1 vez (dando um tempo pro servidor acabar de acordar) antes de mostrar erro de verdade. */
+async function fetchJsonComRetry(url,tentativas){
+  tentativas=tentativas||2;
+  let ultimoErro=null;
+  for(let i=0;i<tentativas;i++){
+    try{
+      const r=await fetch(url);
+      const texto=await r.text();
+      let j=null;
+      if(texto){ try{ j=JSON.parse(texto); }catch(e){ /* nao era JSON - j fica null, cai no erro abaixo */ } }
+      if(!j) throw new Error(`Resposta vazia/inválida do servidor (HTTP ${r.status}) — provavelmente ele ainda estava "acordando" (plano gratuito do Render demora até 50s+).`);
+      return {r,j};
+    }catch(e){ ultimoErro=e; if(i<tentativas-1) await sleep(4000); }
+  }
+  throw ultimoErro;
+}
 async function rodarEstudoRanqueamento(loja){
   const base=backendUrl();
   if(!base){ toast('⚠ Configure a URL do backend antes (a mesma do Atualizar do Mercado Livre).'); return; }
   estudoRankCarregando=true; estudoRankErro=null; estudoRankResultado=null; estudoRankProgresso=null; estudoRankLoja=loja; renderAds();
   try{
-    const r=await fetch(`${base}/estudo/ranqueamento/iniciar?loja=${encodeURIComponent(loja)}&meses=6`);
-    const j=await r.json();
-    if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao iniciar o estudo.');
+    const {j}=await fetchJsonComRetry(`${base}/estudo/ranqueamento/iniciar?loja=${encodeURIComponent(loja)}&meses=6`);
+    if(!j.ok) throw new Error(j.erro||'Falha ao iniciar o estudo.');
     const jobId=j.jobId;
     const poll=async()=>{
-      const r2=await fetch(`${base}/estudo/ranqueamento/status?id=${encodeURIComponent(jobId)}`);
-      const j2=await r2.json();
-      if(!r2.ok||!j2.ok) throw new Error(j2.erro||'Falha ao consultar o andamento.');
+      const {j:j2}=await fetchJsonComRetry(`${base}/estudo/ranqueamento/status?id=${encodeURIComponent(jobId)}`);
+      if(!j2.ok) throw new Error(j2.erro||'Falha ao consultar o andamento.');
       estudoRankProgresso=j2.progresso;
       if(j2.status==='rodando'){ renderAds(); setTimeout(()=>{ poll().catch(e=>{ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }); },1500); return; }
       if(j2.status==='erro') throw new Error(j2.erro||'Falha desconhecida no estudo.');
