@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v405</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v406</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6201,7 +6201,12 @@ let estudoRankLoja=null,estudoRankResultado=null,estudoRankCarregando=false,estu
    .json() direto numa resposta vazia dá esse erro cru e pouco explicativo. Tenta de novo sozinho
    1 vez (dando um tempo pro servidor acabar de acordar) antes de mostrar erro de verdade. */
 async function fetchJsonComRetry(url,tentativas){
-  tentativas=tentativas||2;
+  /* CORRIGIDO 04/09 (2ª volta - Felipe: mesmo erro, mas com HTTP 429 dessa vez): 1 tentativa extra
+     com 4s não foi suficiente - o Render (plano gratuito) pode ficar recusando/devolvendo vazio
+     por mais tempo enquanto acorda ou está sob pico de chamadas. Agora tenta mais vezes, com
+     espera CRESCENTE (4s, 8s, 16s) em vez de sempre a mesma - dá mais chance de pegar o servidor
+     já de pé sem desistir cedo demais. */
+  tentativas=tentativas||4;
   let ultimoErro=null;
   for(let i=0;i<tentativas;i++){
     try{
@@ -6209,9 +6214,9 @@ async function fetchJsonComRetry(url,tentativas){
       const texto=await r.text();
       let j=null;
       if(texto){ try{ j=JSON.parse(texto); }catch(e){ /* nao era JSON - j fica null, cai no erro abaixo */ } }
-      if(!j) throw new Error(`Resposta vazia/inválida do servidor (HTTP ${r.status}) — provavelmente ele ainda estava "acordando" (plano gratuito do Render demora até 50s+).`);
+      if(!j) throw new Error(`Resposta vazia/inválida do servidor (HTTP ${r.status}) — provavelmente ele ainda estava "acordando" ou sob pico de chamadas (plano gratuito do Render).`);
       return {r,j};
-    }catch(e){ ultimoErro=e; if(i<tentativas-1) await sleep(4000); }
+    }catch(e){ ultimoErro=e; if(i<tentativas-1) await sleep(4000*Math.pow(2,i)); }
   }
   throw ultimoErro;
 }
@@ -6227,7 +6232,7 @@ async function rodarEstudoRanqueamento(loja){
       const {j:j2}=await fetchJsonComRetry(`${base}/estudo/ranqueamento/status?id=${encodeURIComponent(jobId)}`);
       if(!j2.ok) throw new Error(j2.erro||'Falha ao consultar o andamento.');
       estudoRankProgresso=j2.progresso;
-      if(j2.status==='rodando'){ renderAds(); setTimeout(()=>{ poll().catch(e=>{ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }); },1500); return; }
+      if(j2.status==='rodando'){ renderAds(); setTimeout(()=>{ poll().catch(e=>{ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }); },3000); return; }
       if(j2.status==='erro') throw new Error(j2.erro||'Falha desconhecida no estudo.');
       estudoRankResultado=processarEstudoRanqueamento(j2.resultado);
       estudoRankCarregando=false; renderAds();
