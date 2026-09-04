@@ -3663,12 +3663,26 @@ async function buscarAdsDiarioCampanhaPeriodo(loja, siteId, advertiserId, campan
     if (inicioJanela < desdeMs) inicioJanela = desdeMs;
     const de = dataYMD(inicioJanela), ate = dataYMD(fimJanela);
     const url = `https://api.mercadolibre.com/marketplace/advertising/${siteId}/advertisers/${advertiserId}/product_ads/campaigns/search?campaign_ids=${campanhaId}&date_from=${de}&date_to=${ate}&metrics=${metricas}&aggregation_type=DAILY`;
-    try {
-      const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
-      (j.results || []).forEach(r => dias.push(r));
-    } catch (e) { /* um pedaco falhou - segue com os outros, melhor dado parcial que travar tudo */ }
+    // CORRIGIDO 04/09 (2a volta - Felipe: HTTP 429 rodando o estudo): faltava o mesmo retry/espera
+    // crescente em 429/5xx que o resto do arquivo ja usa em chamadas parecidas (ver
+    // buscarCampanhasAds) - sem isso, um unico 429 do Mercado Livre nesse pedaco de 90 dias era
+    // simplesmente descartado (silenciosamente incompleto) em vez de tentar de novo.
+    for (let tentativa = 0; tentativa < 4; tentativa++) {
+      try {
+        const j = await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}`, 'Api-Version': '2' } });
+        (j.results || []).forEach(r => dias.push(r));
+        break;
+      } catch (e) {
+        if ((e.http_status === 429 || e.http_status >= 500) && tentativa < 3) { await sleep(1000 * (tentativa + 1)); continue; }
+        break; /* nao deu mesmo depois de tentar - segue com os outros pedacos, melhor dado parcial que travar tudo */
+      }
+    }
     fimJanela = inicioJanela - 864e5;
-    await sleep(150);
+    // pacing mais folgado entre chamadas (era 150ms) - o job inteiro faz varias dezenas de
+    // chamadas sequenciais numa unica instancia gratuita do Render, e chamadas em rajada demais
+    // parecem ter deixado o servidor sobrecarregado a ponto de recusar (429) ate as chamadas de
+    // progresso vindas do navegador, que nao tem nada a ver com o Mercado Livre.
+    await sleep(400);
   }
   return dias.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 }
@@ -3716,7 +3730,7 @@ async function rodarEstudoRanking(jobId, loja, mesesParam) {
         detalhesItem.push({ ...p, dateCreated: null, campanhaId: campanhaPorItem.get(String(p.ml_item_id)) });
       }
       job.progresso.feito++;
-      await sleep(120);
+      await sleep(300);
     }
     const limiteAntigoMs = hoje - meses * 30 * 864e5;
     let minJanelaMs = hoje;

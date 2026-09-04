@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v406</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v407</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6206,7 +6206,10 @@ async function fetchJsonComRetry(url,tentativas){
      por mais tempo enquanto acorda ou está sob pico de chamadas. Agora tenta mais vezes, com
      espera CRESCENTE (4s, 8s, 16s) em vez de sempre a mesma - dá mais chance de pegar o servidor
      já de pé sem desistir cedo demais. */
-  tentativas=tentativas||4;
+  /* 6 tentativas com espera crescente MAS travada em 15s (5,10,15,15,15) = quase 1 minuto de
+     paciência total - cobre com folga o "50 segundos ou mais" que o próprio Render avisa que o
+     plano gratuito pode demorar pra acordar (04/09, 3ª volta: 4 tentativas/28s ainda não bastou). */
+  tentativas=tentativas||6;
   let ultimoErro=null;
   for(let i=0;i<tentativas;i++){
     try{
@@ -6216,7 +6219,7 @@ async function fetchJsonComRetry(url,tentativas){
       if(texto){ try{ j=JSON.parse(texto); }catch(e){ /* nao era JSON - j fica null, cai no erro abaixo */ } }
       if(!j) throw new Error(`Resposta vazia/inválida do servidor (HTTP ${r.status}) — provavelmente ele ainda estava "acordando" ou sob pico de chamadas (plano gratuito do Render).`);
       return {r,j};
-    }catch(e){ ultimoErro=e; if(i<tentativas-1) await sleep(4000*Math.pow(2,i)); }
+    }catch(e){ ultimoErro=e; if(i<tentativas-1) await sleep(Math.min(15000,5000*Math.pow(2,i))); }
   }
   throw ultimoErro;
 }
