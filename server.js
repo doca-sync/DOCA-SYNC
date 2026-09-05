@@ -2428,6 +2428,16 @@ async function passoSaldoMp(loja, row) {
      de frequencia entre as lojas e' do lado do Mercado Pago (cada conta gera o relatorio em lote no
      seu proprio ritmo, mais rapido quanto maior o volume) e nao tem como forcar daqui. */
   const JANELA_FRESCOR_MS = 7 * 24 * 60 * 60 * 1000;
+  /* CORRIGIDO 05/09 (achado real: TorvStore preso em "saldo ha 4 dias" mesmo com o /sync manual
+     rodando toda vez sem erro): esse bloco aceita qualquer relatorio de ate' 7 dias como "bom o
+     suficiente" - e, ao aplicar um, dava RETURN na hora, pulando o pedido de relatorio novo la'
+     embaixo. Resultado pratico: assim que existe QUALQUER relatorio com menos de 7 dias (mesmo que
+     tenha 4), o Doca nunca mais pede um relatorio novo pro Mercado Pago ate' esse completar 7 dias
+     - contradizendo o proprio comentario abaixo ("o Doca continua pedindo um relatorio novo a cada
+     ciclo"). Tirado o "return": agora SEMPRE aplica o melhor relatorio disponivel (pra tela nunca
+     ficar sem nada) E, na mesma passada, ainda tenta pedir um novo pro Mercado Pago (respeitando o
+     intervalo minimo entre pedidos abaixo) - assim que o Mercado Pago gerar um mais fresco, a
+     proxima sincronizacao ja pega ele, em vez de ficar travado ate' o antigo envelhecer 7 dias. */
   try {
     const rList = await mpFetch(loja, '/v1/account/release_report/list', { method: 'GET' });
     const jList = await rList.json().catch(() => null);
@@ -2440,8 +2450,7 @@ async function passoSaldoMp(loja, row) {
       if (idadeMs < JANELA_FRESCOR_MS) {
         const rDown = await mpFetch(loja, `/v1/account/release_report/${encodeURIComponent(maisRecente.file_name)}`, { method: 'GET' });
         const texto = await rDown.text();
-        const aplicado = await aplicarRelatorioLiberacoes(loja, texto, maisRecente.date_created);
-        if (aplicado) return;
+        await aplicarRelatorioLiberacoes(loja, texto, maisRecente.date_created);
       }
     }
   } catch (e) {
@@ -2575,8 +2584,10 @@ async function passoAReceberMp(loja, row) {
       if (idadeMs < JANELA_FRESCOR_MS) {
         const rDown = await mpFetch(loja, `/v1/account/settlement_report/${encodeURIComponent(maisRecente.file_name)}`, { method: 'GET' });
         const texto = await rDown.text();
-        const aplicado = await aplicarRelatorioDinheiroConta(loja, texto);
-        if (aplicado) return;
+        /* CORRIGIDO 05/09 (mesmo bug do passoSaldoMp): nao dar return aqui - mesmo aplicando o
+           melhor relatorio disponivel, continua e tambem tenta pedir um novo pro Mercado Pago
+           la embaixo (gated pelo PAUSA_ENTRE_PEDIDOS_MS), em vez de esperar esse envelhecer. */
+        await aplicarRelatorioDinheiroConta(loja, texto);
       }
     }
   } catch (e) {
