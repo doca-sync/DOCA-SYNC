@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v411</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v412</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3595,7 +3595,22 @@ async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
   if(!a.produtoIds.length) return; // ninguém marcado na parceria - nada a calcular
   let resumo=resumoJaCalculado, refMes;
   if(resumo){
-    refMes=(amauriResumoDe||'').slice(0,7)||mesAnteriorStr(mesAtualStr());
+    /* CORRIGIDO 05/09 (3a volta - Felipe calculou 01/09 a 04/09 pra conferir o andamento e o
+       "Saldo a pagar" veio -R$9.005,20: os 3 pagamentos de AGOSTO, já quitados, estavam sendo
+       descontados do repasse de SETEMBRO, que é outro mês e ainda nem fechou): só sincroniza a
+       despesa quando o período calculado é um MÊS CALENDÁRIO COMPLETO E JÁ FECHADO (de=dia 1,
+       ate=último dia do mês, e esse mês já acabou) - é o único caso que corresponde de verdade ao
+       "repasse do mês que fechou" que vira despesa (ver comentário mais abaixo, "vencimento fixo
+       dia 2"). Calcular um recorte parcial/mês corrente (só pra acompanhar o andamento, sem fechar
+       nada ainda) mostra o resultado normalmente na tela, mas não mexe em despesa nenhuma - evita
+       criar uma cobrança prematura de um mês que ainda está rolando. */
+    const de=amauriResumoDe||'', ate=amauriResumoAte||'';
+    const mesDe=de.slice(0,7);
+    const [anoRef,mmRef]=mesDe.split('-').map(Number);
+    const ultimoDiaDoMes=(anoRef&&mmRef)?`${mesDe}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`:null;
+    const mesFechado=ultimoDiaDoMes&&ate===ultimoDiaDoMes&&de===`${mesDe}-01`&&ate<hoje();
+    if(!mesFechado) return; // período parcial/mês ainda em andamento - só mostra na tela, não gera despesa
+    refMes=mesDe;
   }else{
     const base=backendUrl();
     if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
@@ -3609,13 +3624,10 @@ async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
   const linhas=amauriProdutosMarcados().map(p=>calcularLinhaAmauriProduto(p,resumo));
   const totalRepasse=Math.round(linhas.reduce((s,l)=>s+l.repasseTotal,0)*100)/100;
   /* CORRIGIDO 05/09 (Felipe: "já tem repasses feitos pro Amauri que não estão sendo considerados
-     no fluxo de caixa"): essa despesa entrava sempre com o valor TOTAL do repasse do mês, sem
-     descontar o que já tinha sido pago na aba Amauri (lista "Pagamentos já feitos") - por isso o
-     Fluxo de Caixa mostrava um "sai" maior do que o que realmente falta pagar. Os pagamentos
-     registrados na aba Amauri são uma lista corrida (não amarrada a um mês específico), igual já é
-     usado no "Saldo a pagar" daquela tela - aqui desconta o mesmo total pago do valor da despesa,
-     pra ela refletir só o que ainda falta de verdade. */
-  const totalJaPago=(a.pagamentos||[]).reduce((s,x)=>s+(Number(x.valor)||0),0);
+     no fluxo de caixa" / depois "calculei setembro e o saldo veio errado, tem pagamento de agosto
+     entrando"): cada pagamento agora tem um "mesRef" (ver amauriState/addPagamentoAmauri) - só
+     desconta do repasse deste mês os pagamentos QUE SÃO DESSE MESMO MÊS, não a lista inteira. */
+  const totalJaPago=(a.pagamentos||[]).filter(x=>x.mesRef===refMes).reduce((s,x)=>s+(Number(x.valor)||0),0);
   const totalRestante=Math.round(Math.max(0,totalRepasse-totalJaPago)*100)/100;
   const arr=despesasArr();
   let d=arr.find(x=>x.origem==='amauri_repasse'&&x.loja==='TorvStore'&&x.amauriRefMes===refMes);
@@ -9521,6 +9533,15 @@ function amauriState(){
   if(!state.amauri.custos||typeof state.amauri.custos!=='object') state.amauri.custos={};
   if(!Array.isArray(state.amauri.pagamentos)) state.amauri.pagamentos=[];
   if(typeof state.amauri.aliquotaImposto!=='number') state.amauri.aliquotaImposto=Number(state.amauri.aliquotaImposto)||0;
+  /* CORRIGIDO 05/09 (Felipe: calculou o período de setembro e o "Saldo a pagar" veio negativo
+     em ~R$9.000 - os pagamentos de agosto, já quitados, estavam sendo descontados do repasse de
+     um mês TOTALMENTE diferente): antes "pagamentos" era uma lista corrida sem mês associado -
+     funcionava só enquanto existisse 1 mês em aberto por vez. Agora cada pagamento tem um "mesRef"
+     (o mês do repasse que ele está pagando), e o saldo/despesa de cada mês só olha os pagamentos
+     daquele mesmo mesRef. Migração automática: pagamento antigo sem mesRef (os 3 já registrados
+     antes desse fix, REPASSE 1/2/3) é tratado como sendo de agosto/2026 - o único mês fechado até
+     agora, e exatamente o que eles pagavam de verdade. */
+  state.amauri.pagamentos.forEach(p=>{ if(!p.mesRef) p.mesRef='2026-08'; });
   return state.amauri;
 }
 /* cada custo tem um valor E um "quem pagou" (torvstore ou amauri) - só o custo do produto não
@@ -9564,9 +9585,9 @@ function atualizarCustoAmauri(produtoId,patch){
   Object.assign(amauriCustos(produtoId),patch);
   persist();
 }
-function addPagamentoAmauri(valor,descricao,data){
+function addPagamentoAmauri(valor,descricao,data,mesRef){
   snapshot('pagamento pra Amauri');
-  amauriState().pagamentos.push({id:gerarId('am'),valor:Number(valor)||0,descricao:(descricao||'').trim(),data:data||hoje()});
+  amauriState().pagamentos.push({id:gerarId('am'),valor:Number(valor)||0,descricao:(descricao||'').trim(),data:data||hoje(),mesRef:mesRef||mesAnteriorStr(mesAtualStr())});
   persist();
 }
 function removerPagamentoAmauri(id){
@@ -10310,7 +10331,13 @@ function renderAmauri(){
   const totalMargem=linhas.reduce((s,l)=>s+l.margemLiquida,0);
   const totalReembolso=linhas.reduce((s,l)=>s+l.reembolsoAmauri,0);
   const totalRepasse=linhas.reduce((s,l)=>s+l.repasseTotal,0);
-  const pagamentos=a.pagamentos.slice().sort((x,y)=>(y.data||'').localeCompare(x.data||''));
+  /* CORRIGIDO 05/09 (mesma raiz do fix em sincronizarRepasseAmauriDespesa): a lista/soma de
+     pagamentos aqui na tela agora também só considera os pagamentos DO MÊS que está sendo
+     exibido no período acima (amauriResumoDe) - senão o "Saldo a pagar" mistura pagamento de um
+     mês com repasse de outro mês, como aconteceu ao calcular setembro logo depois de quitar
+     agosto. */
+  const refMesAtivo=(amauriResumoDe||'').slice(0,7)||mesAnteriorStr(mesAtualStr());
+  const pagamentos=a.pagamentos.filter(x=>x.mesRef===refMesAtivo).slice().sort((x,y)=>(y.data||'').localeCompare(x.data||''));
   const totalPago=pagamentos.reduce((s,x)=>s+(Number(x.valor)||0),0);
   const cel=(titulo,valor,cls)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px" class="${cls||''}">${fmtMoney(valor)}</b></div>`;
   const moeda=(val,attr,largura)=>`<input type="text" inputmode="decimal" placeholder="0,00" style="width:${largura||90}px" oninput="filtrarValorMoeda(this)" value="${val?String(val).replace('.',','):''}" data-amauricusto="${attr}">`;
@@ -10491,7 +10518,7 @@ function renderAmauri(){
     const data=novoPagAmauriData||hoje();
     if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
     salvarCustosAmauriPendentes();
-    addPagamentoAmauri(valor,descricao,data);
+    addPagamentoAmauri(valor,descricao,data,refMesAtivo);
     toast('Pagamento registrado.');
     novoPagAmauriData='';
     renderAmauri();
