@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v409</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v410</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3592,16 +3592,25 @@ async function sincronizarRepasseAmauriDespesa(){
   const resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
   const linhas=amauriProdutosMarcados().map(p=>calcularLinhaAmauriProduto(p,resumo));
   const totalRepasse=Math.round(linhas.reduce((s,l)=>s+l.repasseTotal,0)*100)/100;
+  /* CORRIGIDO 05/09 (Felipe: "já tem repasses feitos pro Amauri que não estão sendo considerados
+     no fluxo de caixa"): essa despesa entrava sempre com o valor TOTAL do repasse do mês, sem
+     descontar o que já tinha sido pago na aba Amauri (lista "Pagamentos já feitos") - por isso o
+     Fluxo de Caixa mostrava um "sai" maior do que o que realmente falta pagar. Os pagamentos
+     registrados na aba Amauri são uma lista corrida (não amarrada a um mês específico), igual já é
+     usado no "Saldo a pagar" daquela tela - aqui desconta o mesmo total pago do valor da despesa,
+     pra ela refletir só o que ainda falta de verdade. */
+  const totalJaPago=(a.pagamentos||[]).reduce((s,x)=>s+(Number(x.valor)||0),0);
+  const totalRestante=Math.round(Math.max(0,totalRepasse-totalJaPago)*100)/100;
   const arr=despesasArr();
   let d=arr.find(x=>x.origem==='amauri_repasse'&&x.loja==='TorvStore'&&x.amauriRefMes===refMes);
-  if(!(totalRepasse>0)){
-    if(d&&!d.pago){ arr.splice(arr.indexOf(d),1); persist(); } // recalculou e não deu mais repasse (ex: produto desmarcado) - some sozinha se ainda não foi paga
+  if(!(totalRestante>0)){
+    if(d&&!d.pago){ arr.splice(arr.indexOf(d),1); persist(); } // recalculou e não deu mais repasse (ex: produto desmarcado, ou já quitado pelos pagamentos registrados) - some sozinha se ainda não foi paga
     return;
   }
   if(d){
-    d.valor=totalRepasse; d.dataPagamento=`${mesFechamento}-02`;
+    d.valor=totalRestante; d.dataPagamento=`${mesFechamento}-02`;
   }else{
-    arr.push({id:gerarId('desp'),descricao:`Repasse Amauri — parceria (base ${mesLabel(refMes)})`,valor:totalRepasse,dataPagamento:`${mesFechamento}-02`,
+    arr.push({id:gerarId('desp'),descricao:`Repasse Amauri — parceria (base ${mesLabel(refMes)})`,valor:totalRestante,dataPagamento:`${mesFechamento}-02`,
       pago:false,recorrente:true,loja:'TorvStore',origem:'amauri_repasse',faturaKey:null,origemRecorrenciaId:null,
       amauriRefMes:refMes,criadoEm:Date.now()});
   }
@@ -10396,9 +10405,18 @@ function renderAmauri(){
         <label>Data${botaoData('amPagData',novoPagAmauriData||hoje(),{style:''})}</label>
         <button class="btn gold" id="btnAddPagAmauri" style="align-self:end">+ Adicionar</button>
       </div>
-      ${pagamentos.length?`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><tbody>
-        ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-rempagamauri="${x.id}">✕</button></td></tr>`).join('')}
-      </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhum pagamento registrado ainda.</p>'}
+      ${pagamentos.length?`
+      <!-- CORRIGIDO 05/09 (Felipe: "não seria legal ao final quando completar os repasses sumir ou
+           ir pra outro campo pra não ficar poluindo a tela"): a lista inteira ficava sempre aberta,
+           crescendo pra sempre. Agora vira um <details> - continua aberta enquanto tiver saldo
+           pendente (é o que importa acompanhar), e some sozinha pra um resumo de 1 linha assim que
+           quitar, sem precisar apagar o histórico (só um clique reabre). -->
+      <details class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))" ${(totalRepasse-totalPago)>0?'open':''}>
+        <summary style="cursor:pointer;font-weight:600">Histórico de pagamentos (${pagamentos.length}) — total já pago ${fmtMoney(totalPago)}${(totalRepasse-totalPago)<=0?' · quitado ✓':''}</summary>
+        <div class="table-wrap" style="margin-top:8px"><table class="tbl-produtos"><tbody>
+          ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-rempagamauri="${x.id}">✕</button></td></tr>`).join('')}
+        </tbody></table></div>
+      </details>`:'<p class="empty-inline" style="margin-top:10px">Nenhum pagamento registrado ainda.</p>'}
       <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
         ${cel('TOTAL JÁ PAGO',totalPago)}
         ${cel('SALDO A PAGAR (repasse do período − já pago)',totalRepasse-totalPago,(totalRepasse-totalPago)>0?'pend':'okv')}
@@ -10436,8 +10454,12 @@ function renderAmauri(){
   if(btnImprimirAmauri) btnImprimirAmauri.onclick=()=>imprimirRelatorioAmauri(linhas,totalMargem,totalReembolso,totalRepasse,totalPago,pagamentos);
   const btnAmPagData=document.getElementById('amPagData');
   if(btnAmPagData) btnAmPagData.onclick=()=>abrirSeletorData(novoPagAmauriData||hoje(),(iso)=>{ novoPagAmauriData=iso; renderAmauri(); });
+  /* CORRIGIDO 05/09 (Felipe: registrar/remover pagamento aqui só refletia no Fluxo de Caixa na
+     próxima vez que o Doca fosse aberto - a despesa "Repasse Amauri" ficava com o valor antigo até
+     lá). Agora chama sincronizarRepasseAmauriDespesa() na hora, logo depois de salvar/remover, pra
+     a despesa (e o Fluxo de Caixa) já refletirem o saldo atualizado sem precisar recarregar. */
   const btnAddPagAmauri=document.getElementById('btnAddPagAmauri');
-  if(btnAddPagAmauri) btnAddPagAmauri.onclick=()=>{
+  if(btnAddPagAmauri) btnAddPagAmauri.onclick=async()=>{
     const descricao=document.getElementById('amPagDescricao').value.trim();
     const valor=parseMoeda(document.getElementById('amPagValor').value);
     const data=novoPagAmauriData||hoje();
@@ -10447,11 +10469,13 @@ function renderAmauri(){
     toast('Pagamento registrado.');
     novoPagAmauriData='';
     renderAmauri();
+    try{ await sincronizarRepasseAmauriDespesa(); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
   };
-  el.querySelectorAll('[data-rempagamauri]').forEach(b=>b.onclick=()=>{
+  el.querySelectorAll('[data-rempagamauri]').forEach(b=>b.onclick=async()=>{
     removerPagamentoAmauri(b.dataset.rempagamauri);
     toast('Pagamento removido.');
     renderAmauri();
+    try{ await sincronizarRepasseAmauriDespesa(); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
   });
 }
 /* ---------- listas de tarefas ---------- */
