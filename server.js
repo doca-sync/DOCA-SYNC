@@ -3154,6 +3154,49 @@ async function buscarRecebimentosFull(accessToken, sellerId, inventoryId, diasAt
     return null;
   }
 }
+/* NOVO 05/09 (diagnostico: Felipe confirmou no proprio painel do Mercado Livre que o envio
+   #76105608 (04/09, DOR BLOCK) ja esta com status "Recebido" - 231 de 300 un. aptas - mas o Doca
+   nao confirmou sozinho nem com o criterio novo de "so' precisa ter QUALQUER recebimento (>0),
+   nao precisa ser 100%". Esse endpoint chama o MESMO endpoint oficial que buscarRecebimentosFull
+   usa (stock/fulfillment/operations/search, type=inbound_reception), mas SEM o filtro de "so'
+   chama pra item pendente" e mostra o JSON cru + o cru sem o filtro de "type=inbound_reception"
+   tambem (pra achar se a operacao existe com outro "type" que a gente ainda nao tratou) - pra
+   descobrir se o problema e' o endpoint nao trazer nada mesmo, ou se e' outra etapa (vinculo de
+   mlItemId, item nao entrar na lista "aguardando" no momento do /sync, etc). */
+app.get('/debug/full/recebimentos', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const sku = req.query.sku;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    if (!sku) return res.status(400).json({ ok: false, erro: 'Parametro "sku" obrigatorio.' });
+    const rProd = await pool.query('select ml_item_id, sku, titulo, recebimentos_full from ml_produtos where loja = $1 and lower(sku) = lower($2)', [loja, sku]);
+    if (!rProd.rows.length) return res.status(404).json({ ok: false, erro: `Nenhum produto com sku "${sku}" encontrado na loja ${loja} (ver /data?loja=...).` });
+    const { ml_item_id, titulo, recebimentos_full } = rProd.rows[0];
+    const accessToken = await tokenValido(loja);
+    const conta = await pegarConta(loja);
+    const rItem = await fetch(`https://api.mercadolibre.com/items/${ml_item_id}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const item = await rItem.json();
+    if (!rItem.ok) return res.status(200).json({ ok: false, erro: 'Falha ao buscar o item.', http_status: rItem.status, corpo: item });
+    if (!item.inventory_id) return res.status(200).json({ ok: false, erro: 'Esse item nao tem inventory_id (nao e Full, ou nao esta vinculado ao Full).', item_id: ml_item_id, titulo });
+    const de = new Date(Date.now() - 15 * 864e5).toISOString().slice(0, 10);
+    const hj = new Date().toISOString().slice(0, 10);
+    const urlComTipo = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}&type=inbound_reception`;
+    const urlSemTipo = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}`;
+    const [rCom, rSem] = await Promise.all([
+      fetch(urlComTipo, { headers: { Authorization: `Bearer ${accessToken}` } }),
+      fetch(urlSemTipo, { headers: { Authorization: `Bearer ${accessToken}` } })
+    ]);
+    const jCom = await rCom.json().catch(() => null);
+    const jSem = await rSem.json().catch(() => null);
+    res.status(200).json({
+      ok: true, loja, sku, ml_item_id, titulo, inventory_id: item.inventory_id, seller_id: conta.ml_user_id,
+      janela: { de, ate: hj },
+      recebimentos_full_gravado_no_banco: recebimentos_full,
+      com_filtro_inbound_reception: { http_status: rCom.status, corpo: jCom },
+      sem_filtro_de_tipo: { http_status: rSem.status, corpo: jSem }
+    });
+  } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
+});
 app.get('/debug/full/estoque', async (req, res) => {
   try {
     const loja = req.query.loja;
