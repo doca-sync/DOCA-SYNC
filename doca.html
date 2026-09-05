@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v413</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v414</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3645,27 +3645,44 @@ async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
      atualizando sozinho, ficando mais preciso conforme o mês fecha, exatamente como a "reserva
      recomendada" do Imposto. Só esse caminho automático (não o de cima, que reusa cálculo manual)
      faz essa projeção - assim o usuário não precisa calcular nada na tela pra ela aparecer. */
+  /* CORRIGIDO 05/09 (4a volta - o de setembro nunca aparecia mesmo esperando: testei os dois
+     ciclos direto no backend e os dois terminam certinho, sem erro nenhum - só que CADA UM passa
+     por TODOS os pedidos da loja inteira no período + o custo de frete de CADA envio um por um
+     (a TorvStore vende ~150 pedidos/dia - só 5 dias já são 700+ envios), então rodar os 2 ciclos
+     em SEQUÊNCIA, um esperando o outro, pra loja com esse volume passava fácil de vários minutos
+     de espera. Isso é exatamente o mesmo problema que já tinha acontecido antes com o ciclo único
+     de baixo desempenho (ver comentário no topo, "nunca chegava a completar"). Agora os 2 ciclos
+     disparam JUNTOS (Promise.allSettled, não um esperando o outro) - corta o tempo total quase
+     pela metade - e essa função inteira passou a ser chamada SEM "await" lá no sincronizarMlAoAbrir
+     (não trava mais a sincronização das outras lojas enquanto isso roda). */
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
   let mesVencimento=mesAtualStr();
+  const ciclos=[];
   for(let ciclo=0;ciclo<2;ciclo++){
     const refMes=mesAnteriorStr(mesVencimento);
     const emAndamento=refMes===mesAtualStr();
     const de=`${refMes}-01`;
     const [anoRef,mmRef]=refMes.split('-').map(Number);
     const ate=emAndamento?hoje():`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
-    try{
-      const resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
-      aplicarCicloRepasseAmauri(a,resumo,refMes,`${mesVencimento}-02`);
-    }catch(e){
-      if(ciclo===0) throw e;
-      console.error('[amauri] falha ao projetar o ciclo seguinte do repasse:',e.message);
-    }
+    ciclos.push({refMes,vencimento:`${mesVencimento}-02`,de,ate});
     const [ay,am]=mesVencimento.split('-').map(Number);
     const dNext=new Date(Date.UTC(ay,am,1));
     mesVencimento=`${dNext.getUTCFullYear()}-${String(dNext.getUTCMonth()+1).padStart(2,'0')}`;
   }
+  const resultados=await Promise.allSettled(ciclos.map(c=>fetchResumoJob('TorvStore','personalizado',c.de,c.ate,()=>{})));
+  let falhaCicloFechado=null;
+  resultados.forEach((r,i)=>{
+    const c=ciclos[i];
+    if(r.status==='fulfilled'){
+      aplicarCicloRepasseAmauri(a,r.value,c.refMes,c.vencimento);
+    }else{
+      console.error(`[amauri] falha ao sincronizar o repasse do mês ${c.refMes}:`,r.reason&&r.reason.message);
+      if(i===0) falhaCicloFechado=r.reason; // guarda mas só lança depois de aplicar o que deu certo (ex: ciclo 1)
+    }
+  });
   persist();
+  if(falhaCicloFechado) throw falhaCicloFechado;
 }
 /* ---------- perguntas sem resposta (card na Visão Geral) ----------
    A CONTAGEM (p.mlPerguntas) já vem de graça no "Atualizar" normal de Produtos. O TEXTO de cada
@@ -12462,12 +12479,14 @@ tentarReconectar().then(()=>{
       console.error(`Sincronização automática da despesa de Imposto falhou ao abrir o Doca (loja ${loja}):`,e.message);
     }
     if(loja==='TorvStore'){
-      try{
-        await sincronizarRepasseAmauriDespesa();
-        renderFinancas();
-      }catch(e){
+      /* SEM "await" aqui de propósito (05/09, 4a volta - ver comentário dentro da função): esse
+         cálculo é pesado (passa por todos os pedidos + frete de cada envio, 2 vezes) e pra uma loja
+         com bastante volume pode levar minutos - com await, isso travava a sincronização de TODAS
+         as lojas seguintes até terminar. Agora roda por conta própria, sem seq segurar nada, e
+         atualiza a tela sozinho assim que terminar (não importa quanto demore). */
+      sincronizarRepasseAmauriDespesa().then(()=>renderFinancas()).catch(e=>{
         console.error('Sincronização automática da despesa de Repasse Amauri falhou ao abrir o Doca:',e.message);
-      }
+      });
     }
   }
 })();
