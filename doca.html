@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v410</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v411</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3579,17 +3579,33 @@ async function sincronizarImpostoDespesaMes(loja){
    (o "dia 1 ou 2" que o Felipe citou) - ajustável direto na despesa se precisar. Marcar como "pago"
    continua sendo feito na aba Despesas, igual qualquer outra despesa - é isso que faz ela contar
    certo no Fluxo de Caixa quando for paga de verdade. */
-async function sincronizarRepasseAmauriDespesa(){
+/* CORRIGIDO 05/09 (2a volta - Felipe: "você já tem o valor total calculado em fluxo de caixa",
+   depois de reparar que o valor da despesa ficava travado no total cheio mesmo depois do fix
+   anterior): essa função fazia sua PRÓPRIA chamada de fetchResumoJob (um job assíncrono, mais
+   lento) toda vez que rodava sozinha no ciclo de sincronização automática - e por algum motivo
+   (provavelmente concorrência com as outras chamadas da mesma sincronização, ou só lentidão) isso
+   nunca chegava a completar de verdade em segundo plano, deixando a despesa travada no valor
+   antigo indefinidamente. Agora aceita opcionalmente um "resumoJaCalculado": quando quem chama já
+   tem o resultado em mãos (por ex. logo depois do próprio Felipe clicar em "Calcular" na tela, ou
+   reaproveitando o que já está na tela ao registrar um pagamento), usa esse mesmo resultado na
+   hora - zero chamada extra, zero chance de travar. Só faz a chamada própria (mais lenta, e que se
+   provou não confiável em segundo plano) quando ninguém forneceu nada pronto. */
+async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
   const a=amauriState();
   if(!a.produtoIds.length) return; // ninguém marcado na parceria - nada a calcular
-  const base=backendUrl();
-  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  let resumo=resumoJaCalculado, refMes;
+  if(resumo){
+    refMes=(amauriResumoDe||'').slice(0,7)||mesAnteriorStr(mesAtualStr());
+  }else{
+    const base=backendUrl();
+    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+    refMes=mesAnteriorStr(mesAtualStr());
+    const de=`${refMes}-01`;
+    const [anoRef,mmRef]=refMes.split('-').map(Number);
+    const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
+    resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
+  }
   const mesFechamento=mesAtualStr();
-  const refMes=mesAnteriorStr(mesFechamento);
-  const de=`${refMes}-01`;
-  const [anoRef,mmRef]=refMes.split('-').map(Number);
-  const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
-  const resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
   const linhas=amauriProdutosMarcados().map(p=>calcularLinhaAmauriProduto(p,resumo));
   const totalRepasse=Math.round(linhas.reduce((s,l)=>s+l.repasseTotal,0)*100)/100;
   /* CORRIGIDO 05/09 (Felipe: "já tem repasses feitos pro Amauri que não estão sendo considerados
@@ -9574,6 +9590,9 @@ async function pesquisarResumoAmauri(){
     const resumo=await fetchResumoJob('TorvStore',amauriResumoPeriodo,amauriResumoDe,amauriResumoAte,(p)=>{ amauriResumoProgresso=p; renderAmauri(); });
     amauriResumoResultado=resumo;
     autoPreencherAdsAmauri();
+    /* reaproveita o resumo que acabou de chegar pra já atualizar a despesa "Repasse Amauri" no
+       Fluxo de Caixa na hora - ver comentário em sincronizarRepasseAmauriDespesa. */
+    try{ await sincronizarRepasseAmauriDespesa(resumo); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri:',e.message); }
   }catch(e){ amauriResumoErro=e.message; }
   finally{ amauriResumoCarregando=false; amauriResumoProgresso=null; renderAmauri(); }
 }
@@ -10411,16 +10430,23 @@ function renderAmauri(){
            crescendo pra sempre. Agora vira um <details> - continua aberta enquanto tiver saldo
            pendente (é o que importa acompanhar), e some sozinha pra um resumo de 1 linha assim que
            quitar, sem precisar apagar o histórico (só um clique reabre). -->
-      <details class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))" ${(totalRepasse-totalPago)>0?'open':''}>
-        <summary style="cursor:pointer;font-weight:600">Histórico de pagamentos (${pagamentos.length}) — total já pago ${fmtMoney(totalPago)}${(totalRepasse-totalPago)<=0?' · quitado ✓':''}</summary>
+      <details class="card" style="margin-top:10px;background:var(--panel2,rgba(255,255,255,.02))" ${(!amauriResumoResultado||(totalRepasse-totalPago)>0)?'open':''}>
+        <summary style="cursor:pointer;font-weight:600">Histórico de pagamentos (${pagamentos.length}) — total já pago ${fmtMoney(totalPago)}${(amauriResumoResultado&&(totalRepasse-totalPago)<=0)?' · quitado ✓':''}</summary>
         <div class="table-wrap" style="margin-top:8px"><table class="tbl-produtos"><tbody>
           ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-rempagamauri="${x.id}">✕</button></td></tr>`).join('')}
         </tbody></table></div>
       </details>`:'<p class="empty-inline" style="margin-top:10px">Nenhum pagamento registrado ainda.</p>'}
+      <!-- CORRIGIDO 05/09 (Felipe: "lá consta como falta pagar 6 mil mas não é" - o "Saldo a pagar"
+           mostrava um número enganoso (negativo, parecendo que o Amauri devia PRA loja) sempre que
+           o período ainda não tinha sido calculado nesta sessão, porque nesse caso totalRepasse
+           fica 0 por padrão até clicar em "Calcular" acima. Agora só mostra o saldo quando o
+           período já foi calculado; enquanto não foi, mostra um aviso em vez de um número errado. -->
+      ${amauriResumoResultado?`
       <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
         ${cel('TOTAL JÁ PAGO',totalPago)}
         ${cel('SALDO A PAGAR (repasse do período − já pago)',totalRepasse-totalPago,(totalRepasse-totalPago)>0?'pend':'okv')}
       </div>
+      `:`<p class="hint" style="margin-top:14px">Total já pago: <b>${fmtMoney(totalPago)}</b>. Clique em "🔍 Calcular" acima pra ver o saldo a pagar atualizado deste período.</p>`}
     </div>
     `:'<p class="empty-inline">Marque ao menos um produto na aba Produtos pra começar o fechamento.</p>'):''}
   `;
@@ -10469,13 +10495,13 @@ function renderAmauri(){
     toast('Pagamento registrado.');
     novoPagAmauriData='';
     renderAmauri();
-    try{ await sincronizarRepasseAmauriDespesa(); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
+    try{ await sincronizarRepasseAmauriDespesa(amauriResumoResultado); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
   };
   el.querySelectorAll('[data-rempagamauri]').forEach(b=>b.onclick=async()=>{
     removerPagamentoAmauri(b.dataset.rempagamauri);
     toast('Pagamento removido.');
     renderAmauri();
-    try{ await sincronizarRepasseAmauriDespesa(); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
+    try{ await sincronizarRepasseAmauriDespesa(amauriResumoResultado); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
   });
 }
 /* ---------- listas de tarefas ---------- */
