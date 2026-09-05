@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v414</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v415</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3484,7 +3484,11 @@ function faturaMlPendenteLoja(loja){
    verdade é o do ciclo anterior, com faturamento já fechado, vencendo dia 20 deste mês). */
 function despesasNaoPagasLoja(loja){
   const refMesAtual=mesAtualStr();
-  return despesasArr().filter(d=>d.loja===loja&&!d.pago&&!(d.origem==='imposto'&&d.impostoRefMes===refMesAtual));
+  /* CORRIGIDO 05/09 (Felipe: "repasse amauri aparece em despesas mas não é contabilizado certo,
+     como imposto"): mesma exceção do Imposto - a projeção do Repasse Amauri do mês AINDA EM
+     ANDAMENTO (amauriRefMes = mês corrente, base num faturamento que nem fechou) também não é
+     uma dívida de verdade ainda, só uma prévia que vai mudando dia a dia - não conta no Passivo. */
+  return despesasArr().filter(d=>d.loja===loja&&!d.pago&&!(d.origem==='imposto'&&d.impostoRefMes===refMesAtual)&&!(d.origem==='amauri_repasse'&&d.amauriRefMes===refMesAtual));
 }
 function passivoLoja(loja){
   return despesasNaoPagasLoja(loja).reduce((s,d)=>s+(Number(d.valor)||0),0);
@@ -6900,13 +6904,17 @@ function excluirDespesa(id){
    preservado e a despesa continua "viva" pro mês que vem. Fatura ML e Imposto NÃO entram nessa
    clonagem (mesmo sendo recorrente:true, só pra mostrar o selo) - o valor delas muda todo mês
    (não dá pra simplesmente copiar o valor atual pro mês seguinte) e cada uma já tem sua própria
-   sincronização automática que cria a ocorrência certa (ver puxarFaturaMl/sincronizarImpostoDespesaMes). */
+   sincronização automática que cria a ocorrência certa (ver puxarFaturaMl/sincronizarImpostoDespesaMes).
+   CORRIGIDO 05/09: Repasse Amauri entra nessa mesma exceção - também tem sua própria sincronização
+   (sincronizarRepasseAmauriDespesa) que já cria a ocorrência do mês seguinte com o valor calculado
+   certo; sem essa exceção, marcar "pago" aqui clonava uma 2ª despesa pro mês seguinte com o valor
+   ANTIGO copiado, duplicando/conflitando com a que a sincronização automática já cria sozinha. */
 function marcarDespesaPaga(id,pago){
   const arr=despesasArr();
   const d=arr.find(x=>x.id===id); if(!d) return;
   snapshot((pago?'despesa paga: ':'despesa marcada como pendente: ')+(d.descricao||''));
   d.pago=!!pago;
-  if(pago&&d.recorrente&&d.origem!=='ml_fatura'&&d.origem!=='imposto'){
+  if(pago&&d.recorrente&&d.origem!=='ml_fatura'&&d.origem!=='imposto'&&d.origem!=='amauri_repasse'){
     const serieId=d.origemRecorrenciaId||d.id;
     const proxData=proximoMes(d.dataPagamento);
     const jaExiste=arr.some(x=>(x.origemRecorrenciaId||x.id)===serieId&&x.dataPagamento===proxData);
@@ -8999,8 +9007,13 @@ function calcularCmvResumo(resumo){
    loja com vencimento dentro do período do Resumo Financeiro — usadas como "custos do período" na
    Margem Líquida. O Imposto aparece em Despesas/Fluxo de Caixa só como lembrete de pagamento
    (pedido do Felipe 23/08), não pode somar aqui senão desconta 2x. */
+/* CORRIGIDO 05/09 (Felipe: "repasse amauri aparece em despesas mas não é contabilizado certo, como
+   imposto"): mesmo tratamento do Imposto - o Repasse Amauri já é um cálculo à parte (50% da margem
+   líquida específica dos produtos marcados, ver calcularLinhaAmauriProduto), então também é só
+   lembrete de pagamento aqui em Despesas/Fluxo de Caixa - não entra de novo como "despesa genérica"
+   na Margem Líquida geral da loja (que é sobre TODOS os produtos, não só os do Amauri). */
 function despesasPeriodoLoja(loja,de,ate){
-  return despesasArr().filter(d=>d.loja===loja&&d.origem!=='ml_fatura'&&d.origem!=='imposto'&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate);
+  return despesasArr().filter(d=>d.loja===loja&&d.origem!=='ml_fatura'&&d.origem!=='imposto'&&d.origem!=='amauri_repasse'&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate);
 }
 /* fatura(s) do ML cujo VENCIMENTO cai dentro do período do Resumo (de,ate) - CORRIGIDO 25/08:
    antes a Margem Líquida usava faturaMlPendenteLoja (soma de tudo que ainda está em aberto, sem
@@ -9372,10 +9385,11 @@ function renderFinancas(){
         const podeDetalhar=d.origem==='ml_fatura'&&d.faturaKey;
         const detalhando=financasDetalhandoFatura[d.id];
         const linhaPrincipal=`<tr class="${d.pago?'':'row-baixo'}">
-        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${d.origem==='imposto'?' <span class="badge">Auto (imposto)</span>':''}${podeDetalhar?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px" ${detalhando?'disabled':''}>${detalhando?'Buscando...':(financasExpandido[d.id]?'▾ ocultar':'▸ detalhar')}</button>`:''}
+        <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${d.origem==='imposto'?' <span class="badge">Auto (imposto)</span>':''}${d.origem==='amauri_repasse'?' <span class="badge">Auto (Amauri)</span>':''}${podeDetalhar?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px" ${detalhando?'disabled':''}>${detalhando?'Buscando...':(financasExpandido[d.id]?'▾ ocultar':'▸ detalhar')}</button>`:''}
           ${d.origem==='ml_fatura'&&d.periodoDe&&d.periodoAte?`<div class="hint" style="margin:2px 0 0">Cobranças referentes a ${fmtData(d.periodoDe)} a ${fmtData(d.periodoAte)} · vence ${fmtData(d.dataPagamento)}${d.semVencimentoReal?' (estimado pelo ciclo da loja, ainda não confirmado pelo Mercado Livre)':''}</div>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
           ${d.origem==='imposto'?`<div class="hint" style="margin:2px 0 0">${d.impostoAliquota||0}% sobre o faturamento de ${esc(mesLabel(d.impostoRefMes))} (${fmtMoney(d.impostoFaturamentoBase||0)}) — já descontado direto na Margem Líquida, isso aqui é só lembrete de pagamento.</div>`:''}
+          ${d.origem==='amauri_repasse'?`<div class="hint" style="margin:2px 0 0">Repasse da parceria com o Amauri, base ${esc(mesLabel(d.amauriRefMes))} — calculado à parte (não entra de novo na Margem Líquida geral), isso aqui é só lembrete de pagamento.</div>`:''}
         </td>
         <td>${d.loja?`<span class="loja-tag">${esc(d.loja)}</span>`:'<span class="muted">Geral</span>'}</td>
         <td class="num">${fmtMoney(d.valor)}</td>
