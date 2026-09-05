@@ -5147,5 +5147,43 @@ app.get('/loading-video.mp4', (req, res) => {
     if (err) { console.error('Erro ao servir loading-video.mp4:', err.message); if (!res.headersSent) res.status(404).send('Video nao encontrado no servidor.'); }
   });
 });
+/* NOVO 05/09 (Felipe: "em vez de esperar o relatorio do Mercado Pago, pedir todo dia as 7:30 e as
+   12:30 pra cada loja"): roda direto AQUI no backend (Render, ligado 24/7), em vez de depender de
+   uma tarefa agendada do lado do Cowork/computador do Felipe - aquilo so' dispara se o app dele
+   estiver aberto no horario certo; se estiver fechado, so' roda na proxima vez que ele abrir o
+   app, o que nao serve pra um horario fixo. Aqui, o proprio servidor confere a cada minuto se
+   bateu 7:30 ou 12:30 no horario de Brasilia e, se sim, chama passoSaldoMp/passoAReceberMp (o
+   MESMO caminho ja comprovado, usado no /debug/mp/forcar-atualizacao) pra cada uma das 4 lojas -
+   isso pede um relatorio novo pro Mercado Pago com a maior antecedencia possivel, pra quando o
+   Felipe abrir o Doca as 8h/13h (ou quando quiser) o relatorio ja tenha tido ~30min de chance de
+   ficar pronto do lado deles. Guarda so' um marcador em memoria (ultimoSlotRodado) pra nao rodar 2x
+   dentro do mesmo minuto/horario se o setInterval disparar mais de uma vez por coincidencia -
+   rodar de novo por acidente nao quebra nada (mesma logica idempotente do forcar-atualizacao), so'
+   seria chamada de API desperdicada. */
+let ultimoSlotRodado = null;
+async function pedirAtualizacaoMpTodasAsLojas(motivo) {
+  for (const loja of LOJAS_VALIDAS) {
+    try {
+      const row = await pegarFinanceiroMp(loja);
+      await passoSaldoMp(loja, row);
+      await passoAReceberMp(loja, row);
+      console.log(`[mp-agendado] ${motivo} - ok:`, loja);
+    } catch (e) {
+      console.error(`[mp-agendado] ${motivo} - falhou:`, loja, e.message);
+    }
+  }
+}
+setInterval(() => {
+  const agora = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(new Date()).reduce((o, p) => (o[p.type] = p.value, o), {});
+  const diaAtual = `${agora.year}-${agora.month}-${agora.day}`;
+  const horaMin = `${agora.hour}:${agora.minute}`;
+  if (horaMin !== '07:30' && horaMin !== '12:30') return;
+  const slot = `${diaAtual} ${horaMin}`;
+  if (slot === ultimoSlotRodado) return; // ja rodou nesse exato minuto/dia - evita disparo duplicado
+  ultimoSlotRodado = slot;
+  pedirAtualizacaoMpTodasAsLojas(`agendado ${horaMin}`);
+}, 60 * 1000);
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
