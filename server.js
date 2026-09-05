@@ -3138,12 +3138,24 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
    de aptas+transferencia subir/descer, que mistura tudo). So' chama pra itens que o front avisa que
    tem algo "em processamento" pendente (ver pendentes= no /sync) - pra nao gastar chamada de API
    (e tempo de sync) em item sem nada esperando confirmacao. Retorna [{data:'YYYY-MM-DD', qtd}]. */
+/* CORRIGIDO 05/09 (achado real via /debug/full/recebimentos, pedido do Felipe: TESOURAPONTAREDONDA
+   do envio de 04/09 - a Mercado Livre ja mostrava "Recebido" no painel dela, mas o Doca nunca
+   confirmava sozinho): a chamada dava HTTP 400 "The field type has an invalid value" - SEMPRE,
+   desde que essa funcao foi criada (28/08) - por isso recebimentos_full nunca tinha nada gravado
+   no banco (era sempre null) e o auto-confirmar nunca tinha funcionado nem uma vez, mesmo com o
+   ajuste de "so precisa de qualquer recebido, nao precisa ser 100%" (05/09). 2 bugs achados
+   contra a doc oficial (global-selling.mercadolibre.com/devsite/fulfillment-stock-gs):
+   1) faltava o prefixo "marketplace/" no caminho (era /stock/fulfillment/operations/search,
+      o certo e /marketplace/stock/fulfillment/operations/search);
+   2) o valor de "type" tem que ser MAIUSCULO (INBOUND_RECEPTION) - o exemplo oficial da doc usa
+      "type=SALE_CONFIRMATION" maiusculo, e o "type" que volta em cada operacao no results[] tambem
+      vem maiusculo ("INBOUND_RECEPTION"), so' o comentario antigo aqui tinha escrito minusculo. */
 async function buscarRecebimentosFull(accessToken, sellerId, inventoryId, diasAtras) {
   try {
     const hj = new Date();
     const de = new Date(hj.getTime() - (diasAtras || 6) * 864e5);
     const fmt = d => d.toISOString().slice(0, 10);
-    const url = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${sellerId}&inventory_id=${inventoryId}&date_from=${fmt(de)}&date_to=${fmt(hj)}&type=inbound_reception`;
+    const url = `https://api.mercadolibre.com/marketplace/stock/fulfillment/operations/search?seller_id=${sellerId}&inventory_id=${inventoryId}&date_from=${fmt(de)}&date_to=${fmt(hj)}&type=INBOUND_RECEPTION`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!r.ok) return null;
     const j = await r.json();
@@ -3180,8 +3192,8 @@ app.get('/debug/full/recebimentos', async (req, res) => {
     if (!item.inventory_id) return res.status(200).json({ ok: false, erro: 'Esse item nao tem inventory_id (nao e Full, ou nao esta vinculado ao Full).', item_id: ml_item_id, titulo });
     const de = new Date(Date.now() - 15 * 864e5).toISOString().slice(0, 10);
     const hj = new Date().toISOString().slice(0, 10);
-    const urlComTipo = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}&type=inbound_reception`;
-    const urlSemTipo = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}`;
+    const urlComTipo = `https://api.mercadolibre.com/marketplace/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}&type=INBOUND_RECEPTION`;
+    const urlSemTipo = `https://api.mercadolibre.com/marketplace/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}`;
     const [rCom, rSem] = await Promise.all([
       fetch(urlComTipo, { headers: { Authorization: `Bearer ${accessToken}` } }),
       fetch(urlSemTipo, { headers: { Authorization: `Bearer ${accessToken}` } })
