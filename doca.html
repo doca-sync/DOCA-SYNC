@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v408</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v409</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4651,32 +4651,49 @@ function aplicarSincronizacaoAutomatica(resultado){
    (não confirma parcial, pra não zerar errado um item que ainda nem saiu do galpão). */
 function autoConfirmarEnviosChegados(loja){
   const candidatos=state.envios.filter(e=>e.loja===loja);
+  let mudouBaseline=false;
   candidatos.forEach(e=>{
     const itensReais=e.itens.filter(i=>!i.kitDeItemId);
     if(!itensReais.length) return;
-    const d=new Date(e.criadoEm||Date.now());
-    const refCriacao=_dataISO(d.getFullYear(),d.getMonth(),d.getDate());
-    const refData=_somaDiasISO((e.data&&e.data<refCriacao)?e.data:refCriacao,-1);
-    /* CORRIGIDO 05/09 (Felipe: "não precisa processar todos, a partir do momento que recebeu já
-       aparece algum status de recebido já pode sumir, no momento da coleta"): antes exigia
-       recebido>=solicitado (100% da quantidade) em CADA item pra confirmar - só que o Mercado
-       Livre libera o "Processamento em andamento" aos poucos (ex: 231 de 300 un., terminando só
-       dias depois), então o envio ficava preso no Doca por até vários dias mesmo já tendo sido
-       de fato recebido/coletado no galpão Full. Agora basta o log real de recebimento
-       (recebimentosFull, vindo do Mercado Livre) mostrar QUALQUER quantidade recebida (>0) pra
-       cada item - sinal de que a coleta/entrada já aconteceu de verdade - sem esperar o
-       processamento completo de 100%. */
+    /* CORRIGIDO 05/09 (2a volta - achado real via /debug/full/recebimentos, testado nos 2 SKUs do
+       envio de 04/09): recebimentosFull (log de auditoria "stock/fulfillment/operations/search",
+       type=inbound_reception) SEMPRE voltou vazio pros 2 itens, mesmo com a URL/type corrigidos e
+       respondendo HTTP 200 - e mesmo com a propria pagina de Envios Full do Mercado Livre já
+       mostrando esse envio como "Recebido" (231 de 300 aptas). Ou seja: esse log de auditoria tem
+       um atraso proprio do Mercado Livre pra ser preenchido, bem maior que o status visual da
+       pagina de envios - nao da pra confiar nele pra detectar chegada. Troca de fonte: em vez do
+       log de auditoria, usa o MESMO dado que ja aparece certinho e na hora na tela do Doca hoje
+       (Aptas Full + Em transferencia, vindo de /inventories/{id}/stock/fulfillment - ver
+       mlAtualizarFullDoSinc) - tira uma "foto" desse total assim que o envio passa a ser
+       observado (1a sincronizacao depois de criado) e, a partir dai, qualquer AUMENTO acima dessa
+       foto (por menor que seja) e' sinal real de que a coleta chegou - sem precisar esperar
+       processamento 100%, igual pedido pelo Felipe. */
+    if(!e.baselineFull) e.baselineFull={};
+    let faltaBaseline=false;
+    itensReais.forEach(i=>{
+      if(e.baselineFull[i.id]!=null) return;
+      const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
+      const fi=pLoja?state.full.itens.find(x=>x.loja===loja&&fullProduto(x)&&fullProduto(x).id===pLoja.id):null;
+      e.baselineFull[i.id]=fi?((Number(fi.aptas)||0)+(Number(fi.transf)||0)):0;
+      mudouBaseline=true;
+      faltaBaseline=true;
+    });
+    /* na mesma leitura em que a foto (baseline) é tirada pela 1ª vez ainda não dá pra comparar
+       nada - só a partir da PRÓXIMA sincronização, quando já existe um "antes" pra comparar. */
+    if(faltaBaseline) return;
     const tudoChegou=itensReais.every(i=>{
       const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
       if(!pLoja||!pLoja.mlItemId||!(i.solicitado>0)) return false;
-      const recebido=(pLoja.recebimentosFull||[]).filter(x=>x.data>=refData).reduce((s,x)=>s+(Number(x.qtd)||0),0);
-      return recebido>0;
+      const fi=state.full.itens.find(x=>x.loja===loja&&fullProduto(x)&&fullProduto(x).id===pLoja.id);
+      const atual=fi?((Number(fi.aptas)||0)+(Number(fi.transf)||0)):0;
+      return atual>(e.baselineFull[i.id]||0);
     });
     if(tudoChegou){
       confirmarEnvioFull(e.id,true);
       toast(`✅ FULL de ${nomeEnvio(e)} entregue — sumiu da lista sozinho (o Mercado Livre já registrou a entrada).`);
     }
   });
+  if(mudouBaseline) persist();
 }
 /* modal com o botão Atualizar: sincroniza com o backend e mostra os anúncios do Mercado Livre
    comparados com o cadastro do Doca (vínculo por mlItemId salvo, ou por SKU quando bate) */
