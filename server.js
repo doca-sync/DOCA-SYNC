@@ -1855,21 +1855,33 @@ async function processarWebhookRelatorioMp(req, res) {
     const valido = verificarAssinaturaRelatorioMp(transaction_id, generation_date, signature, senha);
     if (valido === false) { console.error('[mp-webhook] assinatura invalida - ignorando notificacao de', loja, '(confira a senha de criptografia cadastrada no painel do Mercado Pago x a variavel MP_WEBHOOK_SENHA_' + normalizarChaveLoja(loja) + ')'); return; }
     if (valido === null) console.error('[mp-webhook] bcryptjs nao instalado no backend (rode "npm install bcryptjs") - processando a notificacao MESMO ASSIM, sem conseguir confirmar que veio de verdade do Mercado Pago.');
-    const arquivo = (Array.isArray(files) ? files.find(f => (f.type || '').toLowerCase() === 'csv') || files[0] : null);
-    if (!arquivo || !arquivo.url) { console.error('[mp-webhook] notificacao sem arquivo utilizavel para', loja, JSON.stringify(req.body || {})); return; }
-    const accessToken = tokenMpDaLoja(loja);
-    if (!accessToken) { console.error('[mp-webhook] loja sem MP_ACCESS_TOKEN configurado:', loja); return; }
+    /* CORRIGIDO 05/09 (3a volta - log real do Render mostrou "endpoint oficial /v1/account/
+       settlement_report/{id} -> HTTP 403", nao mais 404: a URL que vem DENTRO da notificacao webhook
+       (.../settlement_v2/statements/{id}/download) contem um ID do PAINEL WEB, que NAO e' o mesmo
+       "file_name" que a API de relatorios espera - por isso qualquer tentativa de baixar direto com
+       esse ID da 403/404, nao importa quantos hosts/paths diferentes se tente colar nele (ja' foram
+       2 voltas de fix tentando consertar isso so' arrumando a URL, sem sucesso). O JEITO que
+       realmente funciona (comprovado em producao pelo saldo/a-receber via polling, passoSaldoMp /
+       passoAReceberMp) e' NUNCA usar o ID da notificacao pra baixar - so' usar a notificacao como
+       aviso de "tem relatorio novo pronto" e ir direto no endpoint oficial de LISTA
+       (/v1/account/release_report/list ou /v1/account/settlement_report/list), pegar o "file_name"
+       de la' (esse sim reconhecido pelo endpoint de download) e baixar por ele. Por isso agora o
+       webhook so' decide qual TIPO de relatorio chegou e reaproveita passoSaldoMp/passoAReceberMp
+       (mesmo codigo ja' testado do polling) em vez de baixarArquivoRelatorioMp. */
     const tipoTexto = `${report_type || type || ''}`.toLowerCase();
-    const texto = await baixarArquivoRelatorioMp(loja, accessToken, arquivo.url, tipoTexto);
-    if (texto == null) return;
-    if (tipoTexto.includes('release')) {
-      const ok = await aplicarRelatorioLiberacoes(loja, texto, generation_date);
-      console.log(`[mp-webhook] Liberacoes (saldo) aplicado via webhook - ${loja}:`, ok);
-    } else if (tipoTexto.includes('settlement') || tipoTexto.includes('account') || /settlement/i.test(arquivo.url)) {
-      const ok = await aplicarRelatorioDinheiroConta(loja, texto);
-      console.log(`[mp-webhook] Dinheiro em conta (a receber) aplicado via webhook - ${loja}:`, ok);
+    const ehRelease = tipoTexto.includes('release');
+    const ehSettlement = tipoTexto.includes('settlement') || tipoTexto.includes('account');
+    const row = await pegarFinanceiroMp(loja);
+    if (ehRelease) {
+      await passoSaldoMp(loja, row);
+      console.log(`[mp-webhook] webhook de Liberacoes (saldo) recebido - relendo lista oficial e aplicando -`, loja);
+    } else if (ehSettlement) {
+      await passoAReceberMp(loja, row);
+      console.log(`[mp-webhook] webhook de Dinheiro em conta (a receber) recebido - relendo lista oficial e aplicando -`, loja);
     } else {
-      console.error('[mp-webhook] tipo de relatorio nao reconhecido na notificacao, ignorando:', loja, report_type, type);
+      console.error('[mp-webhook] tipo de relatorio nao reconhecido na notificacao (report_type/type ausente ou desconhecido) - atualizando os 2 por seguranca:', loja, report_type, type);
+      await passoSaldoMp(loja, row);
+      await passoAReceberMp(loja, row);
     }
   } catch (e) {
     console.error('[mp-webhook] erro ao processar notificacao:', e.message);
