@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v412</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v413</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3590,37 +3590,9 @@ async function sincronizarImpostoDespesaMes(loja){
    reaproveitando o que já está na tela ao registrar um pagamento), usa esse mesmo resultado na
    hora - zero chamada extra, zero chance de travar. Só faz a chamada própria (mais lenta, e que se
    provou não confiável em segundo plano) quando ninguém forneceu nada pronto. */
-async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
-  const a=amauriState();
-  if(!a.produtoIds.length) return; // ninguém marcado na parceria - nada a calcular
-  let resumo=resumoJaCalculado, refMes;
-  if(resumo){
-    /* CORRIGIDO 05/09 (3a volta - Felipe calculou 01/09 a 04/09 pra conferir o andamento e o
-       "Saldo a pagar" veio -R$9.005,20: os 3 pagamentos de AGOSTO, já quitados, estavam sendo
-       descontados do repasse de SETEMBRO, que é outro mês e ainda nem fechou): só sincroniza a
-       despesa quando o período calculado é um MÊS CALENDÁRIO COMPLETO E JÁ FECHADO (de=dia 1,
-       ate=último dia do mês, e esse mês já acabou) - é o único caso que corresponde de verdade ao
-       "repasse do mês que fechou" que vira despesa (ver comentário mais abaixo, "vencimento fixo
-       dia 2"). Calcular um recorte parcial/mês corrente (só pra acompanhar o andamento, sem fechar
-       nada ainda) mostra o resultado normalmente na tela, mas não mexe em despesa nenhuma - evita
-       criar uma cobrança prematura de um mês que ainda está rolando. */
-    const de=amauriResumoDe||'', ate=amauriResumoAte||'';
-    const mesDe=de.slice(0,7);
-    const [anoRef,mmRef]=mesDe.split('-').map(Number);
-    const ultimoDiaDoMes=(anoRef&&mmRef)?`${mesDe}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`:null;
-    const mesFechado=ultimoDiaDoMes&&ate===ultimoDiaDoMes&&de===`${mesDe}-01`&&ate<hoje();
-    if(!mesFechado) return; // período parcial/mês ainda em andamento - só mostra na tela, não gera despesa
-    refMes=mesDe;
-  }else{
-    const base=backendUrl();
-    if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-    refMes=mesAnteriorStr(mesAtualStr());
-    const de=`${refMes}-01`;
-    const [anoRef,mmRef]=refMes.split('-').map(Number);
-    const ate=`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
-    resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
-  }
-  const mesFechamento=mesAtualStr();
+/* aplica o resultado de 1 mês de repasse (fechado ou ainda em andamento) na despesa correspondente
+   - reaproveitado tanto pelo recálculo manual quanto pelos 2 ciclos automáticos abaixo. */
+function aplicarCicloRepasseAmauri(a,resumo,refMes,vencimento){
   const linhas=amauriProdutosMarcados().map(p=>calcularLinhaAmauriProduto(p,resumo));
   const totalRepasse=Math.round(linhas.reduce((s,l)=>s+l.repasseTotal,0)*100)/100;
   /* CORRIGIDO 05/09 (Felipe: "já tem repasses feitos pro Amauri que não estão sendo considerados
@@ -3632,15 +3604,66 @@ async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
   const arr=despesasArr();
   let d=arr.find(x=>x.origem==='amauri_repasse'&&x.loja==='TorvStore'&&x.amauriRefMes===refMes);
   if(!(totalRestante>0)){
-    if(d&&!d.pago){ arr.splice(arr.indexOf(d),1); persist(); } // recalculou e não deu mais repasse (ex: produto desmarcado, ou já quitado pelos pagamentos registrados) - some sozinha se ainda não foi paga
+    if(d&&!d.pago){ arr.splice(arr.indexOf(d),1); } // recalculou e não deu mais repasse (ex: produto desmarcado, ou já quitado pelos pagamentos registrados) - some sozinha se ainda não foi paga
     return;
   }
   if(d){
-    d.valor=totalRestante; d.dataPagamento=`${mesFechamento}-02`;
+    d.valor=totalRestante; d.dataPagamento=vencimento;
   }else{
-    arr.push({id:gerarId('desp'),descricao:`Repasse Amauri — parceria (base ${mesLabel(refMes)})`,valor:totalRestante,dataPagamento:`${mesFechamento}-02`,
+    arr.push({id:gerarId('desp'),descricao:`Repasse Amauri — parceria (base ${mesLabel(refMes)})`,valor:totalRestante,dataPagamento:vencimento,
       pago:false,recorrente:true,loja:'TorvStore',origem:'amauri_repasse',faturaKey:null,origemRecorrenciaId:null,
       amauriRefMes:refMes,criadoEm:Date.now()});
+  }
+}
+async function sincronizarRepasseAmauriDespesa(resumoJaCalculado){
+  const a=amauriState();
+  if(!a.produtoIds.length) return; // ninguém marcado na parceria - nada a calcular
+  if(resumoJaCalculado){
+    /* CORRIGIDO 05/09 (3a volta - Felipe calculou 01/09 a 04/09 pra conferir o andamento e o
+       "Saldo a pagar" veio -R$9.005,20: os 3 pagamentos de AGOSTO, já quitados, estavam sendo
+       descontados do repasse de SETEMBRO, que é outro mês e ainda nem fechou): esse caminho (reusa
+       o resultado que o próprio Felipe acabou de calcular na tela) só sincroniza a despesa quando o
+       período é um MÊS CALENDÁRIO COMPLETO E JÁ FECHADO (de=dia 1, ate=último dia do mês, mês já
+       acabado) - senão é só uma conferência pontual de andamento (recorte arbitrário de datas),
+       não deve virar despesa nenhuma. A projeção do mês EM ANDAMENTO (ver "e outubro?") é feita à
+       parte, nos 2 ciclos automáticos abaixo - não depende do usuário escolher datas certas aqui. */
+    const de=amauriResumoDe||'', ate=amauriResumoAte||'';
+    const mesDe=de.slice(0,7);
+    const [anoRef,mmRef]=mesDe.split('-').map(Number);
+    const ultimoDiaDoMes=(anoRef&&mmRef)?`${mesDe}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`:null;
+    const mesFechado=ultimoDiaDoMes&&ate===ultimoDiaDoMes&&de===`${mesDe}-01`&&ate<hoje();
+    if(!mesFechado) return; // período parcial/mês ainda em andamento - só mostra na tela, não gera despesa
+    aplicarCicloRepasseAmauri(a,resumoJaCalculado,mesDe,`${mesAtualStr()}-02`);
+    persist();
+    return;
+  }
+  /* NOVO 05/09 (2a volta - Felipe: "o que vendeu em setembro do Amauri já não deveria aparecer no
+     Fluxo de Caixa de outubro?", comparando com o Imposto que já faz isso): mesmo padrão de
+     sincronizarImpostoDespesaMes - roda 2 ciclos. Ciclo 0 é o mês que ACABOU DE FECHAR (dado
+     definitivo, vencendo dia 2 deste mês) - já existia. Ciclo 1 (NOVO) é uma PROJEÇÃO do mês AINDA
+     EM ANDAMENTO (só do dia 1 até hoje, dado parcial), vencendo dia 2 do mês seguinte - vai
+     atualizando sozinho, ficando mais preciso conforme o mês fecha, exatamente como a "reserva
+     recomendada" do Imposto. Só esse caminho automático (não o de cima, que reusa cálculo manual)
+     faz essa projeção - assim o usuário não precisa calcular nada na tela pra ela aparecer. */
+  const base=backendUrl();
+  if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+  let mesVencimento=mesAtualStr();
+  for(let ciclo=0;ciclo<2;ciclo++){
+    const refMes=mesAnteriorStr(mesVencimento);
+    const emAndamento=refMes===mesAtualStr();
+    const de=`${refMes}-01`;
+    const [anoRef,mmRef]=refMes.split('-').map(Number);
+    const ate=emAndamento?hoje():`${refMes}-${String(new Date(anoRef,mmRef,0).getDate()).padStart(2,'0')}`;
+    try{
+      const resumo=await fetchResumoJob('TorvStore','personalizado',de,ate,()=>{});
+      aplicarCicloRepasseAmauri(a,resumo,refMes,`${mesVencimento}-02`);
+    }catch(e){
+      if(ciclo===0) throw e;
+      console.error('[amauri] falha ao projetar o ciclo seguinte do repasse:',e.message);
+    }
+    const [ay,am]=mesVencimento.split('-').map(Number);
+    const dNext=new Date(Date.UTC(ay,am,1));
+    mesVencimento=`${dNext.getUTCFullYear()}-${String(dNext.getUTCMonth()+1).padStart(2,'0')}`;
   }
   persist();
 }
