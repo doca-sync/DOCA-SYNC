@@ -4657,15 +4657,24 @@ function autoConfirmarEnviosChegados(loja){
     const d=new Date(e.criadoEm||Date.now());
     const refCriacao=_dataISO(d.getFullYear(),d.getMonth(),d.getDate());
     const refData=_somaDiasISO((e.data&&e.data<refCriacao)?e.data:refCriacao,-1);
+    /* CORRIGIDO 05/09 (Felipe: "não precisa processar todos, a partir do momento que recebeu já
+       aparece algum status de recebido já pode sumir, no momento da coleta"): antes exigia
+       recebido>=solicitado (100% da quantidade) em CADA item pra confirmar - só que o Mercado
+       Livre libera o "Processamento em andamento" aos poucos (ex: 231 de 300 un., terminando só
+       dias depois), então o envio ficava preso no Doca por até vários dias mesmo já tendo sido
+       de fato recebido/coletado no galpão Full. Agora basta o log real de recebimento
+       (recebimentosFull, vindo do Mercado Livre) mostrar QUALQUER quantidade recebida (>0) pra
+       cada item - sinal de que a coleta/entrada já aconteceu de verdade - sem esperar o
+       processamento completo de 100%. */
     const tudoChegou=itensReais.every(i=>{
       const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
       if(!pLoja||!pLoja.mlItemId||!(i.solicitado>0)) return false;
       const recebido=(pLoja.recebimentosFull||[]).filter(x=>x.data>=refData).reduce((s,x)=>s+(Number(x.qtd)||0),0);
-      return recebido>=i.solicitado;
+      return recebido>0;
     });
     if(tudoChegou){
       confirmarEnvioFull(e.id,true);
-      toast(`🤖 "${e.nome}" confirmado sozinho como FULL — o Mercado Livre já registrou a entrada.`);
+      toast(`✅ FULL de ${nomeEnvio(e)} entregue — sumiu da lista sozinho (o Mercado Livre já registrou a entrada).`);
     }
   });
 }
