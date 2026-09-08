@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v415</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v416</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -8647,7 +8647,22 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       const dentroMetaAds=adsAchado!=null&&(metaIt?adsAchado<=metaIt.teto
         :(margemContribItem>0&&adsAchado<=margemContribItem/3));
       const seloAds=selosAds(margemContribItem,adsAchado,metaIt?metaIt.teto:(margemContribItem>0?margemContribItem/3:null));
-      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds,seloAds};
+      /* NOVO 05/09 (Felipe: "inclua as medalhas de cada produto no relatorio do fechamento de cada
+         loja"): reaproveita a MESMA medalha/posição e a MESMA lógica de seta de subiu/desceu que já
+         existem na Visão Geral (ver medalhaProduto/variacaoPosicao e cardRankingMaisVendidos) - não
+         inventa régua nova. Medalha+posição só aparece quando o produto tem posição hoje; a seta só
+         aparece quando SUBIU (▲) ou DESCEU (▼) desde a leitura anterior - se manteve a posição, fica
+         só a medalha+posição, sem seta nenhuma (pedido explícito do Felipe). */
+      let setaPosicao='';
+      if(p){
+        const v=variacaoPosicao(p);
+        if(v){
+          if(v.entrou||(v.delta!=null&&v.delta>0)) setaPosicao=` <span style="color:var(--ok)" title="${v.entrou?'Entrou no ranking':'Subiu '+v.delta+' posição(ões) — era '+v.de+'º'}">▲</span>`;
+          else if(v.saiu||(v.delta!=null&&v.delta<0)) setaPosicao=` <span style="color:var(--danger)" title="${v.saiu?'Saiu do ranking — era '+v.de+'º':'Caiu '+Math.abs(v.delta)+' posição(ões) — era '+v.de+'º'}">▼</span>`;
+          // delta===0 (manteve) fica sem seta de propósito - só a medalha+posição já mostrada por medalhaProduto
+        }
+      }
+      return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds,seloAds,medalha:medalhaProduto(p),setaPosicao};
     });
     const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
     const margemPosAds=r.m.margem-gastoAds;
@@ -8699,7 +8714,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição — mês de ${esc(r.mesDe)} a ${esc(r.mesAte)} (${r.diasMes} dias): despesas <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML <b>${fmtMoney(r.faturaMlPeriodo)}</b> = <b>${fmtMoney(r.custosPeriodo+r.faturaMlPeriodo)}</b> (valor cheio, usado na "custo total"). Rateado pros ${r.diasSel} dia(s) do período selecionado: <b>${fmtMoney(r.custosRateado+r.faturaMlRateada)}</b> (usado na "rateada").</p>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<div class="tbl-scroll"><table><thead><tr><th>Produto</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
-        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.seloAds||''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
+        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.medalha||''}${p.setaPosicao||''}${p.seloAds||''}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
       </tbody></table></div>`:`<p class="vazio">Nenhuma venda no período.</p>`}
       ${r.porSocio?`<h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sócios${r.fonte?` · ${esc(r.fonte)}`:''}</h3>
         <div class="tbl-scroll"><table><thead><tr><th>Sócio</th><th class="n">Cota</th><th class="n">Retirou</th><th class="n">Reembolso</th></tr></thead><tbody>
