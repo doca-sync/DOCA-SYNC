@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v416</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v417</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4756,6 +4756,17 @@ function autoConfirmarEnviosChegados(loja){
       const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
       const fi=pLoja?state.full.itens.find(x=>x.loja===loja&&fullProduto(x)&&fullProduto(x).id===pLoja.id):null;
       e.baselineFull[i.id]=fi?((Number(fi.aptas)||0)+(Number(fi.transf)||0)):0;
+      /* NOVO 08/09 (Felipe: envio de hoje já constava "Recebido" no próprio Mercado Livre e não
+         sumiu sozinho do Doca): esse método só detecta a chegada comparando um "antes" (a foto
+         tirada aqui) com um "depois" - se a coleta+recebimento no Mercado Livre for tão rápida que
+         já tiver terminado ANTES dessa 1ª foto (ex: método "Levar" com entrega no mesmo dia, ou o
+         PDF foi importado no Doca só depois de já ter chegado de verdade), a foto já nasce
+         "cheia" e a comparação nunca vai detectar aumento nenhum - fica escondido pra sempre, sem
+         avisar nada. Sinal de que isso pode ter acontecido: se JÁ NÃO HAVIA NADA "em transferência"
+         (fi.transf) no exato momento dessa 1ª foto, não dá pra saber se é porque ainda não
+         começou a ir pro Full ou porque já chegou faz tempo - marca o envio como suspeito pra
+         avisar na tela, em vez de confiar cegamente que a detecção automática vai funcionar. */
+      if(!fi||!(Number(fi.transf)>0)) e.baselineSuspeita=true;
       mudouBaseline=true;
       faltaBaseline=true;
     });
@@ -10780,7 +10791,8 @@ function renderEnvio(){
       return `<div class="envio-card">
         <div class="envio-head">
           <div><div class="envio-tit">${e.origem==='emergencia'?'<span class="tag-zero" title="Criado à parte do envio já programado, para cobrir produtos em risco de ruptura">🚨 EMERGÊNCIA</span> ':''}${esc(e.nome)} · <span style="color:var(--violet-l)">${esc(e.loja)}</span></div>
-          <div class="envio-meta">Coleta em <b>${esc(e.localColeta||'—')}</b> · ${e.itens.filter(i=>!i.kitDeItemId).length} SKU(s) · <b class="okv">${fmtInt(a)}</b> no galpão${c?` · <span class="cam">${fmtInt(c)} a coletar</span>`:''}${g?` · <span class="pend">${fmtInt(g)} a comprar</span>`:''}</div></div>
+          <div class="envio-meta">Coleta em <b>${esc(e.localColeta||'—')}</b> · ${e.itens.filter(i=>!i.kitDeItemId).length} SKU(s) · <b class="okv">${fmtInt(a)}</b> no galpão${c?` · <span class="cam">${fmtInt(c)} a coletar</span>`:''}${g?` · <span class="pend">${fmtInt(g)} a comprar</span>`:''}</div>
+          ${e.baselineSuspeita?`<div class="hint" style="color:var(--warn,#e6a23c);margin-top:4px">⚠ Quando o Doca começou a acompanhar este envio, já não tinha nada "em transferência" pro Full — pode já ter chegado ANTES do Doca conseguir comparar um antes/depois, e nesse caso a detecção automática não vai funcionar. Confira no Mercado Livre e, se já estiver "Recebido", confirme com "✓ Virou FULL" manualmente.</div>`:''}</div>
           <div class="envio-acts">
             <button class="btn sm" data-editenvio="${e.id}">✎ Editar</button>
             <button class="btn sm" data-addsku="${e.id}">+ Adicionar SKU</button>
