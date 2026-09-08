@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v419</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v420</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4241,8 +4241,16 @@ function renderDashboard(){
            tarde, mostrava a data do envio que já resolveu (o de mais cedo) em vez do que ainda
            está atrasado de verdade. Tem que usar r.k.pendenteTardio (o envio real que não coube
            no prazo), não r.proximoFullProduto (o mais próximo, resolvido ou não). */
+        /* CORRIGIDO 08/09, 2ª volta (Felipe: "mas isso não fica claro no card, só porque você me
+           disse aqui"): quando já existe outro envio ANTES do atrasado que entrou na conta e
+           empurrou a projeção de zerar mais pra frente (r.k.pendentesContados), o card agora conta
+           essa parte também - senão parece que o sistema ignorou o envio de 11/09 (não ignorou,
+           só não foi suficiente sozinho pra cobrir até o próximo lote chegar). */
+        const contados=r.k.pendentesContados||[];
+        const qtdContada=contados.reduce((s,p2)=>s+(p2.qtd||0),0);
+        const jaContadoTxt=contados.length?` (mesmo somando ${fmtInt(qtdContada)} un. já programada${contados.length>1?'s':''} pra ${contados.map(p2=>fmtData(p2.data)).join(' e ')}, que adia${contados.length>1?'m':''} a ruptura até ${fmtData(r.diaZero)})`:'';
         const envioTxt=r.zeraAntesDoEnvio
-          ?`<span class="pend">🚨 FULL só em ${fmtData(r.k.pendenteTardio.data)} — depois da ruptura, precisa antecipar</span>`
+          ?`<span class="pend">🚨 FULL só em ${fmtData(r.k.pendenteTardio.data)}${jaContadoTxt} — depois da ruptura, precisa antecipar</span>`
           :(r.proximoFullProduto?`FULL em ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
             :(r.emGracaEnvio?`confirmado em ${fmtData(r.dataEnvioConfirmado)}, aguardando o ML`
             :'<span class="pend">sem FULL programado</span>'));
@@ -12054,7 +12062,12 @@ function rupturaCalcComData(i){
      forma específica por produto, em vez de olhar só se a LOJA tem algum envio programado
      (podia ser um envio que nem inclui esse SKU). */
   const pendenteTardio=pendentes.find(p=>!usados.has(p.data))||null;
-  return {...k,full,cob,diaZero,pendentes,pendenteTardio};
+  /* CORRIGIDO 08/09 (Felipe: "mas não fica claro no card que o envio de antes já foi contado e
+     mesmo assim sobra 1 dia de furo"): devolve também quais pendentes JÁ entraram na conta (pela
+     data), pra render poder explicar "esse aqui já tá somado e adia até tal dia, mas o de tal data
+     ainda chega tarde" em vez de só apontar a data que falta, sem contexto do que já ajudou. */
+  const pendentesContados=pendentes.filter(p=>usados.has(p.data));
+  return {...k,full,cob,diaZero,pendentes,pendenteTardio,pendentesContados};
 }
 /* pausa/reativa o aviso de ruptura de 1 SKU - pra produto que vai sair de linha: vende o que
    resta, não repõe, e depois exclui o anúncio no Mercado Livre. Não mexe em estoque nem vendas,
@@ -12165,7 +12178,7 @@ function renderRuptura(){
           <td class="num">${k.media.toFixed(2)}</td>
           <td class="num">${cobDias} d</td>
           <td>${zeraAntesDoEnvio?`<span class="pend">${fmtData(diaZero)} — antes do envio</span>`:fmtData(diaZero)}</td>
-          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(k.pendenteTardio.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data))
+          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(k.pendenteTardio.data)} — tarde, precisa antecipar</span>${(k.pendentesContados&&k.pendentesContados.length)?`<br><small class="hint">já conta ${fmtInt(k.pendentesContados.reduce((s,p2)=>s+(p2.qtd||0),0))} un. de ${k.pendentesContados.map(p2=>fmtData(p2.data)).join(' e ')}, que adiam até ${fmtData(diaZero)} — mas não é suficiente</small>`:''}`:fmtData(proximoFullProduto.data))
             :(emGracaEnvio?`<span class="muted">confirmado em ${fmtData(dataEnvioConfirmado)} — aguardando o Mercado Livre processar</span>`
             :(foraDoProximoEnvio?`<span class="pend">nenhum — vai zerar antes do próximo envio da loja (${fmtData(prox.data)}), inclua ele</span>`:'<span class="muted">nenhum</span>'))}</td>
           <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button> <button class="btn sm" data-pausarrup2="${p.id}" title="Produto saindo de linha — para de mostrar este aviso">🔕</button></td>
