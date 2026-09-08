@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v418</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v419</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4233,8 +4233,16 @@ function renderDashboard(){
         const zeraTxt=semEstoqueFull
           ?'<b class="pend">SEM ESTOQUE</b>'
           :(r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`);
+        /* CORRIGIDO 08/09 (Felipe: moveu parte do PENTEMADEIRAPEQUENO do dia 25 pro dia 11, o
+           envio de 11 passou a chegar a tempo, mas o aviso continuou preso em "FULL só em 11/09"):
+           zeraAntesDoEnvio só diz SE existe algum envio atrasado (kr.pendenteTardio), mas o texto
+           usava r.proximoFullProduto (sempre o PRIMEIRO envio agendado, cronologicamente) pra
+           mostrar a data - quando tem mais de 1 envio pra esse SKU e só o de trás é que chega
+           tarde, mostrava a data do envio que já resolveu (o de mais cedo) em vez do que ainda
+           está atrasado de verdade. Tem que usar r.k.pendenteTardio (o envio real que não coube
+           no prazo), não r.proximoFullProduto (o mais próximo, resolvido ou não). */
         const envioTxt=r.zeraAntesDoEnvio
-          ?`<span class="pend">🚨 FULL só em ${fmtData(r.proximoFullProduto.data)} — depois da ruptura, precisa antecipar</span>`
+          ?`<span class="pend">🚨 FULL só em ${fmtData(r.k.pendenteTardio.data)} — depois da ruptura, precisa antecipar</span>`
           :(r.proximoFullProduto?`FULL em ${fmtData(r.proximoFullProduto.data)} (chega a tempo)`
             :(r.emGracaEnvio?`confirmado em ${fmtData(r.dataEnvioConfirmado)}, aguardando o ML`
             :'<span class="pend">sem FULL programado</span>'));
@@ -12157,7 +12165,7 @@ function renderRuptura(){
           <td class="num">${k.media.toFixed(2)}</td>
           <td class="num">${cobDias} d</td>
           <td>${zeraAntesDoEnvio?`<span class="pend">${fmtData(diaZero)} — antes do envio</span>`:fmtData(diaZero)}</td>
-          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(proximoFullProduto.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data))
+          <td>${proximoFullProduto?(zeraAntesDoEnvio?`<span class="pend">${fmtData(k.pendenteTardio.data)} — tarde, precisa antecipar</span>`:fmtData(proximoFullProduto.data))
             :(emGracaEnvio?`<span class="muted">confirmado em ${fmtData(dataEnvioConfirmado)} — aguardando o Mercado Livre processar</span>`
             :(foraDoProximoEnvio?`<span class="pend">nenhum — vai zerar antes do próximo envio da loja (${fmtData(prox.data)}), inclua ele</span>`:'<span class="muted">nenhum</span>'))}</td>
           <td><button class="btn sm" data-rver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button> <button class="btn sm" data-pausarrup2="${p.id}" title="Produto saindo de linha — para de mostrar este aviso">🔕</button></td>
