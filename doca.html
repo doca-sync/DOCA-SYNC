@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v417</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v418</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -10792,7 +10792,8 @@ function renderEnvio(){
         <div class="envio-head">
           <div><div class="envio-tit">${e.origem==='emergencia'?'<span class="tag-zero" title="Criado à parte do envio já programado, para cobrir produtos em risco de ruptura">🚨 EMERGÊNCIA</span> ':''}${esc(e.nome)} · <span style="color:var(--violet-l)">${esc(e.loja)}</span></div>
           <div class="envio-meta">Coleta em <b>${esc(e.localColeta||'—')}</b> · ${e.itens.filter(i=>!i.kitDeItemId).length} SKU(s) · <b class="okv">${fmtInt(a)}</b> no galpão${c?` · <span class="cam">${fmtInt(c)} a coletar</span>`:''}${g?` · <span class="pend">${fmtInt(g)} a comprar</span>`:''}</div>
-          ${e.baselineSuspeita?`<div class="hint" style="color:var(--warn,#e6a23c);margin-top:4px">⚠ Quando o Doca começou a acompanhar este envio, já não tinha nada "em transferência" pro Full — pode já ter chegado ANTES do Doca conseguir comparar um antes/depois, e nesse caso a detecção automática não vai funcionar. Confira no Mercado Livre e, se já estiver "Recebido", confirme com "✓ Virou FULL" manualmente.</div>`:''}</div>
+          ${e.avisoRecebidoAutoDetectado?`<div class="aviso risco" style="margin-top:6px">🚀 <b>O servidor detectou sozinho (checagem agendada de 7:30/12:30) que este envio já chegou no Full</b> — mesmo sem o Doca estar aberto. Confira no Mercado Livre e clique em "✓ Virou FULL" pra confirmar (por segurança, essa checagem agendada só avisa, não confirma sozinha).</div>`
+          :e.baselineSuspeita?`<div class="hint" style="color:var(--warn,#e6a23c);margin-top:4px">⚠ Quando o Doca começou a acompanhar este envio, já não tinha nada "em transferência" pro Full — pode já ter chegado ANTES do Doca conseguir comparar um antes/depois, e nesse caso a detecção automática não vai funcionar. Confira no Mercado Livre e, se já estiver "Recebido", confirme com "✓ Virou FULL" manualmente.</div>`:''}</div>
           <div class="envio-acts">
             <button class="btn sm" data-editenvio="${e.id}">✎ Editar</button>
             <button class="btn sm" data-addsku="${e.id}">+ Adicionar SKU</button>

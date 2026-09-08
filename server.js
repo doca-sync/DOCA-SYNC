@@ -5173,6 +5173,92 @@ async function pedirAtualizacaoMpTodasAsLojas(motivo) {
     }
   }
 }
+/* NOVO 08/09 (Felipe: "e no caso do dia que eu nao abrir o Doca?" - a deteccao de chegada no FULL,
+   ver autoConfirmarEnviosChegados no doca.html, so' rodava quando o navegador dele abria o Doca; se
+   nao abrisse naquele dia, nem a "foto" de comparacao (baseline) era tirada, nem o aviso aparecia -
+   ficava tudo parado ate a proxima vez que abrisse). Dei 2 opcoes pro Felipe: (1) portar TODA a
+   logica de confirmarEnvioFull pro servidor (roda sozinho todo dia, mas duplica uma logica grande e
+   delicada - fila de processamento, kit, compra vinculada, estoque compartilhado - em Node, correndo
+   risco de bug mexer em estoque/compra sem ele ver acontecer); (2) o servidor faz so' a parte LEVE
+   (tirar a foto/comparar aptas+transferencia, sem mexer em estoque nenhum) e deixa avisado no
+   estado, bem visivel, pra confirmar na mao assim que abrir o Doca. Felipe escolheu a opcao 2.
+   Reusa o proprio /sync (mesmo endpoint que o navegador chama ao abrir o Doca) pra manter
+   quantidade_disponivel/transferencia_full frescos em ml_produtos, depois le/grava o doca_estado
+   direto no banco - roda nos MESMOS horarios do agendamento do Mercado Pago (7:30/12:30), pra nao
+   multiplicar checagens desnecessarias no dia. */
+async function detectarChegadasFullTodasAsLojas(motivo) {
+  for (const loja of LOJAS_VALIDAS) {
+    try {
+      await fetch(`http://localhost:${PORT}/sync?loja=${encodeURIComponent(loja)}`, { method: 'POST' });
+    } catch (e) {
+      console.error(`[full-agendado] ${motivo} - falha ao sincronizar produtos de ${loja}:`, e.message);
+    }
+  }
+  try {
+    const linha = await pegarEstadoNuvem();
+    if (!linha || !linha.dados) { console.log(`[full-agendado] ${motivo} - sem estado salvo ainda.`); return; }
+    const dados = linha.dados;
+    const envios = Array.isArray(dados.envios) ? dados.envios : [];
+    const produtos = Array.isArray(dados.produtos) ? dados.produtos : [];
+    if (!envios.length) { console.log(`[full-agendado] ${motivo} - nenhum envio programado.`); return; }
+    const cacheMl = {};
+    async function pegarMlProduto(loja, mlItemId) {
+      if (!cacheMl[loja]) {
+        const r = await pool.query('select ml_item_id, quantidade_disponivel, transferencia_full from ml_produtos where loja = $1', [loja]);
+        cacheMl[loja] = new Map(r.rows.map(row => [row.ml_item_id, row]));
+      }
+      return cacheMl[loja].get(mlItemId) || null;
+    }
+    let mudou = false;
+    for (const e of envios) {
+      if (!Array.isArray(e.itens)) continue;
+      const itensReais = e.itens.filter(i => !i.kitDeItemId);
+      if (!itensReais.length) continue;
+      if (!e.baselineFull) e.baselineFull = {};
+      let faltaBaseline = false;
+      for (const i of itensReais) {
+        if (e.baselineFull[i.id] != null) continue;
+        const pid = i.skuEscolhidoId || i.produtoId;
+        const pLoja = produtos.find(p => p.id === pid);
+        let aptas = 0, transf = 0;
+        if (pLoja && pLoja.mlItemId) {
+          const row = await pegarMlProduto(e.loja, pLoja.mlItemId);
+          if (row) { aptas = Number(row.quantidade_disponivel) || 0; transf = Number(row.transferencia_full) || 0; }
+        }
+        e.baselineFull[i.id] = aptas + transf;
+        // mesmo sinal de "suspeita" que o doca.html usa (ver autoConfirmarEnviosChegados) - se ja'
+        // nao tinha nada em transferencia na 1a foto, pode ja ter chegado antes mesmo dessa foto.
+        if (!(transf > 0)) e.baselineSuspeita = true;
+        faltaBaseline = true;
+        mudou = true;
+      }
+      if (faltaBaseline) continue; // só dá pra comparar a partir da PRÓXIMA checagem, com essa foto em mãos
+      let tudoChegou = true;
+      for (const i of itensReais) {
+        const pid = i.skuEscolhidoId || i.produtoId;
+        const pLoja = produtos.find(p => p.id === pid);
+        if (!pLoja || !pLoja.mlItemId || !(i.solicitado > 0)) { tudoChegou = false; break; }
+        const row = await pegarMlProduto(e.loja, pLoja.mlItemId);
+        const atual = row ? ((Number(row.quantidade_disponivel) || 0) + (Number(row.transferencia_full) || 0)) : 0;
+        if (!(atual > (e.baselineFull[i.id] || 0))) { tudoChegou = false; break; }
+      }
+      if (tudoChegou && !e.avisoRecebidoAutoDetectado) { e.avisoRecebidoAutoDetectado = true; mudou = true; }
+    }
+    if (mudou) {
+      try { await fazerBackupAntesDeGravar(linha.dados, linha.atualizado_em); } catch (eBackup) { console.error(`[full-agendado] ${motivo} - falha ao gravar backup:`, eBackup.message); }
+      await pool.query(
+        `insert into doca_estado (id, dados, atualizado_em) values (1, $1, now())
+         on conflict (id) do update set dados = excluded.dados, atualizado_em = excluded.atualizado_em`,
+        [JSON.stringify(dados)]
+      );
+      console.log(`[full-agendado] ${motivo} - estado atualizado com aviso(s) de chegada/baseline.`);
+    } else {
+      console.log(`[full-agendado] ${motivo} - nada novo pra avisar.`);
+    }
+  } catch (e) {
+    console.error(`[full-agendado] ${motivo} - falha geral:`, e.message);
+  }
+}
 setInterval(() => {
   const agora = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
@@ -5184,6 +5270,7 @@ setInterval(() => {
   if (slot === ultimoSlotRodado) return; // ja rodou nesse exato minuto/dia - evita disparo duplicado
   ultimoSlotRodado = slot;
   pedirAtualizacaoMpTodasAsLojas(`agendado ${horaMin}`);
+  detectarChegadasFullTodasAsLojas(`agendado ${horaMin}`);
 }, 60 * 1000);
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
