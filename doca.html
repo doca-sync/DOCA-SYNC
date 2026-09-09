@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v425</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v427</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1240,10 +1240,9 @@ function migrar(){
     if(p.mlConcorrenciaPreco===undefined) p.mlConcorrenciaPreco=null;
     if(p.mlPerguntas===undefined) p.mlPerguntas=0;
     if(p.mlQtdDisponivel===undefined) p.mlQtdDisponivel=null;
-    /* NOVO 09/09 (Felipe: "resumo do dia" - visita x conversão): visitas dos últimos 7 dias, só
-       preenchido depois de apertar "Atualizar oferta" no card da Visão Geral (ver
-       atualizarOfertaTodasLojas/cardResumoDoDia) - não vem do /sync normal, é chamada separada
-       (pra não pesar a sincronização de todo dia com 1 chamada de API a mais por anúncio). */
+    /* NOVO 09/09 (Felipe: "resumo do dia" - visita x conversão): visitas dos últimos 7 dias,
+       atualizado automaticamente pelo servidor às 07:30/12:30 (ver atualizarVisitasTodasAsLojas
+       no server.js e cardResumoDoDia aqui) - não vem do /sync normal, é job separado. */
     if(p.mlVisitas7d===undefined) p.mlVisitas7d=null;
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
@@ -3989,11 +3988,10 @@ function cardOportunidadesAnuncios(){
   </div>`;
 }
 /* ---------- Resumo do dia: oferta x tráfego (09/09, pedido do Felipe depois de ver a skill
-   "rotina-diaria-ml") ---------- Cruza vendas 7d (já sincronizado sempre) com visitas 7d (só
-   busca sob demanda, botão "Atualizar oferta" - ver atualizarOfertaTodasLojas) pra achar anúncio
+   "rotina-diaria-ml") ---------- Cruza vendas 7d (já sincronizado sempre) com visitas 7d
+   (atualizado automaticamente pelo servidor às 07:30/12:30, sem botão) pra achar anúncio
    com bastante visita mas conversão muito abaixo da média da loja: sinal de problema de OFERTA
    (preço, foto, ficha) e não de tráfego, que o Doca não conseguia enxergar até hoje. */
-let ofertaCarregando=false;
 const PISO_VISITAS_OFERTA=15;   /* abaixo disso a amostra é pequena demais pra confiar na % */
 function ofertaComProblema(loja){
   const itens=fullItensLoja(loja).map(i=>({i,p:fullProduto(i)})).filter(x=>x.p&&!x.p.mlAusente);
@@ -4011,68 +4009,30 @@ function cardResumoDoDia(){
   const porLoja=STORES.map(loja=>({loja,...ofertaComProblema(loja)}));
   const total=porLoja.reduce((s,g)=>s+g.itens.length,0);
   const algumDado=porLoja.some(g=>g.temDado);
-  const atualizadoEm=state.ofertaAtualizadoEm?new Date(state.ofertaAtualizadoEm).toLocaleString('pt-BR'):null;
+  /* Automatico desde v425 (o servidor atualiza visitas_7d sozinho às 07:30/12:30) - sem botão
+     manual. O "atualizado em" agora vem do próprio dado sincronizado (mlAtualizadoEm do item
+     com visita mais recente), não de um timestamp separado de clique. */
+  let maisRecente=0;
+  STORES.forEach(loja=>{
+    fullItensLoja(loja).forEach(i=>{
+      const p=fullProduto(i);
+      if(p&&typeof p.mlVisitas7d==='number'&&p.mlAtualizadoEm){
+        const t=new Date(p.mlAtualizadoEm).getTime();
+        if(t>maisRecente) maisRecente=t;
+      }
+    });
+  });
+  const atualizadoEm=maisRecente?new Date(maisRecente).toLocaleString('pt-BR'):null;
   return `<div class="card-vg">
     <h3>🔦 Oferta × tráfego${algumDado?` <span class="badge ${total?'pend':'okv'}">${total} anúncio(s) com visita alta e conversão baixa</span>`:''}</h3>
     <p class="sub">Compara vendas × visitas dos últimos 7 dias — visita alta com conversão bem abaixo da média da loja é sinal de problema de oferta (preço, foto, ficha), não de falta de tráfego.
-      ${atualizadoEm?` Atualizado em ${atualizadoEm}.`:' Ainda não atualizado — os dados de visita não vêm na sincronização normal, só quando você pede aqui.'}</p>
-    <p><button class="btn sm" id="btnAtualizarOferta" ${ofertaCarregando?'disabled':''}>${ofertaCarregando?'Buscando visitas…':'🔄 Atualizar oferta (visitas × conversão)'}</button></p>
+      ${atualizadoEm?` Atualizado automaticamente em ${atualizadoEm}.`:' Ainda sem dados de visita — a primeira atualização automática roda às 07:30 ou 12:30.'}</p>
     ${algumDado?`<div class="vg-cols">
       ${porLoja.map(g=>vgColunaLoja(g.loja,g.itens.length,
         g.itens.map(x=>vgLinha(esc(x.sku),`${fmtInt(x.visitas)} visitas`,`${fmtInt(x.vendas)} venda(s) em 7d · conversão ${(x.conversao*100).toFixed(1)}% (média da loja ${(g.mediaConversao*100).toFixed(1)}%)`)).join(''),
         'Nenhum anúncio fora do padrão.')).join('')}
     </div>`:''}
   </div>`;
-}
-/* dispara o job de visitas de cada loja em paralelo (mesmo padrão de fetchResumoJob) e aplica o
-   resultado direto nos produtos já carregados - não precisa re-sincronizar mais nada. */
-function fetchVisitasJob(loja){
-  return new Promise((resolve,reject)=>{
-    (async()=>{
-      try{
-        const base=backendUrl();
-        if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-        const r=await fetch(`${base}/produtos/visitas-job/iniciar?loja=${encodeURIComponent(loja)}`);
-        let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
-        if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao iniciar (HTTP '+r.status+').'));
-        const jobId=j.jobId;
-        const poll=async()=>{
-          try{
-            const r2=await fetch(`${base}/produtos/visitas-job/status?id=${encodeURIComponent(jobId)}`);
-            let j2; try{ j2=await r2.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
-            if(!r2.ok||!j2.ok) throw new Error(j2.erro||('Erro ao consultar status (HTTP '+r2.status+').'));
-            if(j2.status==='rodando'){ setTimeout(poll,1200); return; }
-            if(j2.status==='erro'){ reject(new Error(j2.erro||'Falha desconhecida.')); return; }
-            resolve(j2.resultado);
-          }catch(e){ reject(e); }
-        };
-        poll();
-      }catch(e){ reject(e); }
-    })();
-  });
-}
-async function atualizarOfertaTodasLojas(){
-  if(ofertaCarregando) return;
-  ofertaCarregando=true; renderDashboard();
-  try{
-    const resultados=await Promise.allSettled(STORES.map(loja=>fetchVisitasJob(loja)));
-    let falhas=[];
-    resultados.forEach((r,i)=>{
-      if(r.status!=='fulfilled'){ falhas.push(STORES[i]); console.error('[oferta] falha em '+STORES[i]+':',r.reason&&r.reason.message); return; }
-      (r.value&&r.value.itens||[]).forEach(it=>{
-        const p=state.produtos.find(x=>x.mlItemId===it.ml_item_id);
-        if(p) p.mlVisitas7d=it.visitas_7d;
-      });
-    });
-    state.ofertaAtualizadoEm=Date.now();
-    persist();
-    if(falhas.length) toast('Não consegui buscar visitas de: '+falhas.join(', ')+'. O resto foi atualizado.');
-    else toast('Oferta × tráfego atualizada.');
-  }catch(e){
-    toast('Falha ao atualizar oferta: '+e.message);
-  }finally{
-    ofertaCarregando=false; renderDashboard();
-  }
 }
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
@@ -4411,8 +4371,6 @@ function renderDashboard(){
       pausarReposicao(p.id,true); toast('Aviso pausado pra este SKU.'); renderAll();
     });
   });
-  const btnAtualizarOferta=document.getElementById('btnAtualizarOferta');
-  if(btnAtualizarOferta) btnAtualizarOferta.onclick=atualizarOfertaTodasLojas;
   el.querySelectorAll('[data-verperguntas]').forEach(b=>b.onclick=()=>carregarPerguntas(b.dataset.verperguntas));
   el.querySelectorAll('[data-sugestaotentar]').forEach(a=>a.onclick=(ev)=>{ ev.preventDefault(); tentarSugestaoDeNovo(a.dataset.sugestaotentar); });
   el.querySelectorAll('[data-responder]').forEach(b=>b.onclick=()=>{
@@ -4938,10 +4896,11 @@ function abrirSincronizacaoML(){
         <label>Loja (visualização)<select id="mlLoja">${optsLojas(c.loja)}</select></label>
       </div>
       ${!c.baseUrl&&backendUrl()?`<p class="hint" style="margin-top:6px">Detectado automaticamente: <b class="mono">${esc(backendUrl())}</b> (o próprio endereço deste Doca). Só preencha o campo acima se quiser usar outro.</p>`:''}
-      <div class="acoes-linha" style="margin-top:10px">
+      <div class="acoes-linha" style="margin-top:10px;flex-wrap:wrap">
         <button class="btn gold" id="btnMlAtualizar">🔄 Atualizar todas as lojas</button>
-        <span id="mlStatus" style="font-size:12.5px;color:var(--muted)"></span>
+        <button class="btn" id="btnMlAtualizarUma">🔄 Atualizar somente ${esc(c.loja)}</button>
       </div>
+      <div id="mlProgresso"></div>
       ${erro?`<p class="aviso" style="margin-top:12px">⚠ ${esc(erro)}</p>`:''}
       ${resultado?`
         <p class="hint" style="margin-top:12px">${resultado.autorizado?'Loja autorizada.':'⚠ Essa loja ainda não foi autorizada no backend (rode o /oauth/login primeiro).'} ${resultado.ultimaAtualizacao?'Última sincronização: '+new Date(resultado.ultimaAtualizacao).toLocaleString('pt-BR'):''}</p>
@@ -4956,33 +4915,63 @@ function abrirSincronizacaoML(){
        (diferentes da selecionada no dropdown) são aplicadas em segundo plano, direto, sem
        mostrar tabela; a loja selecionada é sincronizada por último e mostra a tabela completa
        de comparação/vínculo, porque é a única que faz sentido revisar visualmente aqui. */
+    const progBox=()=>document.getElementById('mlProgresso');
+    const btnTodas=document.getElementById('btnMlAtualizar');
+    const btnUma=document.getElementById('btnMlAtualizarUma');
     document.getElementById('btnMlAtualizar').onclick=async()=>{
       c.baseUrl=document.getElementById('mlBaseUrl').value.trim();
       c.loja=document.getElementById('mlLoja').value;
       persist();
-      const st=document.getElementById('mlStatus'); const btn=document.getElementById('btnMlAtualizar');
-      btn.disabled=true;
+      btnTodas.disabled=true; btnUma.disabled=true;
       const outras=STORES.filter(l=>l!==c.loja);
+      const total=outras.length+1;
       const falhas=[];
       for(let i=0;i<outras.length;i++){
-        st.textContent=`Sincronizando ${outras[i]}... (${i+1}/${outras.length+1})`;
+        progBox().innerHTML=barraProgresso(i,total,`Sincronizando ${outras[i]}...`);
         try{ aplicarSincronizacaoAutomatica(await mlSincronizarLoja(outras[i])); }
         catch(e){ falhas.push(outras[i]); }
         try{ await carregarReclamacoes(outras[i]); await carregarMensagens(outras[i]); renderDashboard(); }catch(e){}
         try{ aplicarSincronizacaoFinanceira(outras[i],await mpSincronizarFinanceiro(outras[i])); }catch(e){}
       }
-      st.textContent=`Sincronizando ${c.loja}... (${outras.length+1}/${outras.length+1}) — pode levar até 1 minuto se o servidor estava dormindo.`;
+      progBox().innerHTML=barraProgresso(outras.length,total,`Sincronizando ${c.loja}... (pode levar até 1 minuto se o servidor estava dormindo)`);
       try{
         const resultado=await mlSincronizarLoja(c.loja);
         ultimoResultadoMl=resultado;
         try{ await carregarReclamacoes(c.loja); await carregarMensagens(c.loja); renderDashboard(); }catch(e){}
         try{ aplicarSincronizacaoFinanceira(c.loja,await mpSincronizarFinanceiro(c.loja)); }catch(e){}
+        progBox().innerHTML=barraProgresso(total,total,'Concluído.');
         render(resultado,null);
         toast('Todas as lojas sincronizadas'+(falhas.length?` (falhou: ${falhas.join(', ')})`:'')+'.');
       }catch(e){
         render(null,e.message);
       }
-      btn.disabled=false;
+      btnTodas.disabled=false; btnUma.disabled=false;
+    };
+    /* botão novo (pedido do Felipe 09/09): sincroniza só a loja selecionada no dropdown, sem
+       mexer nas outras — útil quando só precisa atualizar uma loja na hora e não quer esperar
+       o ciclo completo de todas. Mesmos 3 sub-passos da loja "principal" no fluxo de cima
+       (produtos, reclamações/mensagens, financeiro), usados aqui como os 3 passos da barra. */
+    btnUma.onclick=async()=>{
+      c.baseUrl=document.getElementById('mlBaseUrl').value.trim();
+      c.loja=document.getElementById('mlLoja').value;
+      persist();
+      btnTodas.disabled=true; btnUma.disabled=true;
+      const totalPassos=3;
+      try{
+        progBox().innerHTML=barraProgresso(0,totalPassos,`Sincronizando ${c.loja}... (pode levar até 1 minuto se o servidor estava dormindo)`);
+        const resultado=await mlSincronizarLoja(c.loja);
+        ultimoResultadoMl=resultado;
+        progBox().innerHTML=barraProgresso(1,totalPassos,`Sincronizando ${c.loja}... (mensagens/reclamações)`);
+        try{ await carregarReclamacoes(c.loja); await carregarMensagens(c.loja); renderDashboard(); }catch(e){}
+        progBox().innerHTML=barraProgresso(2,totalPassos,`Sincronizando ${c.loja}... (financeiro)`);
+        try{ aplicarSincronizacaoFinanceira(c.loja,await mpSincronizarFinanceiro(c.loja)); }catch(e){}
+        progBox().innerHTML=barraProgresso(totalPassos,totalPassos,'Concluído.');
+        render(resultado,null);
+        toast(`${c.loja} sincronizada.`);
+      }catch(e){
+        render(null,e.message);
+      }
+      btnTodas.disabled=false; btnUma.disabled=false;
     };
   };
   const renderOrig=render;
@@ -5462,12 +5451,46 @@ function tableComprar(list,denseLoja,curva){
     </tr>`;}).join('')}
   </tbody></table></div>`;
 }
+/* NOVO 09/09 (pedido do Felipe: "ESCOVA CACHOS" e outros SKUs iguais pedidos em mais de uma
+   loja aparecem espalhados em Comprar, sem um total único pra fechar com o fornecedor) - soma
+   por SKU (texto igual, maiúsculo/minúsculo ignorado) em TODAS as lojas de uma vez. Só mostra
+   SKU que aparece em mais de 1 loja - se só tem 1, a tabela normal por loja já basta. Não muda
+   nada no controle por loja (coleta/estoque continuam por loja) - é só um resumo visual. */
+function resumoComprasPorSku(){
+  const todasPedidos=[];
+  state.produtos.forEach(p=>(p.pedidos||[]).forEach(c=>{ if(c.qtd>0) todasPedidos.push({p,c}); }));
+  if(!todasPedidos.length) return '';
+  const porChave={};
+  todasPedidos.forEach(({p,c})=>{
+    const chave=(p.sku||'').trim().toUpperCase(); if(!chave) return;
+    if(!porChave[chave]) porChave[chave]={sku:p.sku,qtd:0,subtotal:0,lojas:{}};
+    const acc=porChave[chave];
+    acc.qtd+=c.qtd;
+    acc.subtotal+=(p.custo||0)*c.qtd;
+    acc.lojas[p.loja]=(acc.lojas[p.loja]||0)+c.qtd;
+  });
+  const repetidos=Object.values(porChave).filter(x=>Object.keys(x.lojas).length>1).sort((a,b)=>b.qtd-a.qtd);
+  if(!repetidos.length) return '';
+  return `<details class="card" style="margin:0 0 16px" open>
+    <summary><b>🧮 Resumo consolidado por SKU</b> <span class="muted">— mesmo SKU pedido em mais de uma loja (${repetidos.length})</span></summary>
+    <p class="hint" style="margin-top:8px">Total combinado de todas as lojas — útil pra fechar 1 pedido só com o fornecedor em vez de somar na mão. A coleta e o estoque continuam controlados por loja nas tabelas abaixo.</p>
+    <div class="table-wrap" style="margin-top:8px"><table class="tbl-produtos"><thead><tr><th>SKU</th><th class="num">Total a comprar</th><th>Por loja</th><th class="num">Custo estimado</th></tr></thead><tbody>
+    ${repetidos.map(r=>`<tr>
+      <td class="mono">${esc(r.sku)}</td>
+      <td class="num"><b>${fmtInt(r.qtd)}</b></td>
+      <td>${Object.entries(r.lojas).map(([loja,qtd])=>`${esc(loja)}: ${fmtInt(qtd)}`).join(' · ')}</td>
+      <td class="num">${r.subtotal>0?fmtMoney(r.subtotal):'<span class="tag-zero">sem custo</span>'}</td>
+    </tr>`).join('')}
+    </tbody></table></div>
+  </details>`;
+}
 function renderComprar(){
   const el=document.getElementById('tab-comprar');
   let h=`<h1 class="page-title">Comprar</h1>
     <div class="modal-actions" style="justify-content:flex-start;margin:0 0 16px">
       <button class="btn gold" id="btnRelCompraFornecedor">🖨 Relatório de compra por fornecedor</button></div>
-    <p class="hint" style="margin:0 0 16px">Cada pedido aparece em uma linha própria, mesmo sendo do mesmo SKU. Se o fornecedor não tiver a quantidade toda, altere direto na coluna <b>Qtd do pedido</b> — os outros pedidos do mesmo SKU não são afetados. Ao clicar em <b>Comprei</b>, só aquele pedido vira um lote na lista de coleta.</p>`;
+    <p class="hint" style="margin:0 0 16px">Cada pedido aparece em uma linha própria, mesmo sendo do mesmo SKU. Se o fornecedor não tiver a quantidade toda, altere direto na coluna <b>Qtd do pedido</b> — os outros pedidos do mesmo SKU não são afetados. Ao clicar em <b>Comprei</b>, só aquele pedido vira um lote na lista de coleta.</p>
+    ${resumoComprasPorSku()}`;
   STORES.forEach(loja=>{
     const l=state.produtos.filter(p=>p.loja===loja&&(p.pedidos||[]).length>0).sort((a,b)=>a.sku.localeCompare(b.sku));
     const denseLoja=l.length?projecaoCaixaBase([loja],60).dense:[];
