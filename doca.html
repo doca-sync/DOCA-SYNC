@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v422</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v424</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1240,6 +1240,11 @@ function migrar(){
     if(p.mlConcorrenciaPreco===undefined) p.mlConcorrenciaPreco=null;
     if(p.mlPerguntas===undefined) p.mlPerguntas=0;
     if(p.mlQtdDisponivel===undefined) p.mlQtdDisponivel=null;
+    /* NOVO 09/09 (Felipe: "resumo do dia" - visita x conversão): visitas dos últimos 7 dias, só
+       preenchido depois de apertar "Atualizar oferta" no card da Visão Geral (ver
+       atualizarOfertaTodasLojas/cardResumoDoDia) - não vem do /sync normal, é chamada separada
+       (pra não pesar a sincronização de todo dia com 1 chamada de API a mais por anúncio). */
+    if(p.mlVisitas7d===undefined) p.mlVisitas7d=null;
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
     if(p.mlTransferencia===undefined) p.mlTransferencia=null;
@@ -3983,6 +3988,92 @@ function cardOportunidadesAnuncios(){
     </div>
   </div>`;
 }
+/* ---------- Resumo do dia: oferta x tráfego (09/09, pedido do Felipe depois de ver a skill
+   "rotina-diaria-ml") ---------- Cruza vendas 7d (já sincronizado sempre) com visitas 7d (só
+   busca sob demanda, botão "Atualizar oferta" - ver atualizarOfertaTodasLojas) pra achar anúncio
+   com bastante visita mas conversão muito abaixo da média da loja: sinal de problema de OFERTA
+   (preço, foto, ficha) e não de tráfego, que o Doca não conseguia enxergar até hoje. */
+let ofertaCarregando=false;
+const PISO_VISITAS_OFERTA=15;   /* abaixo disso a amostra é pequena demais pra confiar na % */
+function ofertaComProblema(loja){
+  const itens=fullItensLoja(loja).map(i=>({i,p:fullProduto(i)})).filter(x=>x.p&&!x.p.mlAusente);
+  const comVisita=itens.filter(x=>typeof x.p.mlVisitas7d==='number'&&x.p.mlVisitas7d>0);
+  if(!comVisita.length) return {itens:[],mediaConversao:null,temDado:false};
+  const conv=x=>x.i.v7/x.p.mlVisitas7d;
+  const mediaConversao=comVisita.reduce((s,x)=>s+conv(x),0)/comVisita.length;
+  const problema=comVisita
+    .filter(x=>x.p.mlVisitas7d>=PISO_VISITAS_OFERTA&&conv(x)<mediaConversao*0.5)
+    .map(x=>({sku:x.p.sku,visitas:x.p.mlVisitas7d,vendas:x.i.v7,conversao:conv(x)}))
+    .sort((a,b)=>b.visitas-a.visitas);
+  return {itens:problema,mediaConversao,temDado:true};
+}
+function cardResumoDoDia(){
+  const porLoja=STORES.map(loja=>({loja,...ofertaComProblema(loja)}));
+  const total=porLoja.reduce((s,g)=>s+g.itens.length,0);
+  const algumDado=porLoja.some(g=>g.temDado);
+  const atualizadoEm=state.ofertaAtualizadoEm?new Date(state.ofertaAtualizadoEm).toLocaleString('pt-BR'):null;
+  return `<div class="card-vg">
+    <h3>🔦 Oferta × tráfego${algumDado?` <span class="badge ${total?'pend':'okv'}">${total} anúncio(s) com visita alta e conversão baixa</span>`:''}</h3>
+    <p class="sub">Compara vendas × visitas dos últimos 7 dias — visita alta com conversão bem abaixo da média da loja é sinal de problema de oferta (preço, foto, ficha), não de falta de tráfego.
+      ${atualizadoEm?` Atualizado em ${atualizadoEm}.`:' Ainda não atualizado — os dados de visita não vêm na sincronização normal, só quando você pede aqui.'}</p>
+    <p><button class="btn sm" id="btnAtualizarOferta" ${ofertaCarregando?'disabled':''}>${ofertaCarregando?'Buscando visitas…':'🔄 Atualizar oferta (visitas × conversão)'}</button></p>
+    ${algumDado?`<div class="vg-cols">
+      ${porLoja.map(g=>vgColunaLoja(g.loja,g.itens.length,
+        g.itens.map(x=>vgLinha(esc(x.sku),`${fmtInt(x.visitas)} visitas`,`${fmtInt(x.vendas)} venda(s) em 7d · conversão ${(x.conversao*100).toFixed(1)}% (média da loja ${(g.mediaConversao*100).toFixed(1)}%)`)).join(''),
+        'Nenhum anúncio fora do padrão.')).join('')}
+    </div>`:''}
+  </div>`;
+}
+/* dispara o job de visitas de cada loja em paralelo (mesmo padrão de fetchResumoJob) e aplica o
+   resultado direto nos produtos já carregados - não precisa re-sincronizar mais nada. */
+function fetchVisitasJob(loja){
+  return new Promise((resolve,reject)=>{
+    (async()=>{
+      try{
+        const base=backendUrl();
+        if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
+        const r=await fetch(`${base}/produtos/visitas-job/iniciar?loja=${encodeURIComponent(loja)}`);
+        let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+        if(!r.ok||!j.ok) throw new Error(j.erro||('Erro ao iniciar (HTTP '+r.status+').'));
+        const jobId=j.jobId;
+        const poll=async()=>{
+          try{
+            const r2=await fetch(`${base}/produtos/visitas-job/status?id=${encodeURIComponent(jobId)}`);
+            let j2; try{ j2=await r2.json(); }catch(e){ throw new Error('Resposta inválida do backend.'); }
+            if(!r2.ok||!j2.ok) throw new Error(j2.erro||('Erro ao consultar status (HTTP '+r2.status+').'));
+            if(j2.status==='rodando'){ setTimeout(poll,1200); return; }
+            if(j2.status==='erro'){ reject(new Error(j2.erro||'Falha desconhecida.')); return; }
+            resolve(j2.resultado);
+          }catch(e){ reject(e); }
+        };
+        poll();
+      }catch(e){ reject(e); }
+    })();
+  });
+}
+async function atualizarOfertaTodasLojas(){
+  if(ofertaCarregando) return;
+  ofertaCarregando=true; renderDashboard();
+  try{
+    const resultados=await Promise.allSettled(STORES.map(loja=>fetchVisitasJob(loja)));
+    let falhas=[];
+    resultados.forEach((r,i)=>{
+      if(r.status!=='fulfilled'){ falhas.push(STORES[i]); console.error('[oferta] falha em '+STORES[i]+':',r.reason&&r.reason.message); return; }
+      (r.value&&r.value.itens||[]).forEach(it=>{
+        const p=state.produtos.find(x=>x.mlItemId===it.ml_item_id);
+        if(p) p.mlVisitas7d=it.visitas_7d;
+      });
+    });
+    state.ofertaAtualizadoEm=Date.now();
+    persist();
+    if(falhas.length) toast('Não consegui buscar visitas de: '+falhas.join(', ')+'. O resto foi atualizado.');
+    else toast('Oferta × tráfego atualizada.');
+  }catch(e){
+    toast('Falha ao atualizar oferta: '+e.message);
+  }finally{
+    ofertaCarregando=false; renderDashboard();
+  }
+}
 function renderDashboard(){
   const el=document.getElementById('tab-dashboard');
   /* CORRIGIDO 03/09 (Felipe: card da loja mostrando 0/0/0/0 em Comprar/Coletar/Local/Reservado
@@ -4051,6 +4142,7 @@ function renderDashboard(){
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
     ${cardRankingMaisVendidos()}
+    ${cardResumoDoDia()}
     ${cardConcorrenciaCatalogo()}
     ${cardOportunidadesAnuncios()}
     <div class="cards-lojas">
@@ -4319,6 +4411,8 @@ function renderDashboard(){
       pausarReposicao(p.id,true); toast('Aviso pausado pra este SKU.'); renderAll();
     });
   });
+  const btnAtualizarOferta=document.getElementById('btnAtualizarOferta');
+  if(btnAtualizarOferta) btnAtualizarOferta.onclick=atualizarOfertaTodasLojas;
   el.querySelectorAll('[data-verperguntas]').forEach(b=>b.onclick=()=>carregarPerguntas(b.dataset.verperguntas));
   el.querySelectorAll('[data-sugestaotentar]').forEach(a=>a.onclick=(ev)=>{ ev.preventDefault(); tentarSugestaoDeNovo(a.dataset.sugestaotentar); });
   el.querySelectorAll('[data-responder]').forEach(b=>b.onclick=()=>{
@@ -4671,6 +4765,11 @@ function aplicarItemSincronizado(p,item,loja){
   p.mlConcorrenciaPreco=(typeof item.concorrencia_preco==='number')?item.concorrencia_preco:null;
   registrarConcorrencia(p);   /* forma o histórico do card "entrou no meu catálogo" */
   p.mlPerguntas=item.perguntas_sem_resposta||0;
+  /* visitas_7d só vem preenchido depois que "Atualizar oferta" já rodou 1x pra essa loja (ver
+     atualizarVisitasLoja no server.js) - até lá vem null e o card de Oferta × tráfego não mostra
+     nada pra essa loja. Uma vez atualizado, sobrevive a um F5 normal porque já fica salvo no
+     banco e volta em toda sincronização, sem precisar clicar no botão de novo toda vez. */
+  if(typeof item.visitas_7d==='number') p.mlVisitas7d=item.visitas_7d;
   p.mlTransferencia=(typeof item.transferencia_full==='number')?item.transferencia_full:null;
   /* CORRIGIDO 03/09 (Felipe: AMASSADORCATALOGO, caboiphone e termômetro já excluídos no ML e ainda
      aparecendo): o Mercado Livre continua devolvendo o anúncio ENCERRADO por um tempo na listagem.
@@ -8690,11 +8789,22 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         }
       }
       /* NOVO 08/09 (Felipe: "quero 2 colunas antes da quantidade de vendas: meta tacos e tacos
-         real"): mesma fonte que já alimenta o selo ✓/✦/⚠/✕ acima - metaIt.metaPct (1/3 da margem
-         unitária, ver metaTacosUnit) e o TACOS real = Ads gasto ÷ faturamento do item no período,
-         igual a conta já usada em metaTacosPorProduto (aba Ads). Fica null quando não dá pra
-         calcular (sem preço de anúncio nem venda pra estimar), e a tabela mostra "—" nesse caso. */
-      const metaTacosPct=metaIt?metaIt.metaPct:null;
+         real"): TACOS real = Ads gasto ÷ faturamento do item no período, igual a conta já usada em
+         metaTacosPorProduto (aba Ads). */
+      /* CORRIGIDO 09/09 (Felipe: "mas deveria estar aparecendo o valor da meta de tacos" nos itens
+         de margem negativa, ex. OMEGA3/ESCOVABIGODIM): metaIt vem de tetoAdsDoItem, que devolve
+         null de propósito quando a margem dá <= 0 - faz sentido pro TETO em R$ (não existe "verba
+         de ads" negativa, e é isso que o selo ✓/✦/⚠/✕ acima usa), mas não faz sentido pra
+         PORCENTAGEM da meta: um produto com margem negativa TEM uma meta de TACOS calculável, só
+         que ela é negativa (ex. -8%) - e isso é informação útil (mostra que o produto já nasce no
+         prejuízo, antes de qualquer gasto com ads). Por isso a coluna Meta calcula direto pela
+         mesma fórmula de base (metaTacosUnit), sem o corte de "só se margem > 0" que o teto em R$
+         precisa mas a % não. */
+      const qtdItem=it.qtd||0, valorItem=it.valor||0;
+      const mUnit=(qtdItem>0&&valorItem>0)
+        ?metaTacosUnit(p,aliquotaLoja,{precoUnit:valorItem/qtdItem,comissaoUnit:(it.tarifa||0)/qtdItem,freteUnit:(it.freteMl||0)/qtdItem})
+        :null;
+      const metaTacosPct=mUnit?mUnit.metaPct:null;
       const tacosRealPct=(adsAchado!=null&&(it.valor||0)>0)?(adsAchado/it.valor*100):null;
       return {nome:(p&&p.sku)?p.sku:it.itemId,qtd:it.qtd||0,valor:it.valor||0,adsAchado,dentroMetaAds,seloAds,medalha:medalhaProduto(p),setaPosicao,metaTacosPct,tacosRealPct};
     });
@@ -8748,7 +8858,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
       <p class="vazio" style="margin-top:2px">Descontado da Margem de Contribuição — mês de ${esc(r.mesDe)} a ${esc(r.mesAte)} (${r.diasMes} dias): despesas <b>${fmtMoney(r.custosPeriodo)}</b> + fatura ML <b>${fmtMoney(r.faturaMlPeriodo)}</b> = <b>${fmtMoney(r.custosPeriodo+r.faturaMlPeriodo)}</b> (valor cheio, usado na "custo total"). Rateado pros ${r.diasSel} dia(s) do período selecionado: <b>${fmtMoney(r.custosRateado+r.faturaMlRateada)}</b> (usado na "rateada").</p>
       ${r.unidSemCusto>0?`<p class="vazio" style="color:var(--danger)">⚠ ${fmtInt(r.unidSemCusto)} unidade(s) vendida(s) sem custo cadastrado neste aparelho — a margem acima está inflada (entrando como custo R$ 0). Cadastre o custo em Produtos e gere o relatório de novo.</p>`:''}
       ${r.produtos.length?`<div class="tbl-scroll"><table><thead><tr><th>Produto</th><th style="text-align:center;white-space:nowrap">Meta</th><th style="text-align:center;white-space:nowrap">TACOS</th><th class="n">Qtd</th><th class="n">Faturamento</th><th class="n">Ads</th></tr></thead><tbody>
-        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.medalha||''}${p.setaPosicao||''}${p.seloAds||''}</td><td style="text-align:center;white-space:nowrap">${p.metaTacosPct==null?'—':p.metaTacosPct.toFixed(1)+'%'}</td><td style="text-align:center;white-space:nowrap">${p.tacosRealPct==null?'—':`<b style="color:${p.dentroMetaAds?'var(--ok)':'var(--danger)'}">${p.tacosRealPct.toFixed(1)}%</b>`}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
+        ${r.produtos.map(p=>`<tr><td>${esc(p.nome)}${p.medalha||''}${p.setaPosicao||''}${p.seloAds||''}</td><td style="text-align:center;white-space:nowrap">${p.metaTacosPct==null?'—':(p.metaTacosPct<0?`<b style="color:var(--danger)" title="Margem negativa antes do Ads — este produto já nasce no prejuízo, precisa rever preço/custo/frete">${p.metaTacosPct.toFixed(1)}%</b>`:p.metaTacosPct.toFixed(1)+'%')}</td><td style="text-align:center;white-space:nowrap">${p.tacosRealPct==null?'—':`<b style="color:${p.dentroMetaAds?'var(--ok)':'var(--danger)'}">${p.tacosRealPct.toFixed(1)}%</b>`}</td><td class="n">${fmtInt(p.qtd)}</td><td class="n">${fmtMoney(p.valor)}</td><td class="n">${p.adsAchado==null?'—':fmtMoney(p.adsAchado)}</td></tr>`).join('')}
       </tbody></table></div>`:`<p class="vazio">Nenhuma venda no período.</p>`}
       ${r.porSocio?`<h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sócios${r.fonte?` · ${esc(r.fonte)}`:''}</h3>
         <div class="tbl-scroll"><table><thead><tr><th>Sócio</th><th class="n">Cota</th><th class="n">Retirou</th><th class="n">Reembolso</th></tr></thead><tbody>

@@ -274,6 +274,14 @@ pool.query('alter table ml_produtos add column if not exists categoria_id text')
    (ver rota /sync abaixo) - assim nao gasta chamada de API a toa pra item sem nada em processamento. */
 pool.query('alter table ml_produtos add column if not exists recebimentos_full jsonb')
   .catch(e => console.error('Falha ao adicionar coluna "recebimentos_full" em ml_produtos:', e.message));
+/* NOVO 09/09 (Felipe, depois de ver a skill "rotina-diaria-ml"): visitas dos ultimos 7 dias por
+   anuncio, pra cruzar com vendas_7d (que ja e' sincronizado sempre) e achar quem tem trafego mas
+   nao converte - sinal de problema de OFERTA (preco/foto/ficha), nao de trafego. NAO entra no
+   /sync normal (custaria 1 chamada de API a mais POR ANUNCIO em toda sincronizacao, do dia todo) -
+   fica numa rota/job separada, disparada so' quando o usuario aperta "Atualizar oferta" na Visao
+   Geral (ver /produtos/visitas-job e atualizarVisitasLoja). */
+pool.query('alter table ml_produtos add column if not exists visitas_7d integer')
+  .catch(e => console.error('Falha ao adicionar coluna "visitas_7d" em ml_produtos:', e.message));
 pool.query(`create table if not exists ml_mercado_categoria (
   id serial primary key,
   loja text not null,
@@ -2932,6 +2940,69 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
     return null;
   }
 }
+/* NOVO 09/09 (Felipe, pedido depois de ver a skill "rotina-diaria-ml" e perguntar "o que da pra
+   puxar direto da API"): visitas dos ultimos 7 dias de varios itens de uma vez - o endpoint aceita
+   ate' 20 ids por chamada (multiget, igual o /items?ids= ja' usado em outros lugares deste
+   arquivo), entao um catalogo de 200 SKUs vira ~10 chamadas em vez de 200. Devolve um Map
+   itemId -> total_visits. Item que falhar (ou nao tiver visita) fica de fora do Map - quem chama
+   trata como "sem dado" e nao mostra na comparacao com vendas. */
+async function buscarVisitasEmLote(accessToken, itemIds) {
+  const porItem = new Map();
+  if (!itemIds.length) return porItem;
+  const hoje = new Date();
+  const seteDiasAtras = new Date(hoje.getTime() - 7 * 864e5);
+  const dateTo = hoje.toISOString().slice(0, 10);
+  const dateFrom = seteDiasAtras.toISOString().slice(0, 10);
+  for (let i = 0; i < itemIds.length; i += 20) {
+    const lote = itemIds.slice(i, i + 20);
+    try {
+      const url = `https://api.mercadolibre.com/items/visits?ids=${lote.join(',')}&date_from=${dateFrom}&date_to=${dateTo}`;
+      const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+      const j = await r.json();
+      if (!r.ok) continue;
+      /* a API devolve um objeto {itemId: totalVisits} OU uma lista [{item_id,total_visits}],
+         dependendo da versao - aceita os dois formatos pra nao quebrar se vier diferente do
+         esperado (nunca testamos isso antes com dado real). */
+      if (Array.isArray(j)) {
+        j.forEach(entry => {
+          const id = entry && (entry.item_id || entry.id);
+          const total = entry && (typeof entry.total_visits === 'number' ? entry.total_visits : entry.visits);
+          if (id && typeof total === 'number') porItem.set(id, total);
+        });
+      } else if (j && typeof j === 'object') {
+        lote.forEach(id => { if (typeof j[id] === 'number') porItem.set(id, j[id]); });
+      }
+    } catch (e) { /* lote com problema: segue pros proximos, esse fica sem dado */ }
+  }
+  return porItem;
+}
+/* junta tudo que o botao "Atualizar oferta" (Visao Geral) precisa: pega os itens ja' conhecidos
+   dessa loja (ml_produtos, preenchido pelo /sync normal), busca visita em lote so' dos que estao
+   ativos (sem gastar chamada com anuncio fechado), grava visitas_7d e devolve a lista pronta pro
+   front so' aplicar em cima de state.produtos. Funcao autocontida de proposito (nao depende de
+   nada alem de loja) - pra dar pra chamar tanto de um botao quanto, depois, de um agendamento
+   automatico (setInterval) sem reescrever nada, do mesmo jeito que ja' foi feito com
+   detectarChegadasFullTodasAsLojas. */
+async function atualizarVisitasLoja(loja) {
+  const accessToken = await tokenValido(loja);
+  const r = await pool.query(
+    `select ml_item_id from ml_produtos where loja = $1 and status <> 'closed'`,
+    [loja]
+  );
+  const ids = r.rows.map(x => x.ml_item_id);
+  const visitasPorItem = await buscarVisitasEmLote(accessToken, ids);
+  const itens = [];
+  for (const id of ids) {
+    if (!visitasPorItem.has(id)) continue;
+    const visitas = visitasPorItem.get(id);
+    await pool.query(
+      `update ml_produtos set visitas_7d = $2, atualizado_em = now() where loja = $1 and ml_item_id = $3`,
+      [loja, visitas, id]
+    );
+    itens.push({ ml_item_id: id, visitas_7d: visitas });
+  }
+  return { loja, itens, atualizadoEm: new Date().toISOString() };
+}
 /* busca as perguntas sem resposta de todos os anuncios do vendedor de uma vez so (paginado),
    e devolve quantas tem por item_id. */
 async function buscarPerguntasSemResposta(accessToken, sellerId) {
@@ -4422,6 +4493,37 @@ app.get('/financas/resumo-job/status', (req, res) => {
   if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
   res.json({ ok: true, status: job.status, progresso: job.progresso, resultado: job.resultado, erro: job.erro });
 });
+/* NOVO 09/09: mesmo padrao de job (iniciar/status) do resumo financeiro acima, so' que pro botao
+   "Atualizar oferta" da Visao Geral - roda atualizarVisitasLoja em segundo plano (pode levar
+   alguns segundos numa loja com catalogo grande, por causa do multiget em lotes de 20) e o front
+   fica perguntando o status a cada 1.2s, do mesmo jeito que ja' faz com fetchResumoJob. */
+const visitasJobs = new Map();
+function gerarJobIdVisitas() { return 'vis_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8); }
+async function rodarVisitasJob(jobId, loja) {
+  const job = visitasJobs.get(jobId);
+  try {
+    const resultado = await atualizarVisitasLoja(loja);
+    job.resultado = resultado;
+    job.status = 'concluido';
+  } catch (e) {
+    job.status = 'erro'; job.erro = e.message;
+  }
+}
+app.get('/produtos/visitas-job/iniciar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const jobId = gerarJobIdVisitas();
+    visitasJobs.set(jobId, { status: 'rodando', resultado: null, erro: null, criadoEm: Date.now() });
+    rodarVisitasJob(jobId, loja);
+    res.json({ ok: true, jobId });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+app.get('/produtos/visitas-job/status', (req, res) => {
+  const job = visitasJobs.get(req.query.id);
+  if (!job) return res.status(404).json({ ok: false, erro: 'Job nao encontrado - pode ter expirado (fica so em memoria, some se o servidor reiniciar/dormir).' });
+  res.json({ ok: true, status: job.status, resultado: job.resultado, erro: job.erro });
+});
 app.get('/financas/resumo', async (req, res) => {
   try {
     const loja = req.query.loja;
@@ -4902,7 +5004,7 @@ app.get('/data', async (req, res) => {
   try {
     const conta = await pegarConta(loja);
     const produtos = await pool.query(
-      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, recebimentos_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, visitas_7d, transferencia_full, recebimentos_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
       [loja]
     );
     res.json({
