@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v429</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v430</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1244,6 +1244,10 @@ function migrar(){
        atualizado automaticamente pelo servidor às 07:30/12:30 (ver atualizarVisitasTodasAsLojas
        no server.js e cardResumoDoDia aqui) - não vem do /sync normal, é job separado. */
     if(p.mlVisitas7d===undefined) p.mlVisitas7d=null;
+    /* NOVO 09/09 (Felipe: quer comparar cada anúncio com o HISTÓRICO PRÓPRIO dele, não com a média
+       da loja) - visitas dos últimos 30 dias, junto com mlVisitas7d dá pra isolar "os 23 dias antes
+       da semana atual" como conversão normal do próprio anúncio (ver ofertaComProblema). */
+    if(p.mlVisitas30d===undefined) p.mlVisitas30d=null;
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
     if(p.mlTransferencia===undefined) p.mlTransferencia=null;
@@ -3988,22 +3992,38 @@ function cardOportunidadesAnuncios(){
   </div>`;
 }
 /* ---------- Resumo do dia: oferta x tráfego (09/09, pedido do Felipe depois de ver a skill
-   "rotina-diaria-ml") ---------- Cruza vendas 7d (já sincronizado sempre) com visitas 7d
-   (atualizado automaticamente pelo servidor às 07:30/12:30, sem botão) pra achar anúncio
-   com bastante visita mas conversão muito abaixo da média da loja: sinal de problema de OFERTA
-   (preço, foto, ficha) e não de tráfego, que o Doca não conseguia enxergar até hoje. */
-const PISO_VISITAS_OFERTA=15;   /* abaixo disso a amostra é pequena demais pra confiar na % */
+   "rotina-diaria-ml") ---------- Cruza vendas 7d (já sincronizado sempre) com visitas 7d/30d
+   (atualizado automaticamente pelo servidor às 07:30/12:30, sem botão) pra achar anúncio cuja
+   conversão da semana atual caiu bem abaixo do que ELE MESMO costuma converter: sinal de
+   problema de OFERTA (preço, foto, ficha) e não de tráfego, que o Doca não conseguia enxergar
+   até hoje.
+   CORRIGIDO 09/09 (Felipe: "quero comparar com o histórico PRÓPRIO do anúncio, não com a média da
+   loja, e subir o corte de 50% pra 70%"): antes comparava a conversão de cada anúncio com a MÉDIA
+   DA LOJA inteira - trocado por comparar cada anúncio com ELE MESMO: "normal" = conversão dos 23
+   dias antes da semana atual (visitas_30d-visitas_7d / vendas_30d-vendas_7d); "atual" = conversão
+   dos últimos 7 dias. Um anúncio que sempre converteu baixo não aparece mais (não é anomalia pra
+   ele); um que sempre converteu bem e essa semana caiu, sim. */
+const PISO_VISITAS_OFERTA=15;      /* visitas da semana atual - abaixo disso a amostra é pequena demais pra confiar na % */
+const PISO_VISITAS_NORMAL=30;      /* visitas do período "normal" (23 dias antes da semana atual) - mesma lógica, período maior pede piso maior */
+const CORTE_QUEDA_CONVERSAO=0.7;   /* alerta quando a conversão atual cai abaixo de 70% do normal DESSE anúncio */
 function ofertaComProblema(loja){
   const itens=fullItensLoja(loja).map(i=>({i,p:fullProduto(i)})).filter(x=>x.p&&!x.p.mlAusente);
-  const comVisita=itens.filter(x=>typeof x.p.mlVisitas7d==='number'&&x.p.mlVisitas7d>0);
-  if(!comVisita.length) return {itens:[],mediaConversao:null,temDado:false};
-  const conv=x=>x.i.v7/x.p.mlVisitas7d;
-  const mediaConversao=comVisita.reduce((s,x)=>s+conv(x),0)/comVisita.length;
-  const problema=comVisita
-    .filter(x=>x.p.mlVisitas7d>=PISO_VISITAS_OFERTA&&conv(x)<mediaConversao*0.5)
-    .map(x=>({sku:x.p.sku,visitas:x.p.mlVisitas7d,vendas:x.i.v7,conversao:conv(x)}))
+  const comparaveis=itens.filter(x=>
+    typeof x.p.mlVisitas7d==='number'&&x.p.mlVisitas7d>=PISO_VISITAS_OFERTA&&
+    typeof x.p.mlVisitas30d==='number'&&(x.p.mlVisitas30d-x.p.mlVisitas7d)>=PISO_VISITAS_NORMAL
+  );
+  if(!comparaveis.length) return {itens:[],temDado:false};
+  const problema=comparaveis
+    .map(x=>{
+      const visitasNormal=x.p.mlVisitas30d-x.p.mlVisitas7d;
+      const vendasNormal=Math.max(0,(x.i.v30||0)-(x.i.v7||0));
+      const conversaoNormal=vendasNormal/visitasNormal;
+      const conversaoAtual=x.i.v7/x.p.mlVisitas7d;
+      return {sku:x.p.sku,visitas:x.p.mlVisitas7d,vendas:x.i.v7,conversaoAtual,conversaoNormal};
+    })
+    .filter(x=>x.conversaoNormal>0&&x.conversaoAtual<x.conversaoNormal*CORTE_QUEDA_CONVERSAO)
     .sort((a,b)=>b.visitas-a.visitas);
-  return {itens:problema,mediaConversao,temDado:true};
+  return {itens:problema,temDado:true};
 }
 function cardResumoDoDia(){
   const porLoja=STORES.map(loja=>({loja,...ofertaComProblema(loja)}));
@@ -4024,12 +4044,12 @@ function cardResumoDoDia(){
   });
   const atualizadoEm=maisRecente?new Date(maisRecente).toLocaleString('pt-BR'):null;
   return `<div class="card-vg">
-    <h3>🔦 Oferta × tráfego${algumDado?` <span class="badge ${total?'pend':'okv'}">${total} anúncio(s) com visita alta e conversão baixa</span>`:''}</h3>
-    <p class="sub">Compara vendas × visitas dos últimos 7 dias — visita alta com conversão bem abaixo da média da loja é sinal de problema de oferta (preço, foto, ficha), não de falta de tráfego.
+    <h3>🔦 Oferta × tráfego${algumDado?` <span class="badge ${total?'pend':'okv'}">${total} anúncio(s) convertendo abaixo do normal</span>`:''}</h3>
+    <p class="sub">Compara a conversão desta semana de cada anúncio com a conversão NORMAL dele mesmo (23 dias anteriores) — queda de mais de 30% é sinal de problema de oferta (preço, foto, ficha), não de falta de tráfego.
       ${atualizadoEm?` Atualizado automaticamente em ${atualizadoEm}.`:' Ainda sem dados de visita — a primeira atualização automática roda às 07:30 ou 12:30.'}</p>
     ${algumDado?`<div class="vg-cols">
       ${porLoja.map(g=>vgColunaLoja(g.loja,g.itens.length,
-        g.itens.map(x=>vgLinha(esc(x.sku),`${fmtInt(x.visitas)} visitas`,`${fmtInt(x.vendas)} venda(s) em 7d · conversão ${(x.conversao*100).toFixed(1)}% (média da loja ${(g.mediaConversao*100).toFixed(1)}%)`)).join(''),
+        g.itens.map(x=>vgLinha(esc(x.sku),`${fmtInt(x.visitas)} visitas`,`${fmtInt(x.vendas)} venda(s) em 7d · conversão ${(x.conversaoAtual*100).toFixed(1)}% (normal deste anúncio: ${(x.conversaoNormal*100).toFixed(1)}%)`)).join(''),
         'Nenhum anúncio fora do padrão.')).join('')}
     </div>`:''}
   </div>`;
@@ -4738,6 +4758,7 @@ function aplicarItemSincronizado(p,item,loja){
      nada pra essa loja. Uma vez atualizado, sobrevive a um F5 normal porque já fica salvo no
      banco e volta em toda sincronização, sem precisar clicar no botão de novo toda vez. */
   if(typeof item.visitas_7d==='number') p.mlVisitas7d=item.visitas_7d;
+  if(typeof item.visitas_30d==='number') p.mlVisitas30d=item.visitas_30d;
   p.mlTransferencia=(typeof item.transferencia_full==='number')?item.transferencia_full:null;
   /* CORRIGIDO 03/09 (Felipe: AMASSADORCATALOGO, caboiphone e termômetro já excluídos no ML e ainda
      aparecendo): o Mercado Livre continua devolvendo o anúncio ENCERRADO por um tempo na listagem.

@@ -282,6 +282,12 @@ pool.query('alter table ml_produtos add column if not exists recebimentos_full j
    Geral (ver /produtos/visitas-job e atualizarVisitasLoja). */
 pool.query('alter table ml_produtos add column if not exists visitas_7d integer')
   .catch(e => console.error('Falha ao adicionar coluna "visitas_7d" em ml_produtos:', e.message));
+/* NOVO 09/09 (Felipe: quer comparar cada anuncio com o HISTORICO PROPRIO dele, nao com a media da
+   loja - "esse anuncio costuma converter X%, essa semana caiu pra Y%") - guarda tambem visitas dos
+   ultimos 30 dias, pra calcular uma conversao "normal" excluindo a semana atual (ver
+   ofertaComProblema no doca.html: normal = (vendas_30d-vendas_7d)/(visitas_30d-visitas_7d)). */
+pool.query('alter table ml_produtos add column if not exists visitas_30d integer')
+  .catch(e => console.error('Falha ao adicionar coluna "visitas_30d" em ml_produtos:', e.message));
 pool.query(`create table if not exists ml_mercado_categoria (
   id serial primary key,
   loja text not null,
@@ -2946,13 +2952,13 @@ async function buscarConcorrenciaCatalogo(accessToken, itemId) {
    arquivo), entao um catalogo de 200 SKUs vira ~10 chamadas em vez de 200. Devolve um Map
    itemId -> total_visits. Item que falhar (ou nao tiver visita) fica de fora do Map - quem chama
    trata como "sem dado" e nao mostra na comparacao com vendas. */
-async function buscarVisitasEmLote(accessToken, itemIds) {
+async function buscarVisitasEmLote(accessToken, itemIds, dias) {
   const porItem = new Map();
   if (!itemIds.length) return porItem;
   const hoje = new Date();
-  const seteDiasAtras = new Date(hoje.getTime() - 7 * 864e5);
+  const diasAtras = new Date(hoje.getTime() - (dias || 7) * 864e5);
   const dateTo = hoje.toISOString().slice(0, 10);
-  const dateFrom = seteDiasAtras.toISOString().slice(0, 10);
+  const dateFrom = diasAtras.toISOString().slice(0, 10);
   for (let i = 0; i < itemIds.length; i += 20) {
     const lote = itemIds.slice(i, i + 20);
     try {
@@ -2990,16 +2996,24 @@ async function atualizarVisitasLoja(loja) {
     [loja]
   );
   const ids = r.rows.map(x => x.ml_item_id);
-  const visitasPorItem = await buscarVisitasEmLote(accessToken, ids);
+  /* 2 chamadas em lote (7 dias e 30 dias) em vez de 1 - pra dar pra calcular conversao "normal"
+     do PROPRIO anuncio excluindo a semana atual (30d-7d), pedido do Felipe 09/09. Dobra a
+     quantidade de chamadas de visita, mas continua sendo so' ~2x (qtd de SKUs / 20) chamadas no
+     total, nada perto do limite da API. */
+  const [visitasPorItem7d, visitasPorItem30d] = await Promise.all([
+    buscarVisitasEmLote(accessToken, ids, 7),
+    buscarVisitasEmLote(accessToken, ids, 30)
+  ]);
   const itens = [];
   for (const id of ids) {
-    if (!visitasPorItem.has(id)) continue;
-    const visitas = visitasPorItem.get(id);
+    if (!visitasPorItem7d.has(id) && !visitasPorItem30d.has(id)) continue;
+    const visitas7d = visitasPorItem7d.has(id) ? visitasPorItem7d.get(id) : null;
+    const visitas30d = visitasPorItem30d.has(id) ? visitasPorItem30d.get(id) : null;
     await pool.query(
-      `update ml_produtos set visitas_7d = $2, atualizado_em = now() where loja = $1 and ml_item_id = $3`,
-      [loja, visitas, id]
+      `update ml_produtos set visitas_7d = coalesce($2, visitas_7d), visitas_30d = coalesce($3, visitas_30d), atualizado_em = now() where loja = $1 and ml_item_id = $4`,
+      [loja, visitas7d, visitas30d, id]
     );
-    itens.push({ ml_item_id: id, visitas_7d: visitas });
+    itens.push({ ml_item_id: id, visitas_7d: visitas7d, visitas_30d: visitas30d });
   }
   return { loja, itens, atualizadoEm: new Date().toISOString() };
 }
@@ -5033,7 +5047,7 @@ app.get('/data', async (req, res) => {
   try {
     const conta = await pegarConta(loja);
     const produtos = await pool.query(
-      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, visitas_7d, transferencia_full, recebimentos_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, visitas_7d, visitas_30d, transferencia_full, recebimentos_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
       [loja]
     );
     res.json({
