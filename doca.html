@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v430</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v431</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4045,7 +4045,7 @@ function cardResumoDoDia(){
   const atualizadoEm=maisRecente?new Date(maisRecente).toLocaleString('pt-BR'):null;
   return `<div class="card-vg">
     <h3>🔦 Oferta × tráfego${algumDado?` <span class="badge ${total?'pend':'okv'}">${total} anúncio(s) convertendo abaixo do normal</span>`:''}</h3>
-    <p class="sub">Compara a conversão desta semana de cada anúncio com a conversão NORMAL dele mesmo (23 dias anteriores) — queda de mais de 30% é sinal de problema de oferta (preço, foto, ficha), não de falta de tráfego.
+    <p class="sub">Compara a conversão da semana com a normal do próprio anúncio (23 dias antes) — queda de 30%+ indica problema de oferta, não de tráfego.
       ${atualizadoEm?` Atualizado automaticamente em ${atualizadoEm}.`:' Ainda sem dados de visita — a primeira atualização automática roda às 07:30 ou 12:30.'}</p>
     ${algumDado?`<div class="vg-cols">
       ${porLoja.map(g=>vgColunaLoja(g.loja,g.itens.length,
