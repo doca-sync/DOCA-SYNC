@@ -3280,13 +3280,25 @@ app.get('/debug/full/recebimentos', async (req, res) => {
     const urlComTipo = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}&type=INBOUND_RECEPTION`;
     const rCom = await fetch(urlComTipo, { headers: { Authorization: `Bearer ${accessToken}` } });
     const jCom = await rCom.json().catch(() => null);
+    /* NOVO 09/09 (Felipe: APLICADORDEFITA com "Entrada pendente" travada em 500un mesmo com
+       Aptas/Transferência já reais no Mercado Livre): o filtro type=INBOUND_RECEPTION vinha
+       vazio (resultado 0) pra esse item mesmo com estoque claramente tendo se movido - hipótese:
+       esse movimento é uma TRANSFERÊNCIA entre centros de distribuição (o próprio ML mostra "Estamos
+       levando as unidades para um centro de distribuição mais próximo dos compradores"), que pode
+       ser um "type" diferente (ver available_filters da busca - tem transfer_delivery,
+       transfer_adjustment etc). Essa chamada SEM filtro de "type" mostra TODAS as operações reais
+       do item na janela, pra confirmar qual "type" realmente aparece quando o estoque se move. */
+    const urlSemTipo = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${conta.ml_user_id}&inventory_id=${item.inventory_id}&date_from=${de}&date_to=${hj}`;
+    const rSem = await fetch(urlSemTipo, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const jSem = await rSem.json().catch(() => null);
     res.status(200).json({
       ok: true, loja, sku, ml_item_id, titulo, inventory_id: item.inventory_id, seller_id: conta.ml_user_id,
       janela: { de, ate: hj },
       recebimentos_full_gravado_no_banco: recebimentos_full,
       /* caminho SEM "/marketplace/" (esse e' o certo pra vendedor comum - ver comentario em
          buscarRecebimentosFull) com type=INBOUND_RECEPTION maiusculo */
-      tipo_maiusculo_sem_marketplace: { http_status: rCom.status, corpo: jCom }
+      tipo_maiusculo_sem_marketplace: { http_status: rCom.status, corpo: jCom },
+      todas_as_operacoes_sem_filtro_de_type: { http_status: rSem.status, total: jSem && jSem.paging ? jSem.paging.total : null, tipos_encontrados: jSem && Array.isArray(jSem.results) ? [...new Set(jSem.results.map(o => o.type))] : null, corpo: jSem }
     });
   } catch (e) { res.status(500).json({ ok: false, erro: e.message }); }
 });
