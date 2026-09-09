@@ -5293,29 +5293,90 @@ async function pedirAtualizacaoMpTodasAsLojas(motivo) {
    direto no banco - roda nos MESMOS horarios do agendamento do Mercado Pago (7:30/12:30), pra nao
    multiplicar checagens desnecessarias no dia. */
 async function detectarChegadasFullTodasAsLojas(motivo) {
+  /* CORRIGIDO 09/09 (Felipe: "Entrada pendente" mostrando 500un no Doca com o Mercado Livre já
+     mostrando quase tudo em Aptas/Em transferência pra aquele SKU - dado contado 2x): o /sync
+     chamado aqui embaixo sempre atualiza quantidade_disponivel/transferencia_full (por isso esses
+     dois já vinham certos, batendo com o ML), mas só busca o LOG REAL de recebimento
+     (buscarRecebimentosFull, usado pra descontar a fila de "Entrada pendente" - ver
+     filaProcessamentoComRestante no doca.html) quando o /sync recebe pendentes=/aguardando= na
+     URL. Esses parâmetros vinham SÓ do navegador (mlSincronizarLoja) - o job agendado chamava
+     /sync sem eles, então a fila de "Entrada pendente" nunca decaía sozinha, só quando o Felipe
+     abria o Doca manualmente. Agora o job lê o estado ANTES de sincronizar (igual o navegador
+     faz), monta os mesmos pendentes/aguardando por loja, e DEPOIS também decai a fila sozinho
+     (mesma conta de filaProcessamentoComRestante/mlAtualizarFullDoSinc, portada pra cá) - fica
+     tudo em dia mesmo se ninguém abrir o Doca por dias. */
+  let linha;
+  try {
+    linha = await pegarEstadoNuvem();
+  } catch (e) {
+    console.error(`[full-agendado] ${motivo} - falha ao ler estado:`, e.message);
+    return;
+  }
+  if (!linha || !linha.dados) {
+    console.log(`[full-agendado] ${motivo} - sem estado salvo ainda, sincronizando sem pendentes/aguardando.`);
+    for (const loja of LOJAS_VALIDAS) {
+      try { await fetch(`http://localhost:${PORT}/sync?loja=${encodeURIComponent(loja)}`, { method: 'POST' }); }
+      catch (e) { console.error(`[full-agendado] ${motivo} - falha ao sincronizar produtos de ${loja}:`, e.message); }
+    }
+    return;
+  }
+  const dados = linha.dados;
+  const envios = Array.isArray(dados.envios) ? dados.envios : [];
+  const produtos = Array.isArray(dados.produtos) ? dados.produtos : [];
   for (const loja of LOJAS_VALIDAS) {
+    const pendentes = produtos.filter(p => p.loja === loja && p.mlItemId && Array.isArray(p.filaProcessamento) && p.filaProcessamento.length).map(p => p.mlItemId);
+    const aguardandoSet = new Set();
+    envios.filter(e => e.loja === loja).forEach(e => {
+      (e.itens || []).forEach(i => {
+        if (i.kitDeItemId) return;
+        const pLoja = produtos.find(p => p.id === (i.skuEscolhidoId || i.produtoId));
+        if (pLoja && pLoja.mlItemId) aguardandoSet.add(pLoja.mlItemId);
+      });
+    });
+    const qsPendentes = pendentes.length ? `&pendentes=${encodeURIComponent(pendentes.join(','))}` : '';
+    const qsAguardando = aguardandoSet.size ? `&aguardando=${encodeURIComponent([...aguardandoSet].join(','))}` : '';
     try {
-      await fetch(`http://localhost:${PORT}/sync?loja=${encodeURIComponent(loja)}`, { method: 'POST' });
+      await fetch(`http://localhost:${PORT}/sync?loja=${encodeURIComponent(loja)}${qsPendentes}${qsAguardando}`, { method: 'POST' });
     } catch (e) {
       console.error(`[full-agendado] ${motivo} - falha ao sincronizar produtos de ${loja}:`, e.message);
     }
   }
   try {
-    const linha = await pegarEstadoNuvem();
-    if (!linha || !linha.dados) { console.log(`[full-agendado] ${motivo} - sem estado salvo ainda.`); return; }
-    const dados = linha.dados;
-    const envios = Array.isArray(dados.envios) ? dados.envios : [];
-    const produtos = Array.isArray(dados.produtos) ? dados.produtos : [];
-    if (!envios.length) { console.log(`[full-agendado] ${motivo} - nenhum envio programado.`); return; }
     const cacheMl = {};
     async function pegarMlProduto(loja, mlItemId) {
       if (!cacheMl[loja]) {
-        const r = await pool.query('select ml_item_id, quantidade_disponivel, transferencia_full from ml_produtos where loja = $1', [loja]);
+        const r = await pool.query('select ml_item_id, quantidade_disponivel, transferencia_full, recebimentos_full from ml_produtos where loja = $1', [loja]);
         cacheMl[loja] = new Map(r.rows.map(row => [row.ml_item_id, row]));
       }
       return cacheMl[loja].get(mlItemId) || null;
     }
     let mudou = false;
+    /* decai "Entrada pendente" (p.filaProcessamento) com o log real de recebimento que acabou de
+       vir fresco do /sync acima - mesma conta que o doca.html faz no navegador
+       (filaProcessamentoComRestante + a poda de 5 dias em mlAtualizarFullDoSinc). */
+    for (const p of produtos) {
+      if (!p.mlItemId || !Array.isArray(p.filaProcessamento) || !p.filaProcessamento.length) continue;
+      const row = await pegarMlProduto(p.loja, p.mlItemId);
+      if (row && Array.isArray(row.recebimentos_full)) p.recebimentosFull = row.recebimentos_full;
+      const fila = p.filaProcessamento;
+      const dataMaisAntiga = fila[0].data;
+      const eventos = (p.recebimentosFull || []).filter(ev => ev.data >= dataMaisAntiga);
+      let recebido = eventos.reduce((s, ev) => s + (Number(ev.qtd) || 0), 0);
+      const comRestante = fila.map(entrada => {
+        const qtdOriginal = entrada.qtdOriginal != null ? entrada.qtdOriginal : (entrada.qtdRestante || 0);
+        const consumido = Math.min(recebido, qtdOriginal);
+        recebido -= consumido;
+        return { data: entrada.data, qtdOriginal, qtdRestante: Math.max(0, qtdOriginal - consumido) };
+      });
+      const nova = comRestante
+        .filter(entrada => {
+          const diasDesde = (Date.now() - Date.parse(entrada.data + 'T00:00:00-03:00')) / 864e5;
+          return entrada.qtdRestante > 0.5 && diasDesde <= 5;
+        })
+        .map(({ data, qtdOriginal }) => ({ data, qtdOriginal }));
+      if (JSON.stringify(nova) !== JSON.stringify(p.filaProcessamento)) { p.filaProcessamento = nova; mudou = true; }
+    }
+    if (!envios.length) console.log(`[full-agendado] ${motivo} - nenhum envio programado.`);
     for (const e of envios) {
       if (!Array.isArray(e.itens)) continue;
       const itensReais = e.itens.filter(i => !i.kitDeItemId);
@@ -5357,7 +5418,7 @@ async function detectarChegadasFullTodasAsLojas(motivo) {
          on conflict (id) do update set dados = excluded.dados, atualizado_em = excluded.atualizado_em`,
         [JSON.stringify(dados)]
       );
-      console.log(`[full-agendado] ${motivo} - estado atualizado com aviso(s) de chegada/baseline.`);
+      console.log(`[full-agendado] ${motivo} - estado atualizado com aviso(s) de chegada/baseline/entrada pendente.`);
     } else {
       console.log(`[full-agendado] ${motivo} - nada novo pra avisar.`);
     }
