@@ -3235,16 +3235,29 @@ async function buscarTransferenciaFull(accessToken, sellerId, inventoryId) {
    caminho FOI aceito pelo servidor (chegou a bater no limite de chamadas, que so' acontece depois
    de passar da validacao de rota/autorizacao) - só o "type" minusculo que era invalido. Fix final:
    volta pro caminho ORIGINAL (sem "/marketplace/"), mantém só o "type" em MAIUSCULO. */
+/* CORRIGIDO 09/09 (achado real via /debug/full/recebimentos, Felipe: APLICADORDEFITA com "Entrada
+   pendente" travada em 500un mesmo com Aptas+Transferência já reais/altos no Mercado Livre): o
+   filtro type=INBOUND_RECEPTION sempre voltava 0 resultados pra esse item, mesmo puxando a janela
+   sem filtro nenhum e achando 726 operações reais no mesmo período. Motivo: pra esse vendedor/item
+   o estoque não chega via 1 evento "inbound_reception" (isso é só a 1ª chegada no 1º centro,
+   direto do envio do vendedor) - ele se move em muitos eventos pequenos do tipo TRANSFER_DELIVERY
+   (confirmado: 95 eventos de poucas unidades cada, external_references.type="inbound_id", exatamente
+   a "transferência entre centros de distribuição" que a tela do Full mostra pro Felipe). O código
+   só olhava pro tipo errado, então a fila de "Entrada pendente" nunca tinha com o que decair.
+   Agora busca SEM filtro de "type" (a API só aceita 1 valor por chamada) e filtra os dois tipos
+   que representam "virou estoque de verdade" no lado do Node. */
 async function buscarRecebimentosFull(accessToken, sellerId, inventoryId, diasAtras) {
   try {
     const hj = new Date();
     const de = new Date(hj.getTime() - (diasAtras || 6) * 864e5);
     const fmt = d => d.toISOString().slice(0, 10);
-    const url = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${sellerId}&inventory_id=${inventoryId}&date_from=${fmt(de)}&date_to=${fmt(hj)}&type=INBOUND_RECEPTION`;
+    const url = `https://api.mercadolibre.com/stock/fulfillment/operations/search?seller_id=${sellerId}&inventory_id=${inventoryId}&date_from=${fmt(de)}&date_to=${fmt(hj)}`;
     const r = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     if (!r.ok) return null;
     const j = await r.json();
+    const TIPOS_CHEGADA = new Set(['INBOUND_RECEPTION', 'TRANSFER_DELIVERY']);
     return (j.results || [])
+      .filter(op => TIPOS_CHEGADA.has((op.type || '').toUpperCase()))
       .map(op => ({ data: (op.date_created || '').slice(0, 10), qtd: (op.detail && op.detail.available_quantity) || 0 }))
       .filter(x => x.data && x.qtd > 0);
   } catch (e) {
