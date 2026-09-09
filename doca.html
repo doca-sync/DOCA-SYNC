@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v424</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v425</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -7351,7 +7351,7 @@ function totalPorTipo(lista,tipo){
    personalizado. O CMV é calculado AQUI no navegador (backend só manda item_id+qtd vendida),
    porque o custo unitário de cada produto só existe no state local (aba Produtos). */
 let financasResumoLoja=STORES[0];
-let financasResumoPeriodo='30d';
+let financasResumoPeriodo='7d';
 let financasResumoDe='', financasResumoAte='';
 let financasResumoResultado=null; // último resumo buscado (guarda o objeto inteiro devolvido pelo backend)
 let financasResumoCarregando=false;
@@ -8839,7 +8839,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
   const totalGastoAds=porLoja.reduce((s,r)=>s+r.gastoAds,0);
   const totalMargemLiquidaTotal=porLoja.reduce((s,r)=>s+r.margemLiquidaTotal,0);
   const totalMargemLiquidaRateada=porLoja.reduce((s,r)=>s+r.margemLiquidaRateada,0);
-  const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
+  const rotulos={hoje:'Hoje',ontem:'Ontem','7d':'Últimos 7 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
   const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
   const metrica=(lbl,val,neg,pctVal)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val${neg?' neg':''}">${val}</div>${pctVal!=null?`<div class="pctv">${pctVal.toFixed(1)}% do faturamento</div>`:''}</div>`;
   const pctDe=(v,fat)=>fat>0?(v/fat*100):0;
@@ -9049,7 +9049,7 @@ function imprimirRelatorioDreDfc(resultados){
     const seta=variacao>=0?'▲':'▼';
     return `<span style="color:${melhorou?'var(--ok)':'var(--danger)'}">${seta} ${Math.abs(variacao).toFixed(1)}% vs. período anterior</span>`;
   };
-  const rotulos={hoje:'Hoje','7d':'Últimos 7 dias','15d':'Últimos 15 dias','30d':'Últimos 30 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
+  const rotulos={hoje:'Hoje',ontem:'Ontem','7d':'Últimos 7 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
   const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
   const cardLojaDreDfc=r=>{
     const aliquota=finLoja(r.loja).aliquotaImposto||0;
@@ -9471,9 +9471,8 @@ function renderFinancas(){
         <label>Loja<select id="frLoja">${optsLojas(financasResumoLoja)}</select></label>
         <label>Período<select id="frPeriodo">
           <option value="hoje" ${financasResumoPeriodo==='hoje'?'selected':''}>Hoje</option>
+          <option value="ontem" ${financasResumoPeriodo==='ontem'?'selected':''}>Ontem</option>
           <option value="7d" ${financasResumoPeriodo==='7d'?'selected':''}>Últimos 7 dias</option>
-          <option value="15d" ${financasResumoPeriodo==='15d'?'selected':''}>Últimos 15 dias</option>
-          <option value="30d" ${financasResumoPeriodo==='30d'?'selected':''}>Últimos 30 dias</option>
           <option value="mes_corrente" ${financasResumoPeriodo==='mes_corrente'?'selected':''}>Mês corrente</option>
           <option value="personalizado" ${financasResumoPeriodo==='personalizado'?'selected':''}>Personalizado</option>
         </select></label>

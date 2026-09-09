@@ -4180,6 +4180,10 @@ function calcularPeriodoResumo(periodo, deQuery, ateQuery) {
   if (periodo === 'hoje') {
     return { de: hojeStr, ate: hojeStr };
   }
+  if (periodo === 'ontem') {
+    const ontemStr = diasAtras(1);
+    return { de: ontemStr, ate: ontemStr };
+  }
   if (periodo === 'personalizado') {
     if (!deQuery || !ateQuery) throw new Error('Informe "de" e "ate" (AAAA-MM-DD) pro periodo personalizado.');
     return { de: deQuery, ate: ateQuery };
@@ -5361,6 +5365,16 @@ async function detectarChegadasFullTodasAsLojas(motivo) {
     console.error(`[full-agendado] ${motivo} - falha geral:`, e.message);
   }
 }
+async function atualizarVisitasTodasAsLojas(motivo) {
+  for (const loja of LOJAS_VALIDAS) {
+    try {
+      const r = await atualizarVisitasLoja(loja);
+      console.log(`[oferta-agendado] ${motivo} - ok:`, loja, `(${r.itens.length} itens)`);
+    } catch (e) {
+      console.error(`[oferta-agendado] ${motivo} - falhou:`, loja, e.message);
+    }
+  }
+}
 setInterval(() => {
   const agora = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
@@ -5373,6 +5387,7 @@ setInterval(() => {
   ultimoSlotRodado = slot;
   pedirAtualizacaoMpTodasAsLojas(`agendado ${horaMin}`);
   detectarChegadasFullTodasAsLojas(`agendado ${horaMin}`);
+  atualizarVisitasTodasAsLojas(`agendado ${horaMin}`);
 }, 60 * 1000);
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
