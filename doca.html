@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v427</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v429</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4556,20 +4556,30 @@ function entrouConcorrente(p){
    venda/ajuste acontecendo no meio do caminho (uma venda reduz aptas ao mesmo tempo que uma
    chegada aumenta, mascarando o quanto realmente chegou). Agora usa p.recebimentosFull - o LOG
    REAL de recebimento do galpão Full, vindo direto do Mercado Livre (endpoint
-   /stock/fulfillment/operations/search, type=inbound_reception - ver buscarRecebimentosFull no
-   server.js), datado e sem ambiguidade nenhuma com venda. Soma os eventos reais desde a data da
-   entrada mais antiga da fila, e desconta em ordem (mais antiga primeiro, igual antes). */
-function filaProcessamentoComRestante(p){
+   /stock/fulfillment/operations/search - ver buscarRecebimentosFull no server.js), datado e sem
+   ambiguidade nenhuma com venda.
+   CORRIGIDO 09/09 (Felipe, em 2 mensagens): (1) "assim que constar QUALQUER unidade, já tem que
+   sumir o full e sumir esse valor também - pra não atrapalhar a programação de próximos envios e
+   não ir liberando em lotes pequenos" - parou de decair PROPORCIONAL (descontar só a quantidade
+   recebida até agora, sobrando um resto travado por dias); pra alguns itens o Mercado Livre libera
+   o estoque em muitos lotes pequenos (transferência entre centros de distribuição, não 1 chegada
+   única), então o resto proporcional ficava "fantasma" por muito tempo. (2) "o valor de entrada
+   pendente já conta em transferência, soma duas vezes" - Em Transferência (transferenciaAtual,
+   direto de buscarTransferenciaFull) é um número SEMPRE fresco e 100% real; se já tem QUALQUER
+   unidade desse produto em transferência, a confirmação já está em andamento de verdade - contar
+   ela de novo em "Entrada pendente" soma a MESMA unidade 2x no Full total. Por isso agora checa
+   transferenciaAtual PRIMEIRO (mais rápido e mais confiável que esperar o log de recebimento, que
+   nem sempre existe pro tipo de operação que o item usa - ver buscarRecebimentosFull) e só usa o
+   log como critério secundário se ainda não tem nada em transferência. */
+function filaProcessamentoComRestante(p,transferenciaAtual){
   const fila=(p&&p.filaProcessamento)||[];
   if(!fila.length) return [];
-  const dataMaisAntiga=fila[0].data;
-  const eventos=(p.recebimentosFull||[]).filter(e=>e.data>=dataMaisAntiga);
-  let recebido=eventos.reduce((s,e)=>s+(Number(e.qtd)||0),0);
+  if(transferenciaAtual>0) return fila.map(({data,qtdOriginal})=>({data,qtdOriginal,qtdRestante:0}));
+  const eventos=p.recebimentosFull||[];
   return fila.map(entrada=>{
     const qtdOriginal=entrada.qtdOriginal!=null?entrada.qtdOriginal:(entrada.qtdRestante||0);
-    const consumido=Math.min(recebido,qtdOriginal);
-    recebido-=consumido;
-    return {data:entrada.data,qtdOriginal,qtdRestante:Math.max(0,qtdOriginal-consumido)};
+    const temRecebimento=eventos.some(e=>e.data>=entrada.data&&(Number(e.qtd)||0)>0);
+    return {data:entrada.data,qtdOriginal,qtdRestante:temRecebimento?0:qtdOriginal};
   });
 }
 function mlAtualizarFullDoSinc(p,item,loja){
@@ -4598,7 +4608,7 @@ function mlAtualizarFullDoSinc(p,item,loja){
   // versão anterior por delta de aptas+transferência).
   if(Array.isArray(item.recebimentos_full)) p.recebimentosFull=item.recebimentos_full;
   if(p.filaProcessamento&&p.filaProcessamento.length){
-    p.filaProcessamento=filaProcessamentoComRestante(p)
+    p.filaProcessamento=filaProcessamentoComRestante(p,transferido)
       .filter(entrada=>{
         const diasDesde=(Date.now()-Date.parse(entrada.data+'T00:00:00-03:00'))/864e5;
         return entrada.qtdRestante>0.5&&diasDesde<=5;
@@ -5522,25 +5532,36 @@ function imprimirRelatorioCompraFornecedor(){
     const [pid,cid]=x.dataset.ped.split('|');
     const p=prodById(pid); if(!p) return;
     const c=(p.pedidos||[]).find(y=>y.id===cid); if(!c||c.qtd<=0) return;
-    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,custo:p.custo,qtd:c.qtd,obs:c.obs,data:c.data,unidPorCaixa:p.unidPorCaixa,produtoId:p.id,compartilhado:(membrosVinculados(p).length>0||!!p.vinculadoA)});
+    itens.push({loja:p.loja,sku:p.sku,codigo:p.codigo,fornecedor:p.fornecedor,custo:p.custo,qtd:c.qtd,obs:c.obs,data:c.data,unidPorCaixa:p.unidPorCaixa,produtoId:p.id});
   });
   if(!itens.length){ alert('Não há nada pendente em Comprar.'); return; }
-  /* Felipe 31/08: produto de estoque compartilhado (vinculadoA) pode ter várias linhas de pedido
-     separadas (uma pra cada envio que gerou a compra nele) mesmo sendo fisicamente o mesmo
-     produto - no relatório impresso pro fornecedor, unifica numa linha só (soma a qtd). Em
-     Comprar a tela continua mostrando cada pedido separado (útil pra saber de qual envio veio
-     cada um) - a unificação é só na hora de imprimir/mandar pro fornecedor. */
-  const itensUnificados=[]; const porProduto={};
+  /* Unifica numa linha só quando o SKU é IGUAL (texto, maiúsculo/minúsculo ignorado) pro mesmo
+     fornecedor - cobre tanto o caso de estoque compartilhado (vinculadoA, mesmo produtoId em
+     pedidos de envios diferentes) quanto o caso pedido pelo Felipe 09/09: mesmo SKU cadastrado
+     em lojas DIFERENTES (produtoId diferente), tipo "ESCOVACACHOS" pedido na TorvStore e na
+     DorBlock - no relatório pro fornecedor isso é 1 compra só, não 2. Custo unitário exibido
+     vira a média ponderada quando os preços cadastrados divergirem entre lojas (raro, mas
+     possível). Em Comprar a tela continua mostrando cada pedido separado por loja - a
+     unificação é só na hora de imprimir/mandar pro fornecedor. */
+  const itensUnificados=[]; const porChave={};
   itens.forEach(i=>{
-    if(!i.compartilhado){ itensUnificados.push(i); return; }
-    const acc=porProduto[i.produtoId];
-    if(!acc){ const novo={...i,_datas:new Set([i.data]),_obsSet:new Set(i.obs?[i.obs]:[])}; porProduto[i.produtoId]=novo; itensUnificados.push(novo); return; }
-    acc.qtd+=i.qtd; acc._datas.add(i.data); if(i.obs) acc._obsSet.add(i.obs);
+    const chaveSku=(i.sku||'').trim().toUpperCase()||('__produto_'+i.produtoId);
+    const chave=chaveSku+'|'+((i.fornecedor||'').trim().toLowerCase());
+    const subtotal=(i.custo||0)*i.qtd;
+    const acc=porChave[chave];
+    if(!acc){
+      const novo={...i,_qtd:i.qtd,_subtotal:subtotal,_datas:new Set([i.data]),_obsSet:new Set(i.obs?[i.obs]:[]),_lojas:new Set([i.loja])};
+      porChave[chave]=novo; itensUnificados.push(novo); return;
+    }
+    acc._qtd+=i.qtd; acc._subtotal+=subtotal; acc._datas.add(i.data); if(i.obs) acc._obsSet.add(i.obs); acc._lojas.add(i.loja);
   });
   itensUnificados.forEach(i=>{
-    if(!i.compartilhado) return;
+    i.qtd=i._qtd;
+    i.custo=i.qtd>0?i._subtotal/i.qtd:i.custo;
     i.data=i._datas.size===1?[...i._datas][0]:null;
     i.obs=[...i._obsSet].join(' · ');
+    i.compartilhado=i._lojas.size>1||i._datas.size>1;
+    i.loja=i._lojas.size>1?[...i._lojas].sort().join(' + '):i.loja;
   });
   const g={}; itensUnificados.forEach(i=>{ const f=(i.fornecedor||'').trim()||'Sem fornecedor definido'; (g[f]=g[f]||[]).push(i); });
   const nomes=Object.keys(g).sort((a,b)=>a.localeCompare(b));
@@ -5567,7 +5588,7 @@ function imprimirRelatorioCompraFornecedor(){
       <div class="forn-sub">${l.reduce((a,i)=>a+i.qtd,0)} un. em ${l.length} pedido(s)</div>
       <div class="tbl-scroll"><table><thead><tr><th>Pedido de</th><th>Loja</th><th>SKU</th><th>Código</th><th class="n">Caixas</th><th class="n">Qtd</th><th class="n">Custo un.</th><th class="n">Subtotal</th><th>Obs.</th></tr></thead><tbody>
       ${l.map(i=>`<tr>
-        <td>${i.data?esc(fmtData(i.data)):'Diversas datas'}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}${i.compartilhado?' <span style="font-size:10.5px;color:var(--muted)" title="Estoque compartilhado - pedidos de mais de um envio somados nesta linha">🔗</span>':''}</td><td>${esc(i.codigo)}</td>
+        <td>${i.data?esc(fmtData(i.data)):'Diversas datas'}</td><td>${esc(i.loja)}</td><td>${esc(i.sku)}${i.compartilhado?' <span style="font-size:10.5px;color:var(--muted)" title="Mesmo SKU somado nesta linha - pode ser mais de um envio, mais de uma loja, ou os dois">🔗</span>':''}</td><td>${esc(i.codigo)}</td>
         <td class="n">${i.unidPorCaixa?fmtInt(Math.ceil(i.qtd/i.unidPorCaixa)):'—'}</td>
         <td class="n">${fmtInt(i.qtd)}</td>
         <td class="n">${i.custo>0?fmtMoney(i.custo):'—'}</td><td class="n">${i.custo>0?fmtMoney(i.custo*i.qtd):'—'}</td>
@@ -11568,7 +11589,7 @@ function fullCalc(i,envioOverride){
   const emProcessamento=(()=>{
     const p=fullProduto(i);
     if(!p) return 0;
-    return filaProcessamentoComRestante(p).reduce((s,e)=>s+(e.qtdRestante||0),0);
+    return filaProcessamentoComRestante(p,i.transf).reduce((s,e)=>s+(e.qtdRestante||0),0);
   })();
   const full=fullValorBase+proximosProgramados+emProcessamento;   /* quantidade, pra Total/cobertura/sugestão */
   const consumo=media*D, proj=full-consumo, dem=media*(c.cobertura||30);

@@ -5376,29 +5376,37 @@ async function detectarChegadasFullTodasAsLojas(motivo) {
       return cacheMl[loja].get(mlItemId) || null;
     }
     let mudou = false;
-    /* decai "Entrada pendente" (p.filaProcessamento) com o log real de recebimento que acabou de
-       vir fresco do /sync acima - mesma conta que o doca.html faz no navegador
-       (filaProcessamentoComRestante + a poda de 5 dias em mlAtualizarFullDoSinc). */
+    /* decai "Entrada pendente" (p.filaProcessamento) - mesma regra do doca.html
+       (filaProcessamentoComRestante + a poda de 5 dias em mlAtualizarFullDoSinc), atualizada
+       09/09 (Felipe, 2 pedidos): (1) tudo-ou-nada por entrada assim que aparece QUALQUER
+       recebimento real no log, em vez de decair proporcional (ficava um resto "fantasma" por
+       dias quando o ML libera em muitos lotes pequenos); (2) se já tem QUALQUER unidade em
+       transferência (dado sempre fresco, sem depender do log) a confirmação inteira já conta
+       como resolvida - senão dobra a contagem (a mesma unidade em transferência E em entrada
+       pendente). transferência é checada primeiro por ser mais rápida e mais confiável. */
     for (const p of produtos) {
       if (!p.mlItemId || !Array.isArray(p.filaProcessamento) || !p.filaProcessamento.length) continue;
       const row = await pegarMlProduto(p.loja, p.mlItemId);
       if (row && Array.isArray(row.recebimentos_full)) p.recebimentosFull = row.recebimentos_full;
+      const transferenciaAtual = row ? (Number(row.transferencia_full) || 0) : 0;
       const fila = p.filaProcessamento;
-      const dataMaisAntiga = fila[0].data;
-      const eventos = (p.recebimentosFull || []).filter(ev => ev.data >= dataMaisAntiga);
-      let recebido = eventos.reduce((s, ev) => s + (Number(ev.qtd) || 0), 0);
-      const comRestante = fila.map(entrada => {
-        const qtdOriginal = entrada.qtdOriginal != null ? entrada.qtdOriginal : (entrada.qtdRestante || 0);
-        const consumido = Math.min(recebido, qtdOriginal);
-        recebido -= consumido;
-        return { data: entrada.data, qtdOriginal, qtdRestante: Math.max(0, qtdOriginal - consumido) };
-      });
-      const nova = comRestante
-        .filter(entrada => {
-          const diasDesde = (Date.now() - Date.parse(entrada.data + 'T00:00:00-03:00')) / 864e5;
-          return entrada.qtdRestante > 0.5 && diasDesde <= 5;
-        })
-        .map(({ data, qtdOriginal }) => ({ data, qtdOriginal }));
+      let nova;
+      if (transferenciaAtual > 0) {
+        nova = [];
+      } else {
+        const eventos = p.recebimentosFull || [];
+        nova = fila
+          .map(entrada => {
+            const qtdOriginal = entrada.qtdOriginal != null ? entrada.qtdOriginal : (entrada.qtdRestante || 0);
+            const temRecebimento = eventos.some(ev => ev.data >= entrada.data && (Number(ev.qtd) || 0) > 0);
+            return { data: entrada.data, qtdOriginal, qtdRestante: temRecebimento ? 0 : qtdOriginal };
+          })
+          .filter(entrada => {
+            const diasDesde = (Date.now() - Date.parse(entrada.data + 'T00:00:00-03:00')) / 864e5;
+            return entrada.qtdRestante > 0.5 && diasDesde <= 5;
+          })
+          .map(({ data, qtdOriginal }) => ({ data, qtdOriginal }));
+      }
       if (JSON.stringify(nova) !== JSON.stringify(p.filaProcessamento)) { p.filaProcessamento = nova; mudou = true; }
     }
     if (!envios.length) console.log(`[full-agendado] ${motivo} - nenhum envio programado.`);
