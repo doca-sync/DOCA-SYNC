@@ -5125,7 +5125,12 @@ async function buscarStatusPromocaoItem(accessToken, itemId) {
     return { ok: false, erro: e.message };
   }
 }
-app.get('/promocao/status', async (req, res) => {
+/* MUDOU 11/09 (Felipe: essas rotas mexem em preco/campanha real no Mercado Livre e nao pediam
+   senha - diferente das rotas de sync do topo do arquivo, que sao so leitura de numero/estoque e
+   ficam sem login de proposito). O doca.html ja manda a senha em toda chamada via nuvemFetch (ver
+   Authorization: 'Basic '+nuvemAuth), entao isso nao muda nada pra quem usa o app normalmente -
+   so passa a barrar quem bater direto na URL sem credencial. */
+app.get('/promocao/status', exigirLogin, async (req, res) => {
   const loja = req.query.loja;
   if (!LOJAS_VALIDAS.includes(loja)) {
     return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
@@ -5156,7 +5161,7 @@ app.get('/promocao/status', async (req, res) => {
 /* cria uma campanha do vendedor (SELLER_CAMPAIGN) e já indica os itens com o deal_price calculado
    no doca.html (preço atual * regra de desconto do produto, respeitando o preço mínimo). Duração
    sempre <= 14 dias (limite real do Mercado Livre - ver comentário acima). */
-app.post('/promocao/criar-campanha', async (req, res) => {
+app.post('/promocao/criar-campanha', exigirLogin, async (req, res) => {
   const { loja, nome, dias, itens } = req.body || {};
   if (!LOJAS_VALIDAS.includes(loja)) {
     return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
@@ -5208,7 +5213,182 @@ app.post('/promocao/criar-campanha', async (req, res) => {
 /* entra em campanha(s) que o PRÓPRIO Mercado Livre criou e convidou o vendedor (DEAL,
    PRICE_DISCOUNT etc - vieram como status "candidate" no /promocao/status). Mesma chamada de API
    da campanha do vendedor, só muda o promotion_type/promotion_id (que já vem junto no candidato). */
-app.post('/promocao/entrar-campanha', async (req, res) => {
+/* NOVO 11/09 (Felipe: "100% automático já criando uma segunda campanha forçada hoje... a condicional
+   de não dar desconto maior que o programado já está segura o suficiente / eu também vou
+   acompanhando ao longo dos dias"): versão server-side das MESMAS contas que o doca.html já faz
+   (precoComDesconto/precoCandidato) - só entra numa campanha/cria uma nova se o preço bater EXATO
+   com o desconto configurado por produto (nunca mais barato que isso), exatamente igual ao que já
+   foi testado manualmente e funcionou (Alicatinho, Vem Fazer Comprita). Roda sozinha 2x por dia
+   (mesmo horário do Mercado Pago/Full, ver setInterval no fim do arquivo) e também pode ser
+   disparada na hora pelo botão "Rodar automação agora" no doca.html. */
+function precoComDescontoServidor(mlPreco, descontoPromocao) {
+  if (typeof mlPreco !== 'number' || Math.abs(mlPreco - 19) < 0.005) return null; // R$19 e' o piso, nunca promociona
+  if (!(descontoPromocao > 0)) return null;
+  return Math.round(mlPreco * (1 - descontoPromocao / 100) * 100) / 100;
+}
+function precoCandidatoServidor(mlPreco, descontoPromocao, cand) {
+  const configurado = precoComDescontoServidor(mlPreco, descontoPromocao);
+  if (configurado == null) return null;
+  const min = typeof cand.min_discounted_price === 'number' ? cand.min_discounted_price : null;
+  const max = typeof cand.max_discounted_price === 'number' ? cand.max_discounted_price : null;
+  if (min != null && configurado < min) return null; // campanha exige desconto MAIOR que o configurado - nao forca
+  if (max != null && configurado > max) return null; // campanha aceitaria so' um preco MENOR (desconto mais raso) - nao forca
+  return configurado;
+}
+const TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR = ['DEAL', 'SELLER_CAMPAIGN']; // mesma lista do doca.html - ver comentario la'
+async function rodarAutomacaoPromocoes(motivo, opts) {
+  opts = opts || {};
+  const forcar = !!opts.forcar; // ignora "ja tem campanha ativa" - so' usado no botao manual de teste
+  const somenteLoja = opts.loja || null;
+  const resumo = { porLoja: {} };
+  let linha;
+  try {
+    linha = await pegarEstadoNuvem();
+  } catch (e) {
+    console.error(`[promo-automatica] ${motivo} - falha ao ler estado:`, e.message);
+    return { ok: false, erro: e.message };
+  }
+  if (!linha || !linha.dados) {
+    console.log(`[promo-automatica] ${motivo} - sem estado salvo ainda, nada a fazer.`);
+    return { ok: true, semEstado: true };
+  }
+  const dados = linha.dados;
+  const produtos = Array.isArray(dados.produtos) ? dados.produtos : [];
+  if (!dados.promocoes || typeof dados.promocoes !== 'object') dados.promocoes = { cfg: {}, historico: {} };
+  if (!Array.isArray(dados.promocoes.automacaoLog)) dados.promocoes.automacaoLog = [];
+  let mudou = false;
+  const hojeStr = new Date().toISOString().slice(0, 10);
+  for (const loja of LOJAS_VALIDAS) {
+    if (somenteLoja && loja !== somenteLoja) continue;
+    const elegiveis = produtos.filter(p =>
+      p.loja === loja && p.mlItemId && p.mlStatus === 'active' && !p.mlAusente &&
+      typeof p.mlPreco === 'number' && p.descontoPromocao > 0 &&
+      Math.abs(p.mlPreco - 19) >= 0.005
+    );
+    if (!elegiveis.length) continue;
+    let accessToken;
+    try {
+      accessToken = await tokenValido(loja);
+    } catch (e) {
+      console.error(`[promo-automatica] ${motivo} - falha ao pegar token de ${loja}:`, e.message);
+      continue;
+    }
+    const entrados = [];
+    const precisamCampanhaNova = [];
+    const erros = [];
+    for (const p of elegiveis) {
+      const st = await buscarStatusPromocaoItem(accessToken, p.mlItemId);
+      if (!st.ok) { erros.push({ sku: p.sku || p.codigo, erro: st.erro }); continue; }
+      if (st.temPromocaoAtiva && !forcar) continue; // ja coberto - so entra de novo se for o teste forcado
+      const candidatas = (st.candidatas || []).filter(c => TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR.includes(c.type) && (c.id || c.promotion_id));
+      let entrouEmAlgo = false;
+      for (const cand of candidatas) {
+        const preco = precoCandidatoServidor(p.mlPreco, p.descontoPromocao, cand);
+        if (preco == null) continue;
+        const idCampanha = cand.id || cand.promotion_id;
+        try {
+          const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${p.mlItemId}?app_version=v2`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ promotion_id: idCampanha, promotion_type: cand.type, deal_price: preco })
+          });
+          const jItem = await rItem.json();
+          if (rItem.ok) {
+            entrados.push({ sku: p.sku || p.codigo, campanha: cand.name || idCampanha, preco });
+            entrouEmAlgo = true;
+            mudou = true;
+            break; // 1 campanha nova por item ja basta nessa rodada
+          } else {
+            erros.push({ sku: p.sku || p.codigo, erro: JSON.stringify(jItem) });
+          }
+        } catch (e) {
+          erros.push({ sku: p.sku || p.codigo, erro: e.message });
+        }
+      }
+      if (!entrouEmAlgo) precisamCampanhaNova.push(p);
+    }
+    let criada = null;
+    if (precisamCampanhaNova.length) {
+      const agora = new Date();
+      // nome unico com dia/hora - evita o erro "The name already exists" ao renovar mais de 1x no mesmo mes
+      const nomeUnico = `${nomeCampanhaPadrao(loja)} (auto ${String(agora.getDate()).padStart(2, '0')}/${String(agora.getMonth() + 1).padStart(2, '0')} ${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')})`;
+      const inicio = hojeStr + 'T00:00:00';
+      const fimData = new Date(agora.getTime() + 13 * 864e5);
+      try {
+        const rCampanha = await fetch('https://api.mercadolibre.com/seller-promotions/promotions?app_version=v2', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ promotion_type: 'SELLER_CAMPAIGN', name: nomeUnico, sub_type: 'FLEXIBLE_PERCENTAGE', start_date: inicio, finish_date: fimData.toISOString().slice(0, 10) + 'T00:00:00' })
+        });
+        const campanha = await rCampanha.json();
+        if (rCampanha.ok) {
+          const itensCriados = [];
+          for (const p of precisamCampanhaNova) {
+            const preco = precoComDescontoServidor(p.mlPreco, p.descontoPromocao);
+            try {
+              const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${p.mlItemId}?app_version=v2`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ promotion_id: campanha.id, promotion_type: 'SELLER_CAMPAIGN', deal_price: preco })
+              });
+              const jItem = await rItem.json();
+              if (rItem.ok) itensCriados.push({ ml_item_id: p.mlItemId, sku: p.sku || p.codigo, desconto: p.descontoPromocao, precoFinal: preco });
+              else erros.push({ sku: p.sku || p.codigo, erro: JSON.stringify(jItem) });
+            } catch (e) {
+              erros.push({ sku: p.sku || p.codigo, erro: e.message });
+            }
+          }
+          if (itensCriados.length) {
+            criada = { id: campanha.id, nome: campanha.name || nomeUnico, tipo: 'SELLER_CAMPAIGN', inicio: hojeStr, fim: fimData.toISOString().slice(0, 10), criadoEm: Date.now(), itens: itensCriados };
+            if (!dados.promocoes.historico[loja]) dados.promocoes.historico[loja] = [];
+            dados.promocoes.historico[loja].push(criada);
+            mudou = true;
+          }
+        } else {
+          erros.push({ sku: '(campanha nova)', erro: 'Falha ao criar campanha: ' + JSON.stringify(campanha) });
+        }
+      } catch (e) {
+        erros.push({ sku: '(campanha nova)', erro: e.message });
+      }
+    }
+    if (entrados.length || criada || erros.length) {
+      resumo.porLoja[loja] = { entrados, criada, erros };
+      dados.promocoes.automacaoLog.unshift({
+        data: new Date().toISOString(), motivo, loja,
+        entrados: entrados.length, criada: criada ? criada.nome : null, itensNaCampanhaNova: criada ? criada.itens.length : 0,
+        erros: erros.length, detalheErros: erros.slice(0, 5)
+      });
+      mudou = true;
+    }
+  }
+  if (dados.promocoes.automacaoLog.length > 50) dados.promocoes.automacaoLog = dados.promocoes.automacaoLog.slice(0, 50);
+  if (mudou) {
+    try { await fazerBackupAntesDeGravar(linha.dados, linha.atualizado_em); } catch (eBackup) { console.error(`[promo-automatica] ${motivo} - falha ao gravar backup:`, eBackup.message); }
+    await pool.query(
+      `insert into doca_estado (id, dados, atualizado_em) values (1, $1, now())
+       on conflict (id) do update set dados = excluded.dados, atualizado_em = excluded.atualizado_em`,
+      [JSON.stringify(dados)]
+    );
+    console.log(`[promo-automatica] ${motivo} - estado atualizado.`, JSON.stringify(resumo));
+  } else {
+    console.log(`[promo-automatica] ${motivo} - nada novo.`);
+  }
+  return { ok: true, resumo };
+}
+app.post('/promocao/rodar-automacao', exigirLogin, async (req, res) => {
+  const { loja, forcar } = req.body || {};
+  if (loja && !LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+  try {
+    const resultado = await rodarAutomacaoPromocoes('manual (botao Doca)', { loja: loja || null, forcar: !!forcar });
+    res.json(resultado);
+  } catch (e) {
+    console.error('Erro no /promocao/rodar-automacao:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+app.post('/promocao/entrar-campanha', exigirLogin, async (req, res) => {
   const { loja, itens } = req.body || {};
   if (!LOJAS_VALIDAS.includes(loja)) {
     return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
@@ -5646,6 +5826,10 @@ setInterval(() => {
   pedirAtualizacaoMpTodasAsLojas(`agendado ${horaMin}`);
   detectarChegadasFullTodasAsLojas(`agendado ${horaMin}`);
   atualizarVisitasTodasAsLojas(`agendado ${horaMin}`);
+  /* NOVO 11/09: automacao de promocoes (ver rodarAutomacaoPromocoes acima) - roda sem "forcar",
+     entao so' renova/entra quando realmente precisa (nao duplica campanha ja ativa sozinha - o
+     "forcar" e' so' pro botao manual de teste do Felipe). */
+  rodarAutomacaoPromocoes(`agendado ${horaMin}`, { forcar: false });
 }, 60 * 1000);
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));

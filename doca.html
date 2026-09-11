@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v445</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v446</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1134,6 +1134,7 @@ function migrar(){
   if(!state.promocoes.cfg.loja||!STORES.includes(state.promocoes.cfg.loja)) state.promocoes.cfg.loja=STORES[0];
   if(!state.promocoes.historico||typeof state.promocoes.historico!=='object') state.promocoes.historico={};
   STORES.forEach(l=>{ if(!Array.isArray(state.promocoes.historico[l])) state.promocoes.historico[l]=[]; });
+  if(!Array.isArray(state.promocoes.automacaoLog)) state.promocoes.automacaoLog=[]; // preenchido pelo servidor (rodarAutomacaoPromocoes)
   if(!state.full||typeof state.full!=='object') state.full={cfg:{},itens:[],lidoEm:{}};
   if(!Array.isArray(state.full.itens)) state.full.itens=[];
   if(!state.full.lidoEm||typeof state.full.lidoEm!=='object') state.full.lidoEm={};
@@ -12739,12 +12740,54 @@ function abrirConfirmacaoCandidato(loja,item,cand){
    loja, igual ao padrão já usado em Visão Geral (cards-lojas). Cada loja mantém seus próprios
    botões (Criar campanha / Atualizar status) e sua própria lista de candidatos, sem depender de
    nenhum seletor. */
+/* NOVO 11/09 (Felipe: "100% automático já criando uma segunda campanha forçada hoje... a
+   condicional de não dar desconto maior que o programado já está segura o suficiente / eu também
+   vou acompanhando ao longo dos dias"): a automação de verdade roda no SERVIDOR (2x por dia, mesmo
+   horário do Mercado Pago/Full - ver rodarAutomacaoPromocoes no server.js), sem precisar do Doca
+   aberto. Esse painel só mostra o histórico (automacaoLog) e dá um botão pra rodar na hora, sem
+   esperar o próximo horário - útil pra acompanhar/testar. "Forçar mesmo já ativo" é só pro teste
+   pontual que o Felipe pediu (criar uma 2ª campanha em cima da que já existe, só hoje, pra
+   acompanhar se funciona) - a automação agendada nunca usa isso sozinha. */
+let promocaoRodandoAutomacao=false;
+async function rodarAutomacaoAgora(loja,forcar){
+  promocaoRodandoAutomacao=true; renderPromocoes();
+  try{
+    const r=await nuvemFetch('/promocao/rodar-automacao',{method:'POST',body:JSON.stringify({loja:loja||undefined,forcar:!!forcar})});
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao rodar automação.');
+    toast('✅ Automação rodou. Confira o log abaixo.');
+    await carregarDaNuvem(true); // recarrega estado (log/histórico/campanhas vieram do servidor)
+  }catch(e){
+    toast('⚠ '+e.message);
+  }
+  promocaoRodandoAutomacao=false;
+  renderPromocoes();
+}
 function renderPromocoes(){
   const el=document.getElementById('tab-promocoes'); if(!el) return;
   const hojeStr=hoje();
   const candidatosPorLoja={};
+  const log=(state.promocoes.automacaoLog||[]).slice(0,15);
   el.innerHTML=`
     <h1 class="page-title">Promoções</h1>
+    <div class="card-vg" style="margin-bottom:18px">
+      <h3>Automação</h3>
+      <p class="sub">Roda sozinha às 7:30 e 12:30 todo dia: entra em campanhas novas do Mercado Livre quando o preço bate com o desconto configurado, e cria a próxima campanha de 14 dias quando a atual acabar. Nunca aplica um desconto diferente do configurado.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn acc" id="btnRodarAutomacao" ${promocaoRodandoAutomacao?'disabled':''}>${promocaoRodandoAutomacao?'Rodando…':'🤖 Rodar automação agora (todas as lojas)'}</button>
+        <label class="hint" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="chkForcarAutomacao"> Forçar mesmo já tendo campanha ativa (só pra teste pontual)</label>
+      </div>
+      ${log.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr>
+        <th>Quando</th><th>Loja</th><th>Motivo</th><th class="num">Entrou em</th><th>Campanha nova</th><th class="num">Erros</th>
+      </tr></thead><tbody>${log.map(l=>`<tr>
+        <td>${esc(new Date(l.data).toLocaleString('pt-BR'))}</td>
+        <td>${esc(l.loja)}</td>
+        <td>${esc(l.motivo||'')}</td>
+        <td class="num">${l.entrados||0}</td>
+        <td>${l.criada?`${esc(l.criada)} (${l.itensNaCampanhaNova||0} produto(s))`:'—'}</td>
+        <td class="num">${l.erros?`<span class="muted" title="${esc(JSON.stringify(l.detalheErros||[]))}">${l.erros}</span>`:'0'}</td>
+      </tr>`).join('')}</tbody></table></div>`:'<p class="muted" style="margin-top:12px">Ainda não rodou nenhuma vez.</p>'}
+    </div>
     ${STORES.map(loja=>{
       const semPromoBruto=produtosSemPromocao(loja);
       const cache=promocaoStatusCache[loja]||{carregando:false,erro:null,itens:null};
@@ -12855,6 +12898,11 @@ function renderPromocoes(){
       </div>`;
     }).join('')}
   `;
+  const btnRodarAuto=document.getElementById('btnRodarAutomacao');
+  if(btnRodarAuto) btnRodarAuto.onclick=()=>{
+    const forcar=document.getElementById('chkForcarAutomacao').checked;
+    rodarAutomacaoAgora(null,forcar);
+  };
   el.querySelectorAll('[data-descontopromo]').forEach(inp=>{
     inp.onchange=e=>{
       const p=prodById(e.target.dataset.descontopromo); if(!p) return;
