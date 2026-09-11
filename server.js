@@ -5310,8 +5310,11 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
     let criada = null;
     if (precisamCampanhaNova.length) {
       const agora = new Date();
-      // nome unico com dia/hora - evita o erro "The name already exists" ao renovar mais de 1x no mesmo mes
-      const nomeUnico = `${nomeCampanhaPadrao(loja)} (auto ${String(agora.getDate()).padStart(2, '0')}/${String(agora.getMonth() + 1).padStart(2, '0')} ${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')})`;
+      // nome unico com dia/hora - evita o erro "The name already exists" ao renovar mais de 1x no mesmo mes.
+      // CORRIGIDO 11/09 (Felipe testou e o Mercado Livre respondeu "Invalid name" - o nome anterior
+      // tinha parenteses, barra e dois-pontos, que o campo "name" da campanha nao aceita): so'
+      // letras, numeros, espaco e hifen.
+      const nomeUnico = `${nomeCampanhaPadrao(loja)} auto ${String(agora.getDate()).padStart(2, '0')}-${String(agora.getMonth() + 1).padStart(2, '0')} ${String(agora.getHours()).padStart(2, '0')}h${String(agora.getMinutes()).padStart(2, '0')}`;
       const inicio = hojeStr + 'T00:00:00';
       const fimData = new Date(agora.getTime() + 13 * 864e5);
       try {
