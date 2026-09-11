@@ -5818,7 +5818,7 @@ async function atualizarVisitasTodasAsLojas(motivo) {
     }
   }
 }
-setInterval(() => {
+setInterval(async () => {
   const agora = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
   }).formatToParts(new Date()).reduce((o, p) => (o[p.type] = p.value, o), {});
@@ -5829,12 +5829,22 @@ setInterval(() => {
   if (slot === ultimoSlotRodado) return; // ja rodou nesse exato minuto/dia - evita disparo duplicado
   ultimoSlotRodado = slot;
   pedirAtualizacaoMpTodasAsLojas(`agendado ${horaMin}`);
-  detectarChegadasFullTodasAsLojas(`agendado ${horaMin}`);
+  /* CORRIGIDO 11/09 (Felipe: "se um produto ficar sem estoque e sem promoção, quando entrar estoque
+     ele entra sozinho na próxima sincronização?"): ANTES essas 4 chamadas disparavam todas juntas,
+     sem esperar uma da outra - rodarAutomacaoPromocoes lia o estado (pegarEstadoNuvem) podendo
+     pegar a FOTO ANTIGA do produto (ainda "pausado"/sem estoque), porque detectarChegadasFullTodasAsLojas
+     é quem de fato chama o /sync que atualiza status/estoque de cada anuncio, e só grava isso no banco
+     DEPOIS de terminar - as duas rodando ao mesmo tempo era uma corrida, podendo empurrar a
+     resposta certa só pro PRÓXIMO horário (até 12h de atraso a mais, sem necessidade). Agora espera
+     o sync/estoque terminar de verdade antes de rodar a automação de promoções, garantindo que ela
+     sempre vê o estoque mais atual - resolvendo isso sempre no MESMO horário em que o produto volta
+     a ficar ativo, não no de depois. */
+  await detectarChegadasFullTodasAsLojas(`agendado ${horaMin}`);
   atualizarVisitasTodasAsLojas(`agendado ${horaMin}`);
-  /* NOVO 11/09: automacao de promocoes (ver rodarAutomacaoPromocoes acima) - roda sem "forcar",
-     entao so' renova/entra quando realmente precisa (nao duplica campanha ja ativa sozinha - o
-     "forcar" e' so' pro botao manual de teste do Felipe). */
-  rodarAutomacaoPromocoes(`agendado ${horaMin}`, { forcar: false });
+  /* automacao de promocoes (ver rodarAutomacaoPromocoes acima) - roda sem "forcar", entao so'
+     renova/entra quando realmente precisa (nao duplica campanha ja ativa sozinha - o "forcar" e'
+     so' pro botao manual de teste do Felipe). */
+  await rodarAutomacaoPromocoes(`agendado ${horaMin}`, { forcar: false });
 }, 60 * 1000);
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
 app.listen(PORT, () => console.log(`Doca ML sync backend rodando na porta ${PORT}`));
