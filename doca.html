@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v443</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v444</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12578,6 +12578,10 @@ function imprimirRelatorioEstoqueMinimo(loja){
    próprio site do ML, não da API pública). Pra cobrir o ciclo mensal, o Doca cria em blocos
    seguidos de 14 dias, sempre com aprovação antes de cada bloco (decisão do Felipe, 11/09). */
 let promocaoStatusCache={};
+/* NOVO 11/09: quais produtos (por id) estão temporariamente destravados pra editar o desconto -
+   ver comentário na tabela "Sem promoção ativa" em renderPromocoes. Não persiste na nuvem de
+   propósito. */
+let promocaoDestravados=new Set();
 /* MUDOU 11/09 (Felipe: "acho melhor mostrar todos os produtos, incluindo os que já tem preço a
    19 / ranquear por ticket do mais alto pro mais baixo"): antes escondia os produtos de R$19 da
    lista inteira - agora eles aparecem também (pra visão completa do catálogo), só que sem input
@@ -12790,10 +12794,20 @@ function renderPromocoes(){
         </tr></thead><tbody>${semPromo.map(p=>{
           const final=precoComDesconto(p);
           const fixo19=precoEhFixo19(p);
+          /* NOVO 11/09 (Felipe: "agora que eu já configurei todos, tem como travar o valor pra não
+             alterar sem querer e colocar um botão pra destravar somente o sku individual"): produto
+             que já tem desconto configurado nasce travado (só mostra o número + um cadeado); só
+             destrava esse SKU específico clicando no cadeado (promocaoDestravados é uma lista
+             temporária, não salva na nuvem - some se recarregar a página, o que é intencional: todo
+             produto configurado volta a nascer travado). Produto ainda sem desconto continua com o
+             campo aberto normalmente, não tem o que travar. */
+          const travado=!fixo19 && p.descontoPromocao!=null && !promocaoDestravados.has(p.id);
           return `<tr${fixo19?' style="opacity:.55"':''}>
             <td class="mono">${esc(p.sku||p.codigo||'')}</td>
             <td class="num">${fmtMoney(p.mlPreco)}</td>
-            <td class="num">${fixo19?'<span class="muted">—</span>':`<input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%">`}</td>
+            <td class="num">${fixo19?'<span class="muted">—</span>':(travado
+              ?`<span class="mono">${p.descontoPromocao}%</span> <button class="btn sm" data-destravardesconto="${p.id}" title="Destravar pra editar só este produto">🔒</button>`
+              :`<input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%">`)}</td>
             <td class="num">${fixo19?'<span class="muted">R$19 é o piso — não aplicável</span>':(final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">sem desconto — não entra na campanha</span>')}</td>
           </tr>`;
         }).join('')}</tbody></table></div>`:'<p class="muted">Nenhum anúncio ativo sem promoção agora.</p>'}
@@ -12828,8 +12842,12 @@ function renderPromocoes(){
       const p=prodById(e.target.dataset.descontopromo); if(!p) return;
       const v=e.target.value===''?null:Number(e.target.value);
       p.descontoPromocao=(v!=null&&!isNaN(v)&&v>0)?Math.min(80,v):null;
+      promocaoDestravados.delete(p.id); // salvou - volta a travar sozinho
       persist();
     };
+  });
+  el.querySelectorAll('[data-destravardesconto]').forEach(btn=>{
+    btn.onclick=()=>{ promocaoDestravados.add(btn.dataset.destravardesconto); renderPromocoes(); };
   });
   el.querySelectorAll('[data-criarcampanha]').forEach(btn=>{
     btn.onclick=()=>{
