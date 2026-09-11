@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v439</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v440</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12667,36 +12667,58 @@ function abrirConfirmacaoCampanha(loja,itens){
     }
   };
 }
-/* mesma lógica de prévia+confirmação, só que pra entrar num candidato que o PRÓPRIO Mercado Livre
-   já ofereceu (DEAL, PRICE_DISCOUNT etc) - respeita o min/max sugerido pelo ML, clampando o preço
-   calculado pela regra do produto se ele cair fora da faixa aceita. */
-function abrirConfirmacaoCandidato(loja,item,cand){
-  const precoSugerido=precoComDesconto(item);
+/* MUDOU 11/09 (Felipe, comparando com a tela real do ML: "o importante é nunca entrar numa
+   campanha que dê um valor menor do que o desconto programado"): antes, se o preço configurado
+   caísse fora da faixa min/max que o Mercado Livre permite pra aquele candidato, o Doca FORÇAVA o
+   preço pra dentro da faixa (podendo sair mais barato ou mais caro que o configurado, sem avisar
+   direito). Agora é tudo ou nada: só entra exatamente no preço configurado; se a campanha exigir
+   um desconto diferente do configurado (faixa não cobre o valor), bloqueia e mostra o motivo em
+   vez de ajustar sozinho. */
+function precoCandidato(item,cand){
+  const configurado=precoComDesconto(item);
+  if(configurado==null) return {preco:null,bloqueio:'sem_desconto'};
   const min=typeof cand.min_discounted_price==='number'?cand.min_discounted_price:null;
   const max=typeof cand.max_discounted_price==='number'?cand.max_discounted_price:null;
-  let precoFinal=precoSugerido!=null?precoSugerido:(typeof cand.suggested_discounted_price==='number'?cand.suggested_discounted_price:null);
-  if(precoFinal!=null){
-    if(min!=null&&precoFinal<min) precoFinal=min;
-    if(max!=null&&precoFinal>max) precoFinal=max;
-    precoFinal=Math.round(precoFinal*100)/100;
-  }
+  if(min!=null && configurado<min) return {preco:null,bloqueio:'exige_desconto_menor',min,max};
+  if(max!=null && configurado>max) return {preco:null,bloqueio:'exige_desconto_maior',min,max};
+  return {preco:Math.round(configurado*100)/100,bloqueio:null,min,max};
+}
+function motivoBloqueioCandidato(r){
+  if(r.bloqueio==='sem_desconto') return 'Configure o desconto deste produto antes (lista "Sem promoção").';
+  if(r.bloqueio==='exige_desconto_maior') return `Essa campanha só aceita até ${fmtMoney(r.max)} — mais barato do que o seu preço configurado. Não entramos automaticamente pra não ficar abaixo do combinado.`;
+  if(r.bloqueio==='exige_desconto_menor') return `Essa campanha exige no mínimo ${fmtMoney(r.min)} — mais caro do que o seu preço configurado.`;
+  return '';
+}
+/* mesma lógica de prévia+confirmação, só que pra entrar num candidato que o PRÓPRIO Mercado Livre
+   já ofereceu (DEAL, PRICE_DISCOUNT etc) - só permite entrar se o preço configurado bater exato
+   com a faixa permitida pelo ML (ver precoCandidato acima). */
+function abrirConfirmacaoCandidato(loja,item,cand){
+  const r=precoCandidato(item,cand);
+  const precoFinal=r.preco;
+  const idCampanha=cand.id||cand.promotion_id||null;
+  const semId=!idCampanha; // ex: PRICE_DISCOUNT sem id não é uma campanha pra "entrar", é sugestão de preço individual
+  const periodo=(cand.start_date&&cand.finish_date)?`${fmtData(cand.start_date.slice(0,10))} a ${fmtData(cand.finish_date.slice(0,10))}`:null;
+  const bloqueado=precoFinal==null||semId;
+  const motivo=semId?'Esse é um desconto individual (sem campanha pra entrar) — ajuste o preço direto no anúncio no Mercado Livre se quiser aplicá-lo.':motivoBloqueioCandidato(r);
   const body=openModal();
   body.innerHTML=`<h3>Entrar na campanha · ${esc(item.sku||item.titulo||'')}</h3>
-    <p class="hint" style="margin:0 0 12px">Tipo: <b>${esc(cand.sub_type||cand.promotion_type||'')}</b> · Promoção: ${esc(cand.promotion_id||cand.id||'')}<br>
-      Preço original: ${fmtMoney(cand.original_price)}${min!=null?` · Mín. permitido: ${fmtMoney(min)}`:''}${max!=null?` · Máx. sugerido: ${fmtMoney(max)}`:''}</p>
-    <p>Preço final que será enviado: <b>${precoFinal!=null?fmtMoney(precoFinal):'—'}</b>${precoFinal==null?' <span class="hint">(configure o desconto deste produto antes, na lista "Sem promoção")</span>':''}</p>
+    <p class="hint" style="margin:0 0 6px"><b>${esc(cand.name||'(sem nome)')}</b>${periodo?' · '+periodo:''}</p>
+    <p class="hint" style="margin:0 0 12px">Tipo: <b>${esc(cand.type||cand.sub_type||cand.promotion_type||'')}</b><br>
+      Preço original: ${fmtMoney(cand.original_price)}${r.min!=null?` · Mín. permitido: ${fmtMoney(r.min)}`:''}${r.max!=null?` · Máx. permitido: ${fmtMoney(r.max)}`:''}</p>
+    <p>Preço final que será enviado (igual ao configurado, nunca menor): <b>${precoFinal!=null?fmtMoney(precoFinal):'—'}</b></p>
+    ${bloqueado?`<div class="aviso atencao"><span>⚠</span><span>${esc(motivo)}</span></div>`:''}
     <div class="modal-actions"><button class="btn" id="btnCancCand">Cancelar</button>
-      <button class="btn gold" id="btnConfirmarCand"${precoFinal==null?' disabled':''}>Confirmar entrada</button></div>`;
+      <button class="btn gold" id="btnConfirmarCand"${bloqueado?' disabled':''}>Confirmar entrada</button></div>`;
   document.getElementById('btnCancCand').onclick=closeModal;
   const btn=document.getElementById('btnConfirmarCand');
   if(btn) btn.onclick=async()=>{
     btn.disabled=true; btn.textContent='Enviando…';
     try{
-      const r=await nuvemFetch('/promocao/entrar-campanha',{method:'POST',body:JSON.stringify({
-        loja, itens:[{ml_item_id:item.ml_item_id,promotion_id:cand.promotion_id||cand.id,promotion_type:cand.promotion_type||cand.sub_type,dealPrice:precoFinal}]
+      const resp=await nuvemFetch('/promocao/entrar-campanha',{method:'POST',body:JSON.stringify({
+        loja, itens:[{ml_item_id:item.ml_item_id,promotion_id:idCampanha,promotion_type:cand.type||cand.promotion_type||cand.sub_type,dealPrice:precoFinal}]
       })});
-      const j=await r.json();
-      if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao entrar na campanha.');
+      const j=await resp.json();
+      if(!resp.ok||!j.ok) throw new Error(j.erro||'Falha ao entrar na campanha.');
       const res=(j.resultados||[])[0];
       if(res&&!res.ok) throw new Error(JSON.stringify(res.resposta||res.erro||'Falha ao confirmar.'));
       closeModal();
@@ -12720,9 +12742,20 @@ function renderPromocoes(){
   el.innerHTML=`
     <h1 class="page-title">Promoções</h1>
     ${STORES.map(loja=>{
-      const semPromo=produtosSemPromocao(loja);
-      const acionaveis=semPromo.filter(p=>!precoEhFixo19(p));
+      const semPromoBruto=produtosSemPromocao(loja);
       const cache=promocaoStatusCache[loja]||{carregando:false,erro:null,itens:null};
+      /* MUDOU 11/09: achei ao vivo (loja TorvShop, ALICATINHO) um produto com campanha JÁ ATIVA no
+         Mercado Livre ("PROMO SETEMBRO" até 07/10) que ainda aparecia aqui como "sem promoção",
+         porque o /sync normal (que roda sozinho) ainda não tinha atualizado isso - só o
+         /promocao/status (manual) sabia. Isso é exatamente o risco que o Felipe apontou: criar uma
+         2ª campanha em cima de uma que já existe. Agora, sempre que a consulta de status desta loja
+         já rodou, cruzamos os dois e tiramos da lista de "sem promoção" quem já tem campanha ativa
+         de verdade (mesmo que o Doca ainda não soubesse disso). */
+      const jaAtivoPorItem={};
+      if(cache.itens) cache.itens.forEach(it=>{ if(it.temPromocaoAtiva && it.ativas && it.ativas[0]) jaAtivoPorItem[it.ml_item_id]=it.ativas[0]; });
+      const jaAtivosOcultos=semPromoBruto.filter(p=>jaAtivoPorItem[p.mlItemId]);
+      const semPromo=semPromoBruto.filter(p=>!jaAtivoPorItem[p.mlItemId]);
+      const acionaveis=semPromo.filter(p=>!precoEhFixo19(p));
       const historico=state.promocoes.historico[loja]||[];
       const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
       const candidatos=[];
@@ -12732,6 +12765,7 @@ function renderPromocoes(){
         <h3>${esc(loja)} · Sem promoção ativa <span class="badge ${acionaveis.length?'pend':'okv'}">${acionaveis.length} produto(s)</span></h3>
         <p class="sub">Todos os anúncios ativos sem nenhuma promoção de preço rodando agora, do maior ticket pro menor (produtos de R$19 aparecem na lista mas sem desconto — não é possível promocionar esse preço). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha. Produto sem desconto configurado fica de fora da campanha até você preencher.</p>
         ${ativos.length?`<div class="aviso ok" style="margin-bottom:12px">✓ ${ativos.map(a=>`Campanha do Doca ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
+        ${jaAtivosOcultos.length?`<div class="aviso atencao" style="margin-bottom:12px"><span>⚠</span><span>${jaAtivosOcultos.length} produto(s) já têm campanha ativa no Mercado Livre (detectado ao atualizar status) e foram tirados desta lista pra não duplicar: ${jaAtivosOcultos.map(p=>`${esc(p.sku||p.codigo||'')} · <b>${esc(jaAtivoPorItem[p.mlItemId].name||'')}</b> a ${fmtMoney(jaAtivoPorItem[p.mlItemId].price)} até ${fmtData((jaAtivoPorItem[p.mlItemId].finish_date||'').slice(0,10))}`).join(', ')}.</span></div>`:''}
         ${semPromo.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
           <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço da promoção</th>
         </tr></thead><tbody>${semPromo.map(p=>{
@@ -12748,17 +12782,28 @@ function renderPromocoes(){
           ${acionaveis.length?`<button class="btn acc" data-criarcampanha="${esc(loja)}">Criar campanha (14 dias) com os produtos configurados</button>`:''}
           <button class="btn" data-atualizarpromo="${esc(loja)}" ${cache.carregando?'disabled':''}>${cache.carregando?'Consultando…':'🔄 Atualizar status de promoções'}</button>
         </div>
+        ${!cache.itens?'<p class="hint" style="margin:8px 0 0">Recomendado atualizar o status antes de criar campanha, pra pegar promoções já ativas que o sync normal ainda não viu.</p>':''}
         ${cache.itens?`<div style="margin-top:16px">
           <h4 style="margin:0 0 6px">Candidatos em campanhas do Mercado Livre <span class="badge ${candidatos.length?'pend':'okv'}">${candidatos.length}</span></h4>
+          <p class="sub">Preço mostrado é sempre o SEU desconto configurado — o Doca nunca entra numa campanha por um valor menor do que isso. Se a campanha exigir um desconto diferente do configurado, fica bloqueado com o motivo, em vez de ajustar sozinho.</p>
           ${candidatos.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-            <th>SKU</th><th>Tipo</th><th class="num">Preço original</th><th class="num">Sugerido</th><th></th>
-          </tr></thead><tbody>${candidatos.map((c,idx)=>`<tr>
+            <th>SKU</th><th>Campanha</th><th>Tipo</th><th>Período</th><th class="num">Preço original</th><th class="num">Com seu desconto</th><th></th>
+          </tr></thead><tbody>${candidatos.map((c,idx)=>{
+            const r=precoCandidato(c.item,c.cand);
+            const idCampanha=c.cand.id||c.cand.promotion_id||null;
+            const bloqueado=r.preco==null||!idCampanha;
+            const motivo=!idCampanha?'Desconto individual (sem campanha pra entrar)':motivoBloqueioCandidato(r);
+            const periodo=(c.cand.start_date&&c.cand.finish_date)?`${fmtData(c.cand.start_date.slice(0,10))} a ${fmtData(c.cand.finish_date.slice(0,10))}`:'—';
+            return `<tr>
             <td class="mono">${esc(c.item.sku||c.item.titulo||'')}</td>
-            <td>${esc(c.cand.sub_type||c.cand.promotion_type||'')}</td>
+            <td>${esc(c.cand.name||'(sem nome)')}</td>
+            <td>${esc(c.cand.type||c.cand.sub_type||c.cand.promotion_type||'')}</td>
+            <td>${periodo}</td>
             <td class="num">${fmtMoney(c.cand.original_price)}</td>
-            <td class="num">${c.cand.suggested_discounted_price!=null?fmtMoney(c.cand.suggested_discounted_price):'—'}</td>
-            <td><button class="btn sm" data-entrarcandidato="${esc(loja)}|${idx}">Entrar</button></td>
-          </tr>`).join('')}</tbody></table></div>`:'<p class="muted">Nenhum candidato encontrado agora.</p>'}
+            <td class="num">${r.preco!=null?('<b>'+fmtMoney(r.preco)+'</b>'):`<span class="muted" title="${esc(motivo)}">bloqueado</span>`}</td>
+            <td><button class="btn sm" data-entrarcandidato="${esc(loja)}|${idx}" ${bloqueado?'disabled':''} title="${esc(motivo)}">Entrar</button></td>
+          </tr>`;
+          }).join('')}</tbody></table></div>`:'<p class="muted">Nenhum candidato encontrado agora.</p>'}
         </div>`:''}
       </div>`;
     }).join('')}
@@ -12772,7 +12817,13 @@ function renderPromocoes(){
     };
   });
   el.querySelectorAll('[data-criarcampanha]').forEach(btn=>{
-    btn.onclick=()=>{ const loja=btn.dataset.criarcampanha; abrirConfirmacaoCampanha(loja,produtosSemPromocao(loja)); };
+    btn.onclick=()=>{
+      const loja=btn.dataset.criarcampanha;
+      const cache=promocaoStatusCache[loja];
+      const jaAtivoPorItem={};
+      if(cache&&cache.itens) cache.itens.forEach(it=>{ if(it.temPromocaoAtiva) jaAtivoPorItem[it.ml_item_id]=true; });
+      abrirConfirmacaoCampanha(loja,produtosSemPromocao(loja).filter(p=>!jaAtivoPorItem[p.mlItemId]));
+    };
   });
   el.querySelectorAll('[data-atualizarpromo]').forEach(btn=>{
     btn.onclick=()=>{ atualizarStatusPromocoes(btn.dataset.atualizarpromo); };
