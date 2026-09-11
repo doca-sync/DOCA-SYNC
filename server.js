@@ -288,6 +288,17 @@ pool.query('alter table ml_produtos add column if not exists visitas_7d integer'
    ofertaComProblema no doca.html: normal = (vendas_30d-vendas_7d)/(visitas_30d-visitas_7d)). */
 pool.query('alter table ml_produtos add column if not exists visitas_30d integer')
   .catch(e => console.error('Falha ao adicionar coluna "visitas_30d" em ml_produtos:', e.message));
+/* NOVO 11/09 (Felipe: aba de Promoções - detectar quem está sem promoção ativa, separado por
+   conta): o item.dados ja' trazia original_price no /debug/relatorio-api-completo (usado pra
+   investigar o caso da ESPONJAMANGA), mas o /sync normal nunca gravava isso na tabela. Sem custo
+   extra de API - o /items?ids= (buscarItensDoVendedor) ja' devolve original_price no mesmo corpo
+   que ja' buscamos pra tudo mais; so' faltava salvar. Quando esse campo vem vazio/null, o anuncio
+   nao tem nenhuma promocao "de preco base" ativa no momento (a duvida sobre outros tipos de
+   campanha - DEAL, PRICE_DISCOUNT etc, que sao por convite do ML - fica pro /promocao/status,
+   que consulta o item individualmente so' quando a aba Promocoes pede, pra nao gastar 1 chamada
+   extra por anuncio em TODA sincronizacao do dia). */
+pool.query('alter table ml_produtos add column if not exists original_price numeric')
+  .catch(e => console.error('Falha ao adicionar coluna "original_price" em ml_produtos:', e.message));
 pool.query(`create table if not exists ml_mercado_categoria (
   id serial primary key,
   loja text not null,
@@ -4972,8 +4983,8 @@ const loja = req.query.loja || req.body?.loja;
       const vendas = mapaVendas.get(it.id) || { v7: 0, v15: 0, v30: 0 };
       console.log(`[sync-item] id=${it.id} sku=${extrairSku(it)} titulo="${(it.title||'').slice(0,30)}" vendas=${JSON.stringify(vendas)}`);
       await pool.query(
-        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, categoria_id, recebimentos_full, atualizado_em)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
+        `insert into ml_produtos (loja, ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, transferencia_full, categoria_id, recebimentos_full, original_price, atualizado_em)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now())
          on conflict (loja, ml_item_id) do update set
            sku = excluded.sku, titulo = excluded.titulo,
            quantidade_disponivel = excluded.quantidade_disponivel,
@@ -4985,6 +4996,7 @@ const loja = req.query.loja || req.body?.loja;
            vendas_7d = excluded.vendas_7d, vendas_15d = excluded.vendas_15d, vendas_30d = excluded.vendas_30d,
            transferencia_full = excluded.transferencia_full, categoria_id = excluded.categoria_id,
            recebimentos_full = coalesce(excluded.recebimentos_full, ml_produtos.recebimentos_full),
+           original_price = excluded.original_price,
            atualizado_em = now()`,
         [
           loja, it.id,
@@ -5000,7 +5012,8 @@ const loja = req.query.loja || req.body?.loja;
           vendas.v7, vendas.v15, vendas.v30,
           transferenciaFull,
           it.category_id || null,
-          recebimentosFull ? JSON.stringify(recebimentosFull) : null
+          recebimentosFull ? JSON.stringify(recebimentosFull) : null,
+          (typeof it.original_price === 'number' && it.original_price > 0) ? it.original_price : null
         ]
       );
     }
@@ -5047,7 +5060,7 @@ app.get('/data', async (req, res) => {
   try {
     const conta = await pegarConta(loja);
     const produtos = await pool.query(
-      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, visitas_7d, visitas_30d, transferencia_full, recebimentos_full, atualizado_em from ml_produtos where loja = $1 order by titulo',
+      'select ml_item_id, sku, titulo, quantidade_disponivel, preco, status, catalog_listing, concorrencia_status, concorrencia_preco, perguntas_sem_resposta, vendas_7d, vendas_15d, vendas_30d, visitas_7d, visitas_30d, transferencia_full, recebimentos_full, original_price, atualizado_em from ml_produtos where loja = $1 order by titulo',
       [loja]
     );
     res.json({
@@ -5059,6 +5072,171 @@ app.get('/data', async (req, res) => {
     });
   } catch (e) {
     console.error('Erro no /data:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* ================= Promoções (11/09) =================
+   Felipe pediu uma aba só de promoções: (1) detectar anúncio ativo sem nenhuma promoção rodando,
+   separado por conta; (2) criar campanha do vendedor (SELLER_CAMPAIGN) direto pelo Doca, com uma
+   regra de desconto configurada 1x por produto (ver p.descontoPromocao/p.precoMinimoPromocao no
+   doca.html) que o Doca reaproveita sozinho a cada renovação; (3) também aproveitar campanhas que
+   o PRÓPRIO Mercado Livre cria e convida o vendedor pra entrar (DEAL, PRICE_DISCOUNT etc) - essas
+   aparecem como status "candidate" no mesmo endpoint por item, então dá pra detectar e entrar
+   nelas com a MESMA regra por produto, sem precisar de endpoint separado por tipo de campanha.
+   Documentação oficial checada ao vivo em 11/09 (não é invenção - depois do episódio da "API do
+   Full" que veio de uma resposta errada de outra IA, todo endpoint aqui foi conferido na doc real
+   antes de escrever código):
+   https://developers.mercadolivre.com.br/pt_br/campanhas-do-vendedor
+   https://developers.mercadolivre.com.br/pt_br/campanhas-tradicionais
+   Regras reais do Mercado Livre pra SELLER_CAMPAIGN: reputação verde, item ativo, condição nova,
+   exposição não gratuita, desconto entre 10% e 70%, campanha de no máximo 14 DIAS por vez - por
+   isso não existe "1 campanha só cobrindo o mês inteiro": o Doca cria/renova a cada ciclo de até
+   14 dias, sempre mediante aprovação do Felipe (nada vai pro ar sem ele confirmar - mesma
+   filosofia do Full depois de abandonar a detecção automática).
+   GET /seller-promotions/items/{id} devolve TODAS as promoções associadas àquele item (ativas,
+   pendentes E candidatas de qualquer tipo) - é a mesma chamada que serve tanto pra "detectar sem
+   promoção" quanto pra "achar candidatura em campanha do ML". Só é chamada quando a aba Promoções
+   pede atualização (botão manual) - não entra no /sync de rotina pra não gastar 1 chamada extra
+   por anúncio em toda sincronização do dia. */
+const MESES_PT_BR = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
+/* NOVO 11/09 (Felipe: "seria legal as promoções criadas por mim aparecerem como 'doca promo
+   (mês corrente)', tipo 'doca promo outubro', pra saber que foi criada automaticamente pelo
+   Doca"): nome padrão da campanha, usado quando o doca.html não manda um nome específico.
+   AVISO: o Mercado Livre não deixa 2 campanhas com o MESMO nome ("The name already exists") - se
+   for preciso renovar mais de 1x dentro do mesmo mês (por causa do limite de 14 dias), a 2ª
+   criação com esse nome padrão vai falhar e vai aparecer o erro real do ML na resposta; nesse
+   caso o doca.html precisa mandar um "nome" próprio (ex: "Doca Promo Outubro (2ª quinzena)"). */
+function nomeCampanhaPadrao(loja) {
+  const agora = new Date();
+  return `Doca Promo ${MESES_PT_BR[agora.getMonth()]}`;
+}
+async function buscarStatusPromocaoItem(accessToken, itemId) {
+  try {
+    const r = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${itemId}?app_version=v2`, {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    const j = await r.json();
+    if (!r.ok) return { ok: false, erro: JSON.stringify(j) };
+    const lista = Array.isArray(j) ? j : (Array.isArray(j.results) ? j.results : []);
+    const ativas = lista.filter(p => p.status === 'started' || p.status === 'pending');
+    const candidatas = lista.filter(p => p.status === 'candidate');
+    return { ok: true, temPromocaoAtiva: ativas.length > 0, ativas, candidatas };
+  } catch (e) {
+    return { ok: false, erro: e.message };
+  }
+}
+app.get('/promocao/status', async (req, res) => {
+  const loja = req.query.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+  try {
+    const accessToken = await tokenValido(loja);
+    const r = await pool.query(
+      `select ml_item_id, sku, titulo, preco, original_price from ml_produtos
+       where loja = $1 and status = 'active' and ml_item_id is not null`,
+      [loja]
+    );
+    const resultados = [];
+    for (const row of r.rows) {
+      const st = await buscarStatusPromocaoItem(accessToken, row.ml_item_id);
+      resultados.push({
+        ml_item_id: row.ml_item_id, sku: row.sku, titulo: row.titulo,
+        preco: row.preco != null ? Number(row.preco) : null,
+        original_price: row.original_price != null ? Number(row.original_price) : null,
+        ...st
+      });
+    }
+    res.json({ ok: true, loja, itens: resultados });
+  } catch (e) {
+    console.error('Erro no /promocao/status:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* cria uma campanha do vendedor (SELLER_CAMPAIGN) e já indica os itens com o deal_price calculado
+   no doca.html (preço atual * regra de desconto do produto, respeitando o preço mínimo). Duração
+   sempre <= 14 dias (limite real do Mercado Livre - ver comentário acima). */
+app.post('/promocao/criar-campanha', async (req, res) => {
+  const { loja, nome, dias, itens } = req.body || {};
+  if (!LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+  if (!Array.isArray(itens) || !itens.length) {
+    return res.status(400).json({ ok: false, erro: 'Informe ao menos 1 item (ml_item_id + dealPrice).' });
+  }
+  const diasCampanha = Math.min(14, Math.max(1, Number(dias) || 14));
+  try {
+    const accessToken = await tokenValido(loja);
+    const hojeLocal = new Date();
+    const inicio = hojeLocal.toISOString().slice(0, 10) + 'T00:00:00';
+    const fimData = new Date(hojeLocal.getTime() + (diasCampanha - 1) * 864e5);
+    const fim = fimData.toISOString().slice(0, 10) + 'T00:00:00';
+    const rCampanha = await fetch('https://api.mercadolibre.com/seller-promotions/promotions?app_version=v2', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        promotion_type: 'SELLER_CAMPAIGN',
+        name: nome || nomeCampanhaPadrao(loja),
+        sub_type: 'FLEXIBLE_PERCENTAGE',
+        start_date: inicio,
+        finish_date: fim
+      })
+    });
+    const campanha = await rCampanha.json();
+    if (!rCampanha.ok) return res.status(400).json({ ok: false, erro: 'Falha ao criar campanha: ' + JSON.stringify(campanha) });
+    const resultados = [];
+    for (const it of itens) {
+      try {
+        const body = { promotion_id: campanha.id, promotion_type: 'SELLER_CAMPAIGN', deal_price: it.dealPrice };
+        const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${it.ml_item_id}?app_version=v2`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const jItem = await rItem.json();
+        resultados.push({ ml_item_id: it.ml_item_id, ok: rItem.ok, resposta: jItem });
+      } catch (eItem) {
+        resultados.push({ ml_item_id: it.ml_item_id, ok: false, erro: eItem.message });
+      }
+    }
+    res.json({ ok: true, campanha, resultados });
+  } catch (e) {
+    console.error('Erro no /promocao/criar-campanha:', e);
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
+/* entra em campanha(s) que o PRÓPRIO Mercado Livre criou e convidou o vendedor (DEAL,
+   PRICE_DISCOUNT etc - vieram como status "candidate" no /promocao/status). Mesma chamada de API
+   da campanha do vendedor, só muda o promotion_type/promotion_id (que já vem junto no candidato). */
+app.post('/promocao/entrar-campanha', async (req, res) => {
+  const { loja, itens } = req.body || {};
+  if (!LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+  if (!Array.isArray(itens) || !itens.length) {
+    return res.status(400).json({ ok: false, erro: 'Informe ao menos 1 item (ml_item_id + promotion_id + promotion_type + dealPrice).' });
+  }
+  try {
+    const accessToken = await tokenValido(loja);
+    const resultados = [];
+    for (const it of itens) {
+      try {
+        const body = { promotion_id: it.promotion_id, promotion_type: it.promotion_type, deal_price: it.dealPrice };
+        if (it.topDealPrice) body.top_deal_price = it.topDealPrice;
+        const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${it.ml_item_id}?app_version=v2`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const jItem = await rItem.json();
+        resultados.push({ ml_item_id: it.ml_item_id, ok: rItem.ok, resposta: jItem });
+      } catch (eItem) {
+        resultados.push({ ml_item_id: it.ml_item_id, ok: false, erro: eItem.message });
+      }
+    }
+    res.json({ ok: true, resultados });
+  } catch (e) {
+    console.error('Erro no /promocao/entrar-campanha:', e);
     res.status(500).json({ ok: false, erro: e.message });
   }
 });

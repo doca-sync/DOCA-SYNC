@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v434</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v435</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -499,6 +499,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-tab="notasfiscais" aria-selected="false">Notas Fiscais</button>
       <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
+      <button data-tab="promocoes" aria-selected="false">Promoções</button>
       <button data-tab="full" aria-selected="false">FULL</button>
       <button data-tab="estoqueminimo" aria-selected="false">Estoque Mínimo</button>
       <button data-tab="amauri" aria-selected="false">Amauri</button>
@@ -525,6 +526,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <section id="tab-notasfiscais" class="tabpanel hidden"></section>
   <section id="tab-financas" class="tabpanel hidden"></section>
   <section id="tab-ads" class="tabpanel hidden"></section>
+  <section id="tab-promocoes" class="tabpanel hidden"></section>
   <section id="tab-full" class="tabpanel hidden">
     <div class="subnav" id="subFull">
       <button data-sub="previsao" aria-selected="true">Previsão de reposição</button>
@@ -623,7 +625,7 @@ function baseDistribuivelLoja(loja,margemLiquida){
 }
 const LOCAIS_COLETA=["Felipe","Thiago","Levar"];
 const STATUS_LABEL={comprar:"Comprar",coletar:"Coletar",local:"Local"};
-let state={produtos:[],envios:[],tarefas:[],listas:[],full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:[],financeiro:{},ads:{cfg:{},campanhas:[],hist:[]},mlSync:{cfg:{}},avisosFornecedor:[],despesas:[]};
+let state={produtos:[],envios:[],tarefas:[],listas:[],full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:[],financeiro:{},ads:{cfg:{},campanhas:[],hist:[]},mlSync:{cfg:{}},avisosFornecedor:[],despesas:[],promocoes:{cfg:{},historico:{}}};
 /* produtoId -> timestamp: usado só pra piscar a linha na Previsão quando um envio é
    confirmado como FULL (o total normalmente não muda, então sem isso pode parecer que a
    ação não fez nada). Não faz parte do state salvo — é só efeito visual passageiro. */
@@ -1123,6 +1125,15 @@ function vincularPedidosAntigos(){
 function migrar(){
   if(!Array.isArray(state.envios)) state.envios=[];
   if(!Array.isArray(state.avisosFornecedor)) state.avisosFornecedor=[];
+  /* NOVO 11/09 (aba Promoções): historico = campanhas que o PRÓPRIO Doca já criou, por loja -
+     {loja:[{id,nome,tipo,inicio,fim,itens:[{ml_item_id,sku,desconto,precoFinal}],criadoEm}]} -
+     pra saber quando renovar. Não tenta espelhar todas as promoções que existem no Mercado Livre
+     (isso fica por conta do /promocao/status, consultado ao vivo, sob demanda). */
+  if(!state.promocoes||typeof state.promocoes!=='object') state.promocoes={cfg:{},historico:{}};
+  if(!state.promocoes.cfg||typeof state.promocoes.cfg!=='object') state.promocoes.cfg={};
+  if(!state.promocoes.cfg.loja||!STORES.includes(state.promocoes.cfg.loja)) state.promocoes.cfg.loja=STORES[0];
+  if(!state.promocoes.historico||typeof state.promocoes.historico!=='object') state.promocoes.historico={};
+  STORES.forEach(l=>{ if(!Array.isArray(state.promocoes.historico[l])) state.promocoes.historico[l]=[]; });
   if(!state.full||typeof state.full!=='object') state.full={cfg:{},itens:[],lidoEm:{}};
   if(!Array.isArray(state.full.itens)) state.full.itens=[];
   if(!state.full.lidoEm||typeof state.full.lidoEm!=='object') state.full.lidoEm={};
@@ -1248,6 +1259,13 @@ function migrar(){
        da loja) - visitas dos últimos 30 dias, junto com mlVisitas7d dá pra isolar "os 23 dias antes
        da semana atual" como conversão normal do próprio anúncio (ver ofertaComProblema). */
     if(p.mlVisitas30d===undefined) p.mlVisitas30d=null;
+    /* NOVO 11/09 (aba Promoções): mlOriginalPrice vem do /sync (original_price em ml_produtos) -
+       null/undefined = sem promoção de preço ativa agora. descontoPromocao/precoMinimoPromocao
+       são configurados 1x pelo Felipe direto no produto (edit em Produtos) e reaproveitados pelo
+       Doca sempre que cria/renova uma campanha - "configura 1 vez, o Doca repete" (pedido dele). */
+    if(p.mlOriginalPrice===undefined) p.mlOriginalPrice=null;
+    if(p.descontoPromocao===undefined) p.descontoPromocao=null;
+    if(p.precoMinimoPromocao===undefined) p.precoMinimoPromocao=null;
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
     if(p.mlTransferencia===undefined) p.mlTransferencia=null;
@@ -1296,7 +1314,7 @@ function desfazer(){
 /* ---------- persistência ---------- */
 function loadFromLocalStorage(){
   const raw=localStorage.getItem('estoque_full_data');
-  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}}; }catch(e){} }
+  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}}; }catch(e){} }
   migrar();
 }
 function saveToLocalStorage(){ localStorage.setItem('estoque_full_data',JSON.stringify(state)); }
@@ -1377,7 +1395,7 @@ async function restaurarVersao(nome){
     const d=JSON.parse(await (await (await bdir.getFileHandle(nome)).getFile()).text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('arquivo inválido');
     snapshot('restauração de backup');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
     migrar(); persist();
     toast('Restaurado o backup '+nome+'.');
   }catch(e){ alert('Não consegui restaurar: '+e.message); }
@@ -1452,7 +1470,7 @@ async function carregarDoArquivo(silencioso){
     const f=await fileHandle.getFile();
     const d=JSON.parse(await f.text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('conteúdo inválido');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
     migrar(); saveToLocalStorage();
     ultimoMod=f.lastModified; alteracaoLocal=false; undoStack=[];
     renderAll();
@@ -1677,7 +1695,7 @@ async function abrirArquivo(){
     const d=JSON.parse(await (await h.getFile()).text());
     if(!d||!Array.isArray(d.produtos)){ alert('Esse arquivo não parece ser um arquivo de dados válido deste sistema.'); return; }
     fileHandle=h; handlePendente=null;
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
     migrar(); undoStack=[];
     try{ ultimoMod=(await h.getFile()).lastModified; }catch(e){}
     alteracaoLocal=false;
@@ -1801,7 +1819,7 @@ function mesclarEstados(local,remoto){
   };
 }
 function aplicarEstadoNuvem(d,atualizadoEmIso){
-  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{}};
+  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
   migrar(); saveToLocalStorage();
   ultimoSincronizado=JSON.parse(JSON.stringify(state));
   nuvemAtualizadoEm=atualizadoEmIso?new Date(atualizadoEmIso).getTime():Date.now();
@@ -4790,6 +4808,10 @@ function aplicarItemSincronizado(p,item,loja){
      banco e volta em toda sincronização, sem precisar clicar no botão de novo toda vez. */
   if(typeof item.visitas_7d==='number') p.mlVisitas7d=item.visitas_7d;
   if(typeof item.visitas_30d==='number') p.mlVisitas30d=item.visitas_30d;
+  /* NOVO 11/09 (aba Promoções): original_price vem vazio/null quando o anúncio NÃO tem nenhuma
+     promoção de preço ativa no momento - é o sinal usado em produtosSemPromocao/temPromocaoAtiva
+     pra montar a lista de "sem promoção", separado por loja. */
+  p.mlOriginalPrice=(typeof item.original_price==='number')?item.original_price:null;
   p.mlTransferencia=(typeof item.transferencia_full==='number')?item.transferencia_full:null;
   /* CORRIGIDO 03/09 (Felipe: AMASSADORCATALOGO, caboiphone e termômetro já excluídos no ML e ainda
      aparecendo): o Mercado Livre continua devolvendo o anúncio ENCERRADO por um tempo na listagem.
@@ -12539,10 +12561,220 @@ function imprimirRelatorioEstoqueMinimo(loja){
   win.document.close();
 }
 /* ---------- render ---------- */
+/* ================= Promoções (11/09) =================
+   Felipe pediu: (1) detectar anúncio ativo sem promoção, separado por conta - usa mlOriginalPrice
+   (vem do /sync, ver aplicarItemSincronizado) - vazio/null = sem promoção agora. Produto de R$19
+   fica de fora da lista de propósito (Felipe: "produtos de 38 reais nunca devem ficar abaixo de
+   19 reais" - quem já está em 19 não tem como aplicar desconto nenhum). (2) desconto/preço
+   mínimo configurado 1 VEZ por produto (p.descontoPromocao/p.precoMinimoPromocao - ver defaults
+   perto de mlVisitas30d), reaproveitado sempre que o Doca criar ou renovar campanha - "configura
+   1 vez, o Doca repete". (3) nada é criado sozinho - sempre pede confirmação antes de qualquer
+   chamada real no Mercado Livre (mesma filosofia adotada no Full depois de abandonar a detecção
+   automática). Limite real do Mercado Livre, checado ao vivo em 11/09 (documentação oficial,
+   atualizada em 09/06/2026): campanha do vendedor E desconto individual duram no máximo 14 dias
+   cada - não existe mais opção de 30/31 dias nessas 2 modalidades que a API expõe pra apps de
+   terceiro (o ciclo de 30 dias que o Felipe já faz manualmente pelo site é uma capacidade do
+   próprio site do ML, não da API pública). Pra cobrir o ciclo mensal, o Doca cria em blocos
+   seguidos de 14 dias, sempre com aprovação antes de cada bloco (decisão do Felipe, 11/09). */
+let promocaoStatusCache={};
+function produtosSemPromocao(loja){
+  return state.produtos.filter(p=>
+    p.loja===loja && !p.mlAusente && p.mlItemId && p.mlStatus==='active' &&
+    typeof p.mlPreco==='number' && Math.abs(p.mlPreco-19)>=0.005 &&
+    p.mlOriginalPrice==null
+  );
+}
+/* preço final calculado a partir da REGRA configurada 1x no produto (desconto% + piso em R$) -
+   nunca vem de conta automática de margem, exatamente como o Felipe pediu ("cada produto tem o
+   seu"). Ex: produto de R$38 com 50% de desconto e piso R$19 -> preço final R$19 (bate exato). */
+function precoComDesconto(p){
+  if(!(typeof p.mlPreco==='number')||!(p.descontoPromocao>0)) return null;
+  const bruto=p.mlPreco*(1-p.descontoPromocao/100);
+  const piso=(typeof p.precoMinimoPromocao==='number'&&p.precoMinimoPromocao>0)?p.precoMinimoPromocao:0;
+  return Math.round(Math.max(bruto,piso)*100)/100;
+}
+/* consulta ao vivo (GET /seller-promotions/items/{id} por produto, ver buscarStatusPromocaoItem
+   no server.js) - só roda quando o Felipe pede (botão), nunca sozinho, pra não gastar 1 chamada
+   extra por anúncio em toda sincronização do dia. */
+async function atualizarStatusPromocoes(loja){
+  promocaoStatusCache[loja]={carregando:true,erro:null,itens:(promocaoStatusCache[loja]&&promocaoStatusCache[loja].itens)||null};
+  renderPromocoes();
+  try{
+    const r=await nuvemFetch('/promocao/status?loja='+encodeURIComponent(loja),{method:'GET'});
+    const j=await r.json();
+    if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao consultar promoções.');
+    promocaoStatusCache[loja]={carregando:false,erro:null,itens:j.itens};
+    toast('Status de promoções atualizado.');
+  }catch(e){
+    promocaoStatusCache[loja]={carregando:false,erro:e.message,itens:(promocaoStatusCache[loja]&&promocaoStatusCache[loja].itens)||null};
+    toast('⚠ '+e.message);
+  }
+  renderPromocoes();
+}
+/* prévia + confirmação antes de criar de verdade no Mercado Livre - nada aqui executa sozinho,
+   só a partir do clique em "Confirmar e criar". */
+function abrirConfirmacaoCampanha(loja,itens){
+  const prontos=itens.filter(p=>precoComDesconto(p)!=null);
+  if(!prontos.length){ toast('Configure o desconto de pelo menos 1 produto antes de criar a campanha.'); return; }
+  const body=openModal(true);
+  const hojeStr=hoje();
+  const fimStr=new Date(Date.now()+13*864e5).toISOString().slice(0,10);
+  body.innerHTML=`<h3>Criar campanha do vendedor · ${esc(loja)}</h3>
+    <p class="hint" style="margin:0 0 12px">Duração: ${fmtData(hojeStr)} a ${fmtData(fimStr)} (14 dias — limite do Mercado Livre pra esse tipo de campanha). ${prontos.length} produto(s) prontos (com desconto configurado) de ${itens.length} sem promoção.</p>
+    <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto</th><th class="num">Preço final</th>
+    </tr></thead><tbody>${prontos.map(p=>`<tr>
+      <td class="mono">${esc(p.sku||'')}</td><td class="num">${fmtMoney(p.mlPreco)}</td>
+      <td class="num">${p.descontoPromocao}%</td><td class="num"><b>${fmtMoney(precoComDesconto(p))}</b></td>
+    </tr>`).join('')}</tbody></table></div>
+    ${itens.length>prontos.length?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${itens.length-prontos.length} produto(s) sem promoção ainda não têm desconto configurado — ficam de fora desta campanha até você preencher.</span></div>`:''}
+    <div class="modal-actions"><button class="btn" id="btnCancCampanha">Cancelar</button>
+      <button class="btn gold" id="btnConfirmarCampanha">Confirmar e criar no Mercado Livre</button></div>`;
+  document.getElementById('btnCancCampanha').onclick=closeModal;
+  document.getElementById('btnConfirmarCampanha').onclick=async()=>{
+    const btn=document.getElementById('btnConfirmarCampanha'); btn.disabled=true; btn.textContent='Criando…';
+    try{
+      const r=await nuvemFetch('/promocao/criar-campanha',{method:'POST',body:JSON.stringify({
+        loja, dias:14,
+        itens:prontos.map(p=>({ml_item_id:p.mlItemId,dealPrice:precoComDesconto(p)}))
+      })});
+      const j=await r.json();
+      if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao criar campanha.');
+      const falhas=(j.resultados||[]).filter(x=>!x.ok);
+      if(!state.promocoes.historico[loja]) state.promocoes.historico[loja]=[];
+      state.promocoes.historico[loja].push({
+        id:j.campanha.id, nome:j.campanha.name||j.campanha.id, tipo:'SELLER_CAMPAIGN',
+        inicio:hojeStr, fim:fimStr, criadoEm:Date.now(),
+        itens:prontos.map(p=>({ml_item_id:p.mlItemId,sku:p.sku,desconto:p.descontoPromocao,precoFinal:precoComDesconto(p)}))
+      });
+      persist();
+      closeModal();
+      toast(falhas.length?`Campanha criada, mas ${falhas.length} de ${prontos.length} item(ns) falharam — confira no Mercado Livre.`:`✅ Campanha "${j.campanha.name||j.campanha.id}" criada com ${prontos.length} produto(s)!`);
+    }catch(e){
+      toast('⚠ '+e.message);
+      btn.disabled=false; btn.textContent='Confirmar e criar no Mercado Livre';
+    }
+  };
+}
+/* mesma lógica de prévia+confirmação, só que pra entrar num candidato que o PRÓPRIO Mercado Livre
+   já ofereceu (DEAL, PRICE_DISCOUNT etc) - respeita o min/max sugerido pelo ML, clampando o preço
+   calculado pela regra do produto se ele cair fora da faixa aceita. */
+function abrirConfirmacaoCandidato(loja,item,cand){
+  const precoSugerido=precoComDesconto(item);
+  const min=typeof cand.min_discounted_price==='number'?cand.min_discounted_price:null;
+  const max=typeof cand.max_discounted_price==='number'?cand.max_discounted_price:null;
+  let precoFinal=precoSugerido!=null?precoSugerido:(typeof cand.suggested_discounted_price==='number'?cand.suggested_discounted_price:null);
+  if(precoFinal!=null){
+    if(min!=null&&precoFinal<min) precoFinal=min;
+    if(max!=null&&precoFinal>max) precoFinal=max;
+    precoFinal=Math.round(precoFinal*100)/100;
+  }
+  const body=openModal();
+  body.innerHTML=`<h3>Entrar na campanha · ${esc(item.sku||item.titulo||'')}</h3>
+    <p class="hint" style="margin:0 0 12px">Tipo: <b>${esc(cand.sub_type||cand.promotion_type||'')}</b> · Promoção: ${esc(cand.promotion_id||cand.id||'')}<br>
+      Preço original: ${fmtMoney(cand.original_price)}${min!=null?` · Mín. permitido: ${fmtMoney(min)}`:''}${max!=null?` · Máx. sugerido: ${fmtMoney(max)}`:''}</p>
+    <p>Preço final que será enviado: <b>${precoFinal!=null?fmtMoney(precoFinal):'—'}</b>${precoFinal==null?' <span class="hint">(configure o desconto deste produto antes, na lista "Sem promoção")</span>':''}</p>
+    <div class="modal-actions"><button class="btn" id="btnCancCand">Cancelar</button>
+      <button class="btn gold" id="btnConfirmarCand"${precoFinal==null?' disabled':''}>Confirmar entrada</button></div>`;
+  document.getElementById('btnCancCand').onclick=closeModal;
+  const btn=document.getElementById('btnConfirmarCand');
+  if(btn) btn.onclick=async()=>{
+    btn.disabled=true; btn.textContent='Enviando…';
+    try{
+      const r=await nuvemFetch('/promocao/entrar-campanha',{method:'POST',body:JSON.stringify({
+        loja, itens:[{ml_item_id:item.ml_item_id,promotion_id:cand.promotion_id||cand.id,promotion_type:cand.promotion_type||cand.sub_type,dealPrice:precoFinal}]
+      })});
+      const j=await r.json();
+      if(!r.ok||!j.ok) throw new Error(j.erro||'Falha ao entrar na campanha.');
+      const res=(j.resultados||[])[0];
+      if(res&&!res.ok) throw new Error(JSON.stringify(res.resposta||res.erro||'Falha ao confirmar.'));
+      closeModal();
+      toast('✅ Item incluído na campanha.');
+      atualizarStatusPromocoes(loja);
+    }catch(e){
+      toast('⚠ '+e.message);
+      btn.disabled=false; btn.textContent='Confirmar entrada';
+    }
+  };
+}
+function renderPromocoes(){
+  const el=document.getElementById('tab-promocoes'); if(!el) return;
+  const loja=state.promocoes.cfg.loja;
+  const semPromo=produtosSemPromocao(loja);
+  const cache=promocaoStatusCache[loja]||{carregando:false,erro:null,itens:null};
+  const historico=state.promocoes.historico[loja]||[];
+  const hojeStr=hoje();
+  const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
+  const candidatos=[];
+  if(cache.itens) cache.itens.forEach(it=>{ (it.candidatas||[]).forEach(c=>candidatos.push({item:it,cand:c})); });
+  el.innerHTML=`
+    <h1 class="page-title">Promoções</h1>
+    <div class="toolbar-produtos">
+      <select id="promoLoja">${optsLojas(loja)}</select>
+      <button class="btn" id="btnAtualizarPromocoes" ${cache.carregando?'disabled':''}>${cache.carregando?'Consultando…':'🔄 Atualizar status de promoções'}</button>
+    </div>
+    ${ativos.length?`<div class="aviso ok" style="margin-bottom:14px">✓ ${ativos.map(a=>`Campanha do Doca ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
+    <div class="card-vg">
+      <h3>Sem promoção ativa <span class="badge ${semPromo.length?'pend':'okv'}">${semPromo.length} produto(s)</span></h3>
+      <p class="sub">Anúncios ativos sem nenhuma promoção de preço rodando agora, separado por conta (produtos de R$19 ficam de fora — não é possível aplicar desconto neles). Configure o desconto e o preço mínimo de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha.</p>
+      ${semPromo.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço mínimo</th><th class="num">Preço com desconto</th>
+      </tr></thead><tbody>${semPromo.map(p=>{
+        const final=precoComDesconto(p);
+        return `<tr>
+          <td class="mono">${esc(p.sku||p.codigo||'')}</td>
+          <td class="num">${fmtMoney(p.mlPreco)}</td>
+          <td class="num"><input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%"></td>
+          <td class="num"><input type="number" min="0" step="0.01" style="width:76px;text-align:right" value="${p.precoMinimoPromocao!=null?p.precoMinimoPromocao:''}" data-precomin="${p.id}" placeholder="R$"></td>
+          <td class="num">${final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">configure o desconto</span>'}</td>
+        </tr>`;
+      }).join('')}</tbody></table></div>
+      <div style="margin-top:12px"><button class="btn acc" id="btnCriarCampanha">Criar campanha (14 dias) com os produtos configurados</button></div>`
+      :'<p class="muted">Nenhum anúncio ativo sem promoção agora.</p>'}
+    </div>
+    ${cache.itens?`<div class="card-vg">
+      <h3>Candidatos em campanhas do Mercado Livre <span class="badge ${candidatos.length?'pend':'okv'}">${candidatos.length}</span></h3>
+      <p class="sub">Campanhas que o próprio Mercado Livre convidou você a participar (DEAL, Desconto Individual etc). Dá pra entrar usando a mesma regra de desconto configurada acima.</p>
+      ${candidatos.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+        <th>SKU</th><th>Tipo</th><th class="num">Preço original</th><th class="num">Sugerido</th><th></th>
+      </tr></thead><tbody>${candidatos.map((c,idx)=>`<tr>
+        <td class="mono">${esc(c.item.sku||c.item.titulo||'')}</td>
+        <td>${esc(c.cand.sub_type||c.cand.promotion_type||'')}</td>
+        <td class="num">${fmtMoney(c.cand.original_price)}</td>
+        <td class="num">${c.cand.suggested_discounted_price!=null?fmtMoney(c.cand.suggested_discounted_price):'—'}</td>
+        <td><button class="btn sm" data-entrarcandidato="${idx}">Entrar</button></td>
+      </tr>`).join('')}</tbody></table></div>`:'<p class="muted">Nenhum candidato encontrado agora.</p>'}
+    </div>`:''}
+  `;
+  document.getElementById('promoLoja').onchange=e=>{ state.promocoes.cfg.loja=e.target.value; persist(); };
+  const btnAtu=document.getElementById('btnAtualizarPromocoes');
+  if(btnAtu) btnAtu.onclick=()=>atualizarStatusPromocoes(loja);
+  el.querySelectorAll('[data-descontopromo]').forEach(inp=>{
+    inp.onchange=e=>{
+      const p=prodById(e.target.dataset.descontopromo); if(!p) return;
+      const v=e.target.value===''?null:Number(e.target.value);
+      p.descontoPromocao=(v!=null&&!isNaN(v)&&v>0)?Math.min(80,v):null;
+      persist();
+    };
+  });
+  el.querySelectorAll('[data-precomin]').forEach(inp=>{
+    inp.onchange=e=>{
+      const p=prodById(e.target.dataset.precomin); if(!p) return;
+      const v=e.target.value===''?null:Number(e.target.value);
+      p.precoMinimoPromocao=(v!=null&&!isNaN(v)&&v>=0)?v:null;
+      persist();
+    };
+  });
+  const btnCriar=document.getElementById('btnCriarCampanha');
+  if(btnCriar) btnCriar.onclick=()=>abrirConfirmacaoCampanha(loja,semPromo);
+  el.querySelectorAll('[data-entrarcandidato]').forEach(btn=>{
+    btn.onclick=()=>{ const c=candidatos[Number(btn.dataset.entrarcandidato)]; if(c) abrirConfirmacaoCandidato(loja,c.item,c.cand); };
+  });
+}
 function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
-   ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],
+   ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],['promoções',renderPromocoes],
    ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
