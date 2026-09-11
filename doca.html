@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v441</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v442</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12763,10 +12763,21 @@ function renderPromocoes(){
          Livre (ml_item_id, preco...) - não é o produto do Doca, então não tem descontoPromocao nem
          mlPreco (por isso precoComDesconto sempre dava null pra TODO candidato). Precisa achar o
          produto de verdade em state.produtos pra pegar o desconto configurado por você. */
+      /* MUDOU 11/09 (Felipe: "não coloque essa sugestão de desconto pra aparecer e nem campanhas
+         que eu não consigo participar, mostre somente as que eu consigo participar e aplicar o
+         desconto configurado no doca"): antes mostrava TODO candidato que o Mercado Livre retorna
+         (incluindo desconto individual sem campanha, e campanhas que exigem um preço diferente do
+         configurado), com a linha toda acinzentada e "bloqueado". Agora só entra na lista quem
+         realmente dá pra participar - tem campanha de verdade (id) E o preço fecha exatamente com
+         o desconto configurado por você (sem exigir nem mais nem menos). */
       const candidatos=[];
       if(cache.itens) cache.itens.forEach(it=>{
         const produtoReal=state.produtos.find(x=>x.mlItemId===it.ml_item_id)||it;
-        (it.candidatas||[]).forEach(c=>candidatos.push({item:produtoReal,cand:c}));
+        (it.candidatas||[]).forEach(c=>{
+          const idCampanha=c.id||c.promotion_id||null;
+          const r=precoCandidato(produtoReal,c);
+          if(idCampanha && r.preco!=null) candidatos.push({item:produtoReal,cand:c,preco:r.preco});
+        });
       });
       candidatosPorLoja[loja]=candidatos;
       return `<div class="card-vg" style="margin-bottom:18px">
@@ -12792,15 +12803,11 @@ function renderPromocoes(){
         </div>
         ${!cache.itens?'<p class="hint" style="margin:8px 0 0">Recomendado atualizar o status antes de criar campanha, pra pegar promoções já ativas que o sync normal ainda não viu.</p>':''}
         ${cache.itens?`<div style="margin-top:16px">
-          <h4 style="margin:0 0 6px">Candidatos em campanhas do Mercado Livre <span class="badge ${candidatos.length?'pend':'okv'}">${candidatos.length}</span></h4>
-          <p class="sub">Preço mostrado é sempre o SEU desconto configurado — o Doca nunca entra numa campanha por um valor menor do que isso. Se a campanha exigir um desconto diferente do configurado, fica bloqueado com o motivo, em vez de ajustar sozinho.</p>
+          <h4 style="margin:0 0 6px">Campanhas do Mercado Livre pra participar <span class="badge ${candidatos.length?'pend':'okv'}">${candidatos.length}</span></h4>
+          <p class="sub">Só aparecem aqui campanhas reais (com id pra entrar) cujo preço fecha exatamente com o desconto que você configurou. Sugestões de desconto individual (sem campanha pra entrar) e campanhas que exigiriam um desconto diferente do configurado ficam de fora da lista.</p>
           ${candidatos.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
             <th>SKU</th><th>Campanha</th><th>Tipo</th><th>Período</th><th class="num">Preço original</th><th class="num">Com seu desconto</th><th></th>
           </tr></thead><tbody>${candidatos.map((c,idx)=>{
-            const r=precoCandidato(c.item,c.cand);
-            const idCampanha=c.cand.id||c.cand.promotion_id||null;
-            const bloqueado=r.preco==null||!idCampanha;
-            const motivo=!idCampanha?'Desconto individual (sem campanha pra entrar)':motivoBloqueioCandidato(r);
             const periodo=(c.cand.start_date&&c.cand.finish_date)?`${fmtData(c.cand.start_date.slice(0,10))} a ${fmtData(c.cand.finish_date.slice(0,10))}`:'—';
             return `<tr>
             <td class="mono">${esc(c.item.sku||c.item.titulo||'')}</td>
@@ -12808,10 +12815,10 @@ function renderPromocoes(){
             <td>${esc(c.cand.type||c.cand.sub_type||c.cand.promotion_type||'')}</td>
             <td>${periodo}</td>
             <td class="num">${fmtMoney(c.cand.original_price)}</td>
-            <td class="num">${r.preco!=null?('<b>'+fmtMoney(r.preco)+'</b>'):`<span class="muted" title="${esc(motivo)}">bloqueado</span>`}</td>
-            <td><button class="btn sm" data-entrarcandidato="${esc(loja)}|${idx}" ${bloqueado?'disabled':''} title="${esc(motivo)}">Entrar</button></td>
+            <td class="num"><b>${fmtMoney(c.preco)}</b></td>
+            <td><button class="btn sm" data-entrarcandidato="${esc(loja)}|${idx}">Entrar</button></td>
           </tr>`;
-          }).join('')}</tbody></table></div>`:'<p class="muted">Nenhum candidato encontrado agora.</p>'}
+          }).join('')}</tbody></table></div>`:'<p class="muted">Nenhuma campanha pra participar agora (podem existir sugestões de desconto individual, que o Doca não mostra aqui).</p>'}
         </div>`:''}
       </div>`;
     }).join('')}
