@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v440</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v441</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12758,8 +12758,16 @@ function renderPromocoes(){
       const acionaveis=semPromo.filter(p=>!precoEhFixo19(p));
       const historico=state.promocoes.historico[loja]||[];
       const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
+      /* CORRIGIDO 11/09 (Felipe testou e tudo aparecia "bloqueado" mesmo com desconto configurado):
+         `it` aqui é a resposta CRUA do servidor (/promocao/status), com os campos do Mercado
+         Livre (ml_item_id, preco...) - não é o produto do Doca, então não tem descontoPromocao nem
+         mlPreco (por isso precoComDesconto sempre dava null pra TODO candidato). Precisa achar o
+         produto de verdade em state.produtos pra pegar o desconto configurado por você. */
       const candidatos=[];
-      if(cache.itens) cache.itens.forEach(it=>{ (it.candidatas||[]).forEach(c=>candidatos.push({item:it,cand:c})); });
+      if(cache.itens) cache.itens.forEach(it=>{
+        const produtoReal=state.produtos.find(x=>x.mlItemId===it.ml_item_id)||it;
+        (it.candidatas||[]).forEach(c=>candidatos.push({item:produtoReal,cand:c}));
+      });
       candidatosPorLoja[loja]=candidatos;
       return `<div class="card-vg" style="margin-bottom:18px">
         <h3>${esc(loja)} · Sem promoção ativa <span class="badge ${acionaveis.length?'pend':'okv'}">${acionaveis.length} produto(s)</span></h3>
