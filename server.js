@@ -5391,36 +5391,32 @@ async function detectarChegadasFullTodasAsLojas(motivo) {
     }
     let mudou = false;
     /* decai "Entrada pendente" (p.filaProcessamento) - mesma regra do doca.html
-       (filaProcessamentoComRestante + a poda de 5 dias em mlAtualizarFullDoSinc), atualizada
-       09/09 (Felipe, 2 pedidos): (1) tudo-ou-nada por entrada assim que aparece QUALQUER
-       recebimento real no log, em vez de decair proporcional (ficava um resto "fantasma" por
-       dias quando o ML libera em muitos lotes pequenos); (2) se já tem QUALQUER unidade em
-       transferência (dado sempre fresco, sem depender do log) a confirmação inteira já conta
-       como resolvida - senão dobra a contagem (a mesma unidade em transferência E em entrada
-       pendente). transferência é checada primeiro por ser mais rápida e mais confiável. */
+       (filaProcessamentoComRestante + a poda de 5 dias em mlAtualizarFullDoSinc).
+       CORRIGIDO 11/09 (achado real: um SKU que já tinha algumas unidades "em transferência" de
+       algo antigo/sem relação fazia uma confirmação NOVA sumir na hora, sem nenhuma prova de que
+       ELA se moveu): agora cada entrada da fila carrega "baselineNoMomento" (aptas+transferência
+       no momento em que foi confirmada, gravado em confirmarEnvioFull) - só resolve quando o total
+       atual SOBE acima desse baseline específico (prova de movimento novo depois da confirmação),
+       não só "tem algum valor não-zero" que pode ser sobra de outra coisa. */
     for (const p of produtos) {
       if (!p.mlItemId || !Array.isArray(p.filaProcessamento) || !p.filaProcessamento.length) continue;
       const row = await pegarMlProduto(p.loja, p.mlItemId);
       if (row && Array.isArray(row.recebimentos_full)) p.recebimentosFull = row.recebimentos_full;
-      const transferenciaAtual = row ? (Number(row.transferencia_full) || 0) : 0;
-      const fila = p.filaProcessamento;
-      let nova;
-      if (transferenciaAtual > 0) {
-        nova = [];
-      } else {
-        const eventos = p.recebimentosFull || [];
-        nova = fila
-          .map(entrada => {
-            const qtdOriginal = entrada.qtdOriginal != null ? entrada.qtdOriginal : (entrada.qtdRestante || 0);
-            const temRecebimento = eventos.some(ev => ev.data >= entrada.data && (Number(ev.qtd) || 0) > 0);
-            return { data: entrada.data, qtdOriginal, qtdRestante: temRecebimento ? 0 : qtdOriginal };
-          })
-          .filter(entrada => {
-            const diasDesde = (Date.now() - Date.parse(entrada.data + 'T00:00:00-03:00')) / 864e5;
-            return entrada.qtdRestante > 0.5 && diasDesde <= 5;
-          })
-          .map(({ data, qtdOriginal }) => ({ data, qtdOriginal }));
-      }
+      const totalAtual = row ? ((Number(row.quantidade_disponivel) || 0) + (Number(row.transferencia_full) || 0)) : 0;
+      const eventos = p.recebimentosFull || [];
+      const nova = p.filaProcessamento
+        .map(entrada => {
+          const qtdOriginal = entrada.qtdOriginal != null ? entrada.qtdOriginal : (entrada.qtdRestante || 0);
+          const baselineNoMomento = entrada.baselineNoMomento != null ? entrada.baselineNoMomento : 0;
+          const cresceuDesdeAConfirmacao = totalAtual > baselineNoMomento;
+          const temRecebimento = eventos.some(ev => ev.data >= entrada.data && (Number(ev.qtd) || 0) > 0);
+          return { data: entrada.data, qtdOriginal, baselineNoMomento, qtdRestante: (cresceuDesdeAConfirmacao || temRecebimento) ? 0 : qtdOriginal };
+        })
+        .filter(entrada => {
+          const diasDesde = (Date.now() - Date.parse(entrada.data + 'T00:00:00-03:00')) / 864e5;
+          return entrada.qtdRestante > 0.5 && diasDesde <= 5;
+        })
+        .map(({ data, qtdOriginal, baselineNoMomento }) => ({ data, qtdOriginal, baselineNoMomento }));
       if (JSON.stringify(nova) !== JSON.stringify(p.filaProcessamento)) { p.filaProcessamento = nova; mudou = true; }
     }
     if (!envios.length) console.log(`[full-agendado] ${motivo} - nenhum envio programado.`);

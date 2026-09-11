@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v431</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v432</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -3064,12 +3064,15 @@ function confirmarEnvioFull(envioId,manterCompra){
        (FIFO), sobrando pra próxima quando zerar. p.filaBaseline só é (re)ancorado quando a fila
        estava vazia - se já tinha algo em processamento, o baseline current já está sendo
        acompanhado sync a sync, não reseta. */
-    /* CORRIGIDO 28/08 (3ª volta, "Entrada Pendente 2.0"): não guarda mais baseline nenhum aqui - a
-       conta de "quanto já chegou" agora vem do log real de operações do ML
-       (buscarRecebimentosFull no server.js), não de comparar aptas+transf antes/depois (que se
-       confundia com venda no meio do caminho) - ver filaProcessamentoComRestante. */
+    /* CORRIGIDO 11/09 (achado real: 230un confirmadas de um envio novo sumiram na hora porque o
+       produto já tinha 8un "em transferência" de algo antigo/sem relação - ver
+       filaProcessamentoComRestante): guarda o total real (aptas+transferência) NESTE momento da
+       confirmação como "baselineNoMomento" - só quando esse total SUBIR depois disso é que dá pra
+       provar que ESTA confirmação específica se moveu de verdade, sem se confundir com sobra de
+       outra coisa. */
     if(!pLoja.filaProcessamento) pLoja.filaProcessamento=[];
-    pLoja.filaProcessamento.push({data:hoje(),qtdOriginal:i.solicitado||0});
+    const baselineNoMomento=fi?((Number(fi.aptas)||0)+(Number(fi.transf)||0)):0;
+    pLoja.filaProcessamento.push({data:hoje(),qtdOriginal:i.solicitado||0,baselineNoMomento});
     somado.push(pLoja.sku);
     flashFull[pLoja.id]=Date.now();
   });
@@ -4578,28 +4581,34 @@ function entrouConcorrente(p){
    REAL de recebimento do galpão Full, vindo direto do Mercado Livre (endpoint
    /stock/fulfillment/operations/search - ver buscarRecebimentosFull no server.js), datado e sem
    ambiguidade nenhuma com venda.
-   CORRIGIDO 09/09 (Felipe, em 2 mensagens): (1) "assim que constar QUALQUER unidade, já tem que
+   CORRIGIDO 09/09 (Felipe, em 3 mensagens): (1) "assim que constar QUALQUER unidade, já tem que
    sumir o full e sumir esse valor também - pra não atrapalhar a programação de próximos envios e
    não ir liberando em lotes pequenos" - parou de decair PROPORCIONAL (descontar só a quantidade
    recebida até agora, sobrando um resto travado por dias); pra alguns itens o Mercado Livre libera
    o estoque em muitos lotes pequenos (transferência entre centros de distribuição, não 1 chegada
    única), então o resto proporcional ficava "fantasma" por muito tempo. (2) "o valor de entrada
-   pendente já conta em transferência, soma duas vezes" - Em Transferência (transferenciaAtual,
-   direto de buscarTransferenciaFull) é um número SEMPRE fresco e 100% real; se já tem QUALQUER
-   unidade desse produto em transferência, a confirmação já está em andamento de verdade - contar
-   ela de novo em "Entrada pendente" soma a MESMA unidade 2x no Full total. Por isso agora checa
-   transferenciaAtual PRIMEIRO (mais rápido e mais confiável que esperar o log de recebimento, que
-   nem sempre existe pro tipo de operação que o item usa - ver buscarRecebimentosFull) e só usa o
-   log como critério secundário se ainda não tem nada em transferência. */
-function filaProcessamentoComRestante(p,transferenciaAtual){
+   pendente já conta em transferência, soma duas vezes" - tentei resolver checando só "tem
+   QUALQUER unidade em transferência agora" (transferenciaAtual>0), mas isso quebrou de outro jeito
+   (achado real, 11/09): um SKU que JÁ tinha 8un "em transferência" de algo antigo/não relacionado
+   ANTES de confirmar um envio novo de 230un fazia o 230 inteiro sumir na hora de "Virou FULL" -
+   nunca aparecia como Entrada pendente, mesmo sem nenhuma prova de que ESSES 230 se moveram.
+   CORRIGIDO 11/09 (3ª volta): cada entrada da fila agora guarda o "baselineNoMomento" (aptas+
+   transferência QUANDO ela foi confirmada, tirado em confirmarEnvioFull) - só considera resolvida
+   quando o total atual (aptas+transferência) SOBE acima desse baseline específico (prova real de
+   MOVIMENTO NOVO depois da confirmação), não só "tem algum valor não-zero" (que pode ser sobra de
+   outra coisa completamente sem relação). O log de recebimento continua como critério alternativo,
+   pra quando o tipo de operação aparecer nele. */
+function filaProcessamentoComRestante(p,aptasAtual,transferenciaAtual){
   const fila=(p&&p.filaProcessamento)||[];
   if(!fila.length) return [];
-  if(transferenciaAtual>0) return fila.map(({data,qtdOriginal})=>({data,qtdOriginal,qtdRestante:0}));
+  const totalAtual=(aptasAtual||0)+(transferenciaAtual||0);
   const eventos=p.recebimentosFull||[];
   return fila.map(entrada=>{
     const qtdOriginal=entrada.qtdOriginal!=null?entrada.qtdOriginal:(entrada.qtdRestante||0);
+    const baselineNoMomento=entrada.baselineNoMomento!=null?entrada.baselineNoMomento:0;
+    const cresceuDesdeAConfirmacao=totalAtual>baselineNoMomento;
     const temRecebimento=eventos.some(e=>e.data>=entrada.data&&(Number(e.qtd)||0)>0);
-    return {data:entrada.data,qtdOriginal,qtdRestante:temRecebimento?0:qtdOriginal};
+    return {data:entrada.data,qtdOriginal,baselineNoMomento,qtdRestante:(cresceuDesdeAConfirmacao||temRecebimento)?0:qtdOriginal};
   });
 }
 function mlAtualizarFullDoSinc(p,item,loja){
@@ -4628,12 +4637,12 @@ function mlAtualizarFullDoSinc(p,item,loja){
   // versão anterior por delta de aptas+transferência).
   if(Array.isArray(item.recebimentos_full)) p.recebimentosFull=item.recebimentos_full;
   if(p.filaProcessamento&&p.filaProcessamento.length){
-    p.filaProcessamento=filaProcessamentoComRestante(p,transferido)
+    p.filaProcessamento=filaProcessamentoComRestante(p,fi.aptas,transferido)
       .filter(entrada=>{
         const diasDesde=(Date.now()-Date.parse(entrada.data+'T00:00:00-03:00'))/864e5;
         return entrada.qtdRestante>0.5&&diasDesde<=5;
       })
-      .map(({data,qtdOriginal})=>({data,qtdOriginal}));
+      .map(({data,qtdOriginal,baselineNoMomento})=>({data,qtdOriginal,baselineNoMomento}));
   }
 }
 /* junta os mlItemId de todo item que está dentro de um envio AINDA programado (state.envios,
@@ -11610,7 +11619,7 @@ function fullCalc(i,envioOverride){
   const emProcessamento=(()=>{
     const p=fullProduto(i);
     if(!p) return 0;
-    return filaProcessamentoComRestante(p,i.transf).reduce((s,e)=>s+(e.qtdRestante||0),0);
+    return filaProcessamentoComRestante(p,i.aptas,i.transf).reduce((s,e)=>s+(e.qtdRestante||0),0);
   })();
   const full=fullValorBase+proximosProgramados+emProcessamento;   /* quantidade, pra Total/cobertura/sugestão */
   const consumo=media*D, proj=full-consumo, dem=media*(c.cobertura||30);
