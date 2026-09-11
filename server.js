@@ -5407,7 +5407,10 @@ async function detectarChegadasFullTodasAsLojas(motivo) {
       const nova = p.filaProcessamento
         .map(entrada => {
           const qtdOriginal = entrada.qtdOriginal != null ? entrada.qtdOriginal : (entrada.qtdRestante || 0);
-          const baselineNoMomento = entrada.baselineNoMomento != null ? entrada.baselineNoMomento : 0;
+          // entrada antiga sem baselineNoMomento salvo (criada antes desse campo existir) -
+          // Infinity = nunca resolve por "cresceu", só por temRecebimento (log real). Ver mesmo
+          // comentário/fix em doca.html (11/09, 2ª correção - achado no PENTEMADEIRAPEQUENO).
+          const baselineNoMomento = entrada.baselineNoMomento != null ? entrada.baselineNoMomento : Infinity;
           const cresceuDesdeAConfirmacao = totalAtual > baselineNoMomento;
           const temRecebimento = eventos.some(ev => ev.data >= entrada.data && (Number(ev.qtd) || 0) > 0);
           return { data: entrada.data, qtdOriginal, baselineNoMomento, qtdRestante: (cresceuDesdeAConfirmacao || temRecebimento) ? 0 : qtdOriginal };
@@ -5420,40 +5423,13 @@ async function detectarChegadasFullTodasAsLojas(motivo) {
       if (JSON.stringify(nova) !== JSON.stringify(p.filaProcessamento)) { p.filaProcessamento = nova; mudou = true; }
     }
     if (!envios.length) console.log(`[full-agendado] ${motivo} - nenhum envio programado.`);
-    for (const e of envios) {
-      if (!Array.isArray(e.itens)) continue;
-      const itensReais = e.itens.filter(i => !i.kitDeItemId);
-      if (!itensReais.length) continue;
-      if (!e.baselineFull) e.baselineFull = {};
-      let faltaBaseline = false;
-      for (const i of itensReais) {
-        if (e.baselineFull[i.id] != null) continue;
-        const pid = i.skuEscolhidoId || i.produtoId;
-        const pLoja = produtos.find(p => p.id === pid);
-        let aptas = 0, transf = 0;
-        if (pLoja && pLoja.mlItemId) {
-          const row = await pegarMlProduto(e.loja, pLoja.mlItemId);
-          if (row) { aptas = Number(row.quantidade_disponivel) || 0; transf = Number(row.transferencia_full) || 0; }
-        }
-        e.baselineFull[i.id] = aptas + transf;
-        // mesmo sinal de "suspeita" que o doca.html usa (ver autoConfirmarEnviosChegados) - se ja'
-        // nao tinha nada em transferencia na 1a foto, pode ja ter chegado antes mesmo dessa foto.
-        if (!(transf > 0)) e.baselineSuspeita = true;
-        faltaBaseline = true;
-        mudou = true;
-      }
-      if (faltaBaseline) continue; // só dá pra comparar a partir da PRÓXIMA checagem, com essa foto em mãos
-      let tudoChegou = true;
-      for (const i of itensReais) {
-        const pid = i.skuEscolhidoId || i.produtoId;
-        const pLoja = produtos.find(p => p.id === pid);
-        if (!pLoja || !pLoja.mlItemId || !(i.solicitado > 0)) { tudoChegou = false; break; }
-        const row = await pegarMlProduto(e.loja, pLoja.mlItemId);
-        const atual = row ? ((Number(row.quantidade_disponivel) || 0) + (Number(row.transferencia_full) || 0)) : 0;
-        if (!(atual > (e.baselineFull[i.id] || 0))) { tudoChegou = false; break; }
-      }
-      if (tudoChegou && !e.avisoRecebidoAutoDetectado) { e.avisoRecebidoAutoDetectado = true; mudou = true; }
-    }
+    /* REMOVIDO 11/09 (Felipe: "vamos esquecer isso de virar full sozinho, muito complicado e não
+       vai dar certo"): existia aqui a mesma tentativa de detecção automática que tinha no
+       doca.html (autoConfirmarEnviosChegados) - tirar uma "foto" de aptas+transferência e avisar
+       quando via aumento. Removida junto com a versão client-side; a confirmação agora é sempre
+       manual (botão "✓ Virou FULL"), e quem cobre esquecimento é o aviso baseado na DATA
+       (enviosFullAtrasadosSemConfirmar, no doca.html) - não precisa de nada rodando no servidor
+       pra isso, só compara e.data com a data de hoje. */
     if (mudou) {
       try { await fazerBackupAntesDeGravar(linha.dados, linha.atualizado_em); } catch (eBackup) { console.error(`[full-agendado] ${motivo} - falha ao gravar backup:`, eBackup.message); }
       await pool.query(

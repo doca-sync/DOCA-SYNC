@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v432</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v434</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4028,6 +4028,22 @@ function ofertaComProblema(loja){
     .sort((a,b)=>b.visitas-a.visitas);
   return {itens:problema,temDado:true};
 }
+/* NOVO 11/09 (Felipe, depois de abandonar a detecção automática de "virou full sozinho" por ser
+   complicada demais): já que a confirmação voltou a ser 100% manual (botão "✓ Virou FULL"), cobre
+   o caso de esquecimento com um aviso que aparece assim que abre o Doca a partir do dia SEGUINTE
+   à data programada do envio (e.data<hoje(), nunca no dia exato - dá margem pra coleta acontecer
+   mais tarde nesse mesmo dia) e continua aparecendo em toda visita até ele confirmar (ou cancelar)
+   o envio - não é um aviso "1x só", ele reaparece porque só some quando o envio sai de
+   state.envios de verdade. */
+function enviosFullAtrasadosSemConfirmar(){
+  const hj=hoje();
+  return enviosOrdenados().filter(e=>e.data&&e.data<hj);
+}
+function cardEnviosFullAtrasados(){
+  const atrasados=enviosFullAtrasadosSemConfirmar();
+  if(!atrasados.length) return '';
+  return `<div class="aviso risco" style="margin-bottom:14px">📦 <b>${atrasados.length} envio(s) programado(s) já passaram da data prevista e ainda não foram confirmados como FULL:</b> ${atrasados.map(e=>`${esc(e.nome)} · ${esc(e.loja)} (previsto ${fmtData(e.data)})`).join(', ')}. Se já foi coletado/entregue, confira no Mercado Livre e confirme em <b>Full → Envios Programados → ✓ Virou FULL</b>. Esse aviso continua até você confirmar.</div>`;
+}
 function cardResumoDoDia(){
   const porLoja=STORES.map(loja=>({loja,...ofertaComProblema(loja)}));
   const total=porLoja.reduce((s,g)=>s+g.itens.length,0);
@@ -4124,6 +4140,7 @@ function renderDashboard(){
   STORES.forEach(l=>atualizarRankingLoja(l));   /* forma o histórico de posição sozinho, 2x por dia */
   el.innerHTML=`
     <h1 class="page-title">Visão geral</h1>
+    ${cardEnviosFullAtrasados()}
     ${cardRankingMaisVendidos()}
     ${cardResumoDoDia()}
     ${cardConcorrenciaCatalogo()}
@@ -4605,7 +4622,12 @@ function filaProcessamentoComRestante(p,aptasAtual,transferenciaAtual){
   const eventos=p.recebimentosFull||[];
   return fila.map(entrada=>{
     const qtdOriginal=entrada.qtdOriginal!=null?entrada.qtdOriginal:(entrada.qtdRestante||0);
-    const baselineNoMomento=entrada.baselineNoMomento!=null?entrada.baselineNoMomento:0;
+    // entradas antigas (criadas ANTES desse baseline existir) não têm baselineNoMomento salvo -
+    // nesse caso NÃO dá pra provar "cresceu", então usamos Infinity (nunca resolve por esse
+    // caminho) e confiamos só no log real de recebimento (temRecebimento). Sem isso, o padrão
+    // de 0 fazia qualquer entrada antiga "resolver sozinha" na hora, mesmo sem ter chegado nada -
+    // foi exatamente o que sumiu os 230 pentes confirmados antes desse fix existir (Felipe, 11/09).
+    const baselineNoMomento=entrada.baselineNoMomento!=null?entrada.baselineNoMomento:Infinity;
     const cresceuDesdeAConfirmacao=totalAtual>baselineNoMomento;
     const temRecebimento=eventos.some(e=>e.data>=entrada.data&&(Number(e.qtd)||0)>0);
     return {data:entrada.data,qtdOriginal,baselineNoMomento,qtdRestante:(cresceuDesdeAConfirmacao||temRecebimento)?0:qtdOriginal};
@@ -4830,76 +4852,17 @@ function aplicarSincronizacaoAutomatica(resultado){
   });
   const mudouAusentes=marcarAusentesNoML(resultado.loja,resultado.produtos);
   if(vinculados>0||importados>0||mudouAusentes) persist();
-  autoConfirmarEnviosChegados(resultado.loja);
   return {vinculados,importados};
 }
-/* NOVO 03/09 (Felipe: "quando der entrada não preciso mais apertar, e o botão some sozinho"):
-   depois de aplicar uma sincronização, confere se algum envio AINDA programado (state.envios)
-   já tem, pra TODOS os seus itens (menos os componentes explodidos de kit, que nunca ganham
-   registro próprio - ver confirmarEnvioFull), um recebimento real batendo no Full
-   (p.recebimentosFull, vindo do log oficial do Mercado Livre - buscarRecebimentosFull no
-   server.js) datado a partir da data programada da coleta (ou da criação do envio, o que for
-   mais cedo, com 1 dia de folga pra fuso/atraso do log). Se bater em TODOS os itens, confirma o
-   envio sozinho - mesma função de quando se clica "Virou FULL" - e avisa por toast. Só confirma
-   quando fecha 100%; se faltar 1 item, deixa como está e tenta de novo na próxima sincronização
-   (não confirma parcial, pra não zerar errado um item que ainda nem saiu do galpão). */
-function autoConfirmarEnviosChegados(loja){
-  const candidatos=state.envios.filter(e=>e.loja===loja);
-  let mudouBaseline=false;
-  candidatos.forEach(e=>{
-    const itensReais=e.itens.filter(i=>!i.kitDeItemId);
-    if(!itensReais.length) return;
-    /* CORRIGIDO 05/09 (2a volta - achado real via /debug/full/recebimentos, testado nos 2 SKUs do
-       envio de 04/09): recebimentosFull (log de auditoria "stock/fulfillment/operations/search",
-       type=inbound_reception) SEMPRE voltou vazio pros 2 itens, mesmo com a URL/type corrigidos e
-       respondendo HTTP 200 - e mesmo com a propria pagina de Envios Full do Mercado Livre já
-       mostrando esse envio como "Recebido" (231 de 300 aptas). Ou seja: esse log de auditoria tem
-       um atraso proprio do Mercado Livre pra ser preenchido, bem maior que o status visual da
-       pagina de envios - nao da pra confiar nele pra detectar chegada. Troca de fonte: em vez do
-       log de auditoria, usa o MESMO dado que ja aparece certinho e na hora na tela do Doca hoje
-       (Aptas Full + Em transferencia, vindo de /inventories/{id}/stock/fulfillment - ver
-       mlAtualizarFullDoSinc) - tira uma "foto" desse total assim que o envio passa a ser
-       observado (1a sincronizacao depois de criado) e, a partir dai, qualquer AUMENTO acima dessa
-       foto (por menor que seja) e' sinal real de que a coleta chegou - sem precisar esperar
-       processamento 100%, igual pedido pelo Felipe. */
-    if(!e.baselineFull) e.baselineFull={};
-    let faltaBaseline=false;
-    itensReais.forEach(i=>{
-      if(e.baselineFull[i.id]!=null) return;
-      const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
-      const fi=pLoja?state.full.itens.find(x=>x.loja===loja&&fullProduto(x)&&fullProduto(x).id===pLoja.id):null;
-      e.baselineFull[i.id]=fi?((Number(fi.aptas)||0)+(Number(fi.transf)||0)):0;
-      /* NOVO 08/09 (Felipe: envio de hoje já constava "Recebido" no próprio Mercado Livre e não
-         sumiu sozinho do Doca): esse método só detecta a chegada comparando um "antes" (a foto
-         tirada aqui) com um "depois" - se a coleta+recebimento no Mercado Livre for tão rápida que
-         já tiver terminado ANTES dessa 1ª foto (ex: método "Levar" com entrega no mesmo dia, ou o
-         PDF foi importado no Doca só depois de já ter chegado de verdade), a foto já nasce
-         "cheia" e a comparação nunca vai detectar aumento nenhum - fica escondido pra sempre, sem
-         avisar nada. Sinal de que isso pode ter acontecido: se JÁ NÃO HAVIA NADA "em transferência"
-         (fi.transf) no exato momento dessa 1ª foto, não dá pra saber se é porque ainda não
-         começou a ir pro Full ou porque já chegou faz tempo - marca o envio como suspeito pra
-         avisar na tela, em vez de confiar cegamente que a detecção automática vai funcionar. */
-      if(!fi||!(Number(fi.transf)>0)) e.baselineSuspeita=true;
-      mudouBaseline=true;
-      faltaBaseline=true;
-    });
-    /* na mesma leitura em que a foto (baseline) é tirada pela 1ª vez ainda não dá pra comparar
-       nada - só a partir da PRÓXIMA sincronização, quando já existe um "antes" pra comparar. */
-    if(faltaBaseline) return;
-    const tudoChegou=itensReais.every(i=>{
-      const pLoja=prodById(i.skuEscolhidoId||i.produtoId);
-      if(!pLoja||!pLoja.mlItemId||!(i.solicitado>0)) return false;
-      const fi=state.full.itens.find(x=>x.loja===loja&&fullProduto(x)&&fullProduto(x).id===pLoja.id);
-      const atual=fi?((Number(fi.aptas)||0)+(Number(fi.transf)||0)):0;
-      return atual>(e.baselineFull[i.id]||0);
-    });
-    if(tudoChegou){
-      confirmarEnvioFull(e.id,true);
-      toast(`✅ FULL de ${nomeEnvio(e)} entregue — sumiu da lista sozinho (o Mercado Livre já registrou a entrada).`);
-    }
-  });
-  if(mudouBaseline) persist();
-}
+/* REMOVIDO 11/09 (Felipe: "vamos esquecer isso de virar full sozinho, muito complicado e não vai
+   dar certo"): existia aqui uma tentativa de detectar sozinho quando um envio programado já tinha
+   chegado no Full (comparando aptas+transferência "antes" e "depois"), pra confirmar automático
+   sem precisar clicar. Depois de várias voltas de correção (log de auditoria do ML atrasado
+   demais, baseline "nascendo cheio" quando a coleta era rápida demais, etc.) o Felipe decidiu que
+   não vale a pena confiar nisso. Volta a ser 100% manual: o próprio Felipe clica em "✓ Virou FULL"
+   depois da coleta/entrega, e quem cobre o caso de ele esquecer é o aviso de
+   enviosFullAtrasadosSemConfirmar() (ver cardEnviosFullAtrasados, mostrado assim que abre o Doca a
+   partir do dia seguinte à data programada, e continua até confirmar). */
 /* modal com o botão Atualizar: sincroniza com o backend e mostra os anúncios do Mercado Livre
    comparados com o cadastro do Doca (vínculo por mlItemId salvo, ou por SKU quando bate) */
 function abrirSincronizacaoML(){
@@ -10998,8 +10961,7 @@ function renderEnvio(){
         <div class="envio-head">
           <div><div class="envio-tit">${e.origem==='emergencia'?'<span class="tag-zero" title="Criado à parte do envio já programado, para cobrir produtos em risco de ruptura">🚨 EMERGÊNCIA</span> ':''}${esc(e.nome)} · <span style="color:var(--violet-l)">${esc(e.loja)}</span></div>
           <div class="envio-meta">Coleta em <b>${esc(e.localColeta||'—')}</b> · ${e.itens.filter(i=>!i.kitDeItemId).length} SKU(s) · <b class="okv">${fmtInt(a)}</b> no galpão${c?` · <span class="cam">${fmtInt(c)} a coletar</span>`:''}${g?` · <span class="pend">${fmtInt(g)} a comprar</span>`:''}</div>
-          ${e.avisoRecebidoAutoDetectado?`<div class="aviso risco" style="margin-top:6px">🚀 <b>O servidor detectou sozinho (checagem agendada de 7:30/12:30) que este envio já chegou no Full</b> — mesmo sem o Doca estar aberto. Confira no Mercado Livre e clique em "✓ Virou FULL" pra confirmar (por segurança, essa checagem agendada só avisa, não confirma sozinha).</div>`
-          :e.baselineSuspeita?`<div class="hint" style="color:var(--warn,#e6a23c);margin-top:4px">⚠ Quando o Doca começou a acompanhar este envio, já não tinha nada "em transferência" pro Full — pode já ter chegado ANTES do Doca conseguir comparar um antes/depois, e nesse caso a detecção automática não vai funcionar. Confira no Mercado Livre e, se já estiver "Recebido", confirme com "✓ Virou FULL" manualmente.</div>`:''}</div>
+          ${e.data&&e.data<hoje()?`<div class="aviso risco" style="margin-top:6px">📦 <b>Esse envio estava programado pra ${fmtData(e.data)}</b> e ainda não foi confirmado como FULL. Se já foi coletado/entregue, confira no Mercado Livre e clique em "✓ Virou FULL" (esse aviso continua até você confirmar).</div>`:''}</div>
           <div class="envio-acts">
             <button class="btn sm" data-editenvio="${e.id}">✎ Editar</button>
             <button class="btn sm" data-addsku="${e.id}">+ Adicionar SKU</button>
@@ -11597,10 +11559,18 @@ function fullCalc(i,envioOverride){
      envio é confirmado como FULL, ele sai de "Próximos programados" e some do cálculo até a
      próxima sincronização mostrar a mercadoria de verdade em "Aptas"/"Em transferência".
      Os dois contam pra QUANTIDADE (full/Total/cobertura/sugestão de envio), pra não sugerir
-     enviar de novo o que já está no caminho ou já programado. Só "em transferência" conta pro
-     VALOR EM DINHEIRO — "próximos programados" ainda está fisicamente no galpão/fornecedor e
-     seu valor já é contado no estoque LOCAL via "Reservado" (ver valorEstoque/totalNoGalpao);
-     contar de novo aqui duplicaria o dinheiro. */
+     enviar de novo o que já está no caminho ou já programado. Pro VALOR EM DINHEIRO, "próximos
+     programados" fica de fora de propósito — ainda está fisicamente no galpão/fornecedor e seu
+     valor já é contado no estoque LOCAL via "Reservado" (ver valorEstoque/totalNoGalpao);
+     contar de novo aqui duplicaria o dinheiro.
+     CORRIGIDO 11/09 (Felipe: "o material que foi entregue [confirmado como FULL] tem que continuar
+     sendo considerado como estoque até ele ser processado de fato"): "em processamento" (definido
+     mais abaixo) é DIFERENTE — assim que confirmarEnvioFull roda, o envio sai de state.envios (e
+     reservadoLocalDe/totalNoGalpao/valorEstoque param de contar esse dinheiro na hora, porque a
+     mercadoria fisicamente saiu do galpão) mas ainda não existe em aptas/transf de verdade (o ML
+     ainda não processou). Sem somar aqui, esse dinheiro sumia dos dois lados por alguns dias -
+     nem no Local (não é mais reservado, já foi confirmado) nem no Full (fullValorBase só conta
+     aptas+transf reais). Ver "valor" no final da função. */
   const proximosProgramados=entradaPendenteDe(i.produtoId||(fullProduto(i)?fullProduto(i).id:null));
   const fullValorBase=(i.aptas||0)+(i.transf||0);
   /* "em processamento" (CORRIGIDO 28/08, pedido do Felipe): a quantidade de um envio que acabou
@@ -11639,7 +11609,7 @@ function fullCalc(i,envioOverride){
   const jaEnviado=!!(i.enviado&&envioById(i.enviado.envioId));
   const qtd=i.ajuste!=null?i.ajuste:(jaEnviado?0:enviar);
   return {r7,r15,r30,soma:somaPond,media,mediaPronta,D,full,proximosProgramados,emProcessamento,consumo,proj,dem,enviar,qtd,cob,
-    rompe,diaRuptura,aguentaAte,vendasIncoer,jaEnviado,custo:fullCusto(i),valor:fullValorBase*fullCusto(i)};
+    rompe,diaRuptura,aguentaAte,vendasIncoer,jaEnviado,custo:fullCusto(i),valor:(fullValorBase+emProcessamento)*fullCusto(i)};
 }
 function fullResumo(loja){
   const l=fullItensLoja(loja).map(i=>({i,k:fullCalc(i)}));
