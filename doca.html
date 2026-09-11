@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v438</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v439</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12578,20 +12578,29 @@ function imprimirRelatorioEstoqueMinimo(loja){
    próprio site do ML, não da API pública). Pra cobrir o ciclo mensal, o Doca cria em blocos
    seguidos de 14 dias, sempre com aprovação antes de cada bloco (decisão do Felipe, 11/09). */
 let promocaoStatusCache={};
+/* MUDOU 11/09 (Felipe: "acho melhor mostrar todos os produtos, incluindo os que já tem preço a
+   19 / ranquear por ticket do mais alto pro mais baixo"): antes escondia os produtos de R$19 da
+   lista inteira - agora eles aparecem também (pra visão completa do catálogo), só que sem input
+   de desconto (não é possível promocionar esse preço, ver precoEhFixo19 abaixo). Lista ordenada
+   do maior ticket pro menor. */
+function precoEhFixo19(p){ return typeof p.mlPreco==='number' && Math.abs(p.mlPreco-19)<0.005; }
 function produtosSemPromocao(loja){
   return state.produtos.filter(p=>
     p.loja===loja && !p.mlAusente && p.mlItemId && p.mlStatus==='active' &&
-    typeof p.mlPreco==='number' && Math.abs(p.mlPreco-19)>=0.005 &&
-    p.mlOriginalPrice==null
-  );
+    typeof p.mlPreco==='number' && p.mlOriginalPrice==null
+  ).sort((a,b)=>b.mlPreco-a.mlPreco);
 }
 /* preço final calculado a partir da REGRA configurada 1x no produto - nunca vem de conta
    automática de margem, exatamente como o Felipe pediu ("cada produto tem o seu"). SIMPLIFICADO
    11/09 (3ª volta, Felipe: "não dá pra deixar configurando só pelo desconto?"): removido o campo
    de preço final manual (existiu por 1 versão) - agora é só o descontoPromocao% em cima do preço
    atual do anúncio, pra todo produto, sem exceção. Produto tipo o Substrato (que já tem um valor
-   final certo em mente) usa o % equivalente, calculado por quem configura. */
+   final certo em mente) usa o % equivalente, calculado por quem configura.
+   GUARDA 11/09: produto de R$19 nunca calcula preço com desconto, mesmo que tenha algum
+   descontoPromocao salvo de antes - trava de segurança pro "produtos sem promoção configurada não
+   aplicar promoção" (e pro piso de R$19 nunca ser furado). */
 function precoComDesconto(p){
+  if(precoEhFixo19(p)) return null;
   if(!(typeof p.mlPreco==='number')||!(p.descontoPromocao>0)) return null;
   return Math.round(p.mlPreco*(1-p.descontoPromocao/100)*100)/100;
 }
@@ -12712,6 +12721,7 @@ function renderPromocoes(){
     <h1 class="page-title">Promoções</h1>
     ${STORES.map(loja=>{
       const semPromo=produtosSemPromocao(loja);
+      const acionaveis=semPromo.filter(p=>!precoEhFixo19(p));
       const cache=promocaoStatusCache[loja]||{carregando:false,erro:null,itens:null};
       const historico=state.promocoes.historico[loja]||[];
       const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
@@ -12719,22 +12729,23 @@ function renderPromocoes(){
       if(cache.itens) cache.itens.forEach(it=>{ (it.candidatas||[]).forEach(c=>candidatos.push({item:it,cand:c})); });
       candidatosPorLoja[loja]=candidatos;
       return `<div class="card-vg" style="margin-bottom:18px">
-        <h3>${esc(loja)} · Sem promoção ativa <span class="badge ${semPromo.length?'pend':'okv'}">${semPromo.length} produto(s)</span></h3>
-        <p class="sub">Anúncios ativos sem nenhuma promoção de preço rodando agora (produtos de R$19 ficam de fora — não é possível aplicar desconto neles). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha.</p>
+        <h3>${esc(loja)} · Sem promoção ativa <span class="badge ${acionaveis.length?'pend':'okv'}">${acionaveis.length} produto(s)</span></h3>
+        <p class="sub">Todos os anúncios ativos sem nenhuma promoção de preço rodando agora, do maior ticket pro menor (produtos de R$19 aparecem na lista mas sem desconto — não é possível promocionar esse preço). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha. Produto sem desconto configurado fica de fora da campanha até você preencher.</p>
         ${ativos.length?`<div class="aviso ok" style="margin-bottom:12px">✓ ${ativos.map(a=>`Campanha do Doca ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
         ${semPromo.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
           <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço da promoção</th>
         </tr></thead><tbody>${semPromo.map(p=>{
           const final=precoComDesconto(p);
-          return `<tr>
+          const fixo19=precoEhFixo19(p);
+          return `<tr${fixo19?' style="opacity:.55"':''}>
             <td class="mono">${esc(p.sku||p.codigo||'')}</td>
             <td class="num">${fmtMoney(p.mlPreco)}</td>
-            <td class="num"><input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%"></td>
-            <td class="num">${final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">configure o desconto</span>'}</td>
+            <td class="num">${fixo19?'<span class="muted">—</span>':`<input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%">`}</td>
+            <td class="num">${fixo19?'<span class="muted">R$19 é o piso — não aplicável</span>':(final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">sem desconto — não entra na campanha</span>')}</td>
           </tr>`;
         }).join('')}</tbody></table></div>`:'<p class="muted">Nenhum anúncio ativo sem promoção agora.</p>'}
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-          ${semPromo.length?`<button class="btn acc" data-criarcampanha="${esc(loja)}">Criar campanha (14 dias) com os produtos configurados</button>`:''}
+          ${acionaveis.length?`<button class="btn acc" data-criarcampanha="${esc(loja)}">Criar campanha (14 dias) com os produtos configurados</button>`:''}
           <button class="btn" data-atualizarpromo="${esc(loja)}" ${cache.carregando?'disabled':''}>${cache.carregando?'Consultando…':'🔄 Atualizar status de promoções'}</button>
         </div>
         ${cache.itens?`<div style="margin-top:16px">
