@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v442</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v443</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12715,7 +12715,7 @@ function abrirConfirmacaoCandidato(loja,item,cand){
     btn.disabled=true; btn.textContent='Enviando…';
     try{
       const resp=await nuvemFetch('/promocao/entrar-campanha',{method:'POST',body:JSON.stringify({
-        loja, itens:[{ml_item_id:item.ml_item_id,promotion_id:idCampanha,promotion_type:cand.type||cand.promotion_type||cand.sub_type,dealPrice:precoFinal}]
+        loja, itens:[{ml_item_id:item.mlItemId||item.ml_item_id,promotion_id:idCampanha,promotion_type:cand.type||cand.promotion_type||cand.sub_type,dealPrice:precoFinal}]
       })});
       const j=await resp.json();
       if(!resp.ok||!j.ok) throw new Error(j.erro||'Falha ao entrar na campanha.');
