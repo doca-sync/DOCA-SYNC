@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v444</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v445</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12774,10 +12774,28 @@ function renderPromocoes(){
          configurado), com a linha toda acinzentada e "bloqueado". Agora só entra na lista quem
          realmente dá pra participar - tem campanha de verdade (id) E o preço fecha exatamente com
          o desconto configurado por você (sem exigir nem mais nem menos). */
+      /* MUDOU 11/09 (Felipe testou e tomou erro "Stock must be greater than 5 and less than 1368"
+         tentando entrar num tipo LIGHTNING): descobri testando ao vivo que o Mercado Livre tem
+         vários tipos de candidato que NÃO funcionam com a lógica de "preço = seu desconto
+         configurado" que a gente construiu pro DEAL/SELLER_CAMPAIGN:
+         - LIGHTNING (Oferta Relâmpago): não tem período nenhum na resposta da API (por isso a
+           mensagem de erro aparecia sem período - não é bug, o Mercado Livre não manda essa data
+           pra esse tipo) e exige que o ESTOQUE do anúncio esteja dentro de uma faixa (campo
+           `stock.min`/`stock.max`) - o Doca não tem hoje o estoque publicado no anúncio pra
+           validar isso antes de tentar, por isso a entrada falhava direto no Mercado Livre.
+         - SELLER_COUPON_CAMPAIGN (ex: "Cupom para carrinhos abandonados"): não é uma troca de
+           preço do anúncio, é um CUPOM de desconto fixo aplicado no carrinho - usa `fixed_percentage`
+           em vez de preço, então comparar com o desconto configurado do produto não faz sentido.
+         - SMART / UNHEALTHY_STOCK: são ofertas de rateio de tarifa com o Mercado Livre
+           (`meli_percentage`/`seller_percentage`), outro mecanismo different de novo.
+         Até eu construir suporte de verdade pra cada um desses (com a validação certa), só entram
+         na lista os tipos que a gente já sabe fazer direito: DEAL e SELLER_CAMPAIGN. */
+      const TIPOS_CANDIDATO_SUPORTADOS=['DEAL','SELLER_CAMPAIGN'];
       const candidatos=[];
       if(cache.itens) cache.itens.forEach(it=>{
         const produtoReal=state.produtos.find(x=>x.mlItemId===it.ml_item_id)||it;
         (it.candidatas||[]).forEach(c=>{
+          if(!TIPOS_CANDIDATO_SUPORTADOS.includes(c.type)) return;
           const idCampanha=c.id||c.promotion_id||null;
           const r=precoCandidato(produtoReal,c);
           if(idCampanha && r.preco!=null) candidatos.push({item:produtoReal,cand:c,preco:r.preco});
