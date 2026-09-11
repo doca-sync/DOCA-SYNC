@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v437</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v438</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12699,57 +12699,59 @@ function abrirConfirmacaoCandidato(loja,item,cand){
     }
   };
 }
+/* MUDOU 11/09 (Felipe: "não dá pra colocar as 4 lojas na mesma tela como em Visão Geral?"): antes
+   tinha 1 select pra escolher a loja e via 1 de cada vez - agora mostra as 4 juntas, 1 bloco por
+   loja, igual ao padrão já usado em Visão Geral (cards-lojas). Cada loja mantém seus próprios
+   botões (Criar campanha / Atualizar status) e sua própria lista de candidatos, sem depender de
+   nenhum seletor. */
 function renderPromocoes(){
   const el=document.getElementById('tab-promocoes'); if(!el) return;
-  const loja=state.promocoes.cfg.loja;
-  const semPromo=produtosSemPromocao(loja);
-  const cache=promocaoStatusCache[loja]||{carregando:false,erro:null,itens:null};
-  const historico=state.promocoes.historico[loja]||[];
   const hojeStr=hoje();
-  const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
-  const candidatos=[];
-  if(cache.itens) cache.itens.forEach(it=>{ (it.candidatas||[]).forEach(c=>candidatos.push({item:it,cand:c})); });
+  const candidatosPorLoja={};
   el.innerHTML=`
     <h1 class="page-title">Promoções</h1>
-    <div class="toolbar-produtos">
-      <select id="promoLoja">${optsLojas(loja)}</select>
-      <button class="btn" id="btnAtualizarPromocoes" ${cache.carregando?'disabled':''}>${cache.carregando?'Consultando…':'🔄 Atualizar status de promoções'}</button>
-    </div>
-    ${ativos.length?`<div class="aviso ok" style="margin-bottom:14px">✓ ${ativos.map(a=>`Campanha do Doca ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
-    <div class="card-vg">
-      <h3>Sem promoção ativa <span class="badge ${semPromo.length?'pend':'okv'}">${semPromo.length} produto(s)</span></h3>
-      <p class="sub">Anúncios ativos sem nenhuma promoção de preço rodando agora, separado por conta (produtos de R$19 ficam de fora — não é possível aplicar desconto neles). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha.</p>
-      ${semPromo.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-        <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço da promoção</th>
-      </tr></thead><tbody>${semPromo.map(p=>{
-        const final=precoComDesconto(p);
-        return `<tr>
-          <td class="mono">${esc(p.sku||p.codigo||'')}</td>
-          <td class="num">${fmtMoney(p.mlPreco)}</td>
-          <td class="num"><input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%"></td>
-          <td class="num">${final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">configure o desconto</span>'}</td>
-        </tr>`;
-      }).join('')}</tbody></table></div>
-      <div style="margin-top:12px"><button class="btn acc" id="btnCriarCampanha">Criar campanha (14 dias) com os produtos configurados</button></div>`
-      :'<p class="muted">Nenhum anúncio ativo sem promoção agora.</p>'}
-    </div>
-    ${cache.itens?`<div class="card-vg">
-      <h3>Candidatos em campanhas do Mercado Livre <span class="badge ${candidatos.length?'pend':'okv'}">${candidatos.length}</span></h3>
-      <p class="sub">Campanhas que o próprio Mercado Livre convidou você a participar (DEAL, Desconto Individual etc). Dá pra entrar usando a mesma regra de desconto configurada acima.</p>
-      ${candidatos.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-        <th>SKU</th><th>Tipo</th><th class="num">Preço original</th><th class="num">Sugerido</th><th></th>
-      </tr></thead><tbody>${candidatos.map((c,idx)=>`<tr>
-        <td class="mono">${esc(c.item.sku||c.item.titulo||'')}</td>
-        <td>${esc(c.cand.sub_type||c.cand.promotion_type||'')}</td>
-        <td class="num">${fmtMoney(c.cand.original_price)}</td>
-        <td class="num">${c.cand.suggested_discounted_price!=null?fmtMoney(c.cand.suggested_discounted_price):'—'}</td>
-        <td><button class="btn sm" data-entrarcandidato="${idx}">Entrar</button></td>
-      </tr>`).join('')}</tbody></table></div>`:'<p class="muted">Nenhum candidato encontrado agora.</p>'}
-    </div>`:''}
+    ${STORES.map(loja=>{
+      const semPromo=produtosSemPromocao(loja);
+      const cache=promocaoStatusCache[loja]||{carregando:false,erro:null,itens:null};
+      const historico=state.promocoes.historico[loja]||[];
+      const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
+      const candidatos=[];
+      if(cache.itens) cache.itens.forEach(it=>{ (it.candidatas||[]).forEach(c=>candidatos.push({item:it,cand:c})); });
+      candidatosPorLoja[loja]=candidatos;
+      return `<div class="card-vg" style="margin-bottom:18px">
+        <h3>${esc(loja)} · Sem promoção ativa <span class="badge ${semPromo.length?'pend':'okv'}">${semPromo.length} produto(s)</span></h3>
+        <p class="sub">Anúncios ativos sem nenhuma promoção de preço rodando agora (produtos de R$19 ficam de fora — não é possível aplicar desconto neles). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha.</p>
+        ${ativos.length?`<div class="aviso ok" style="margin-bottom:12px">✓ ${ativos.map(a=>`Campanha do Doca ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
+        ${semPromo.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+          <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço da promoção</th>
+        </tr></thead><tbody>${semPromo.map(p=>{
+          const final=precoComDesconto(p);
+          return `<tr>
+            <td class="mono">${esc(p.sku||p.codigo||'')}</td>
+            <td class="num">${fmtMoney(p.mlPreco)}</td>
+            <td class="num"><input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%"></td>
+            <td class="num">${final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">configure o desconto</span>'}</td>
+          </tr>`;
+        }).join('')}</tbody></table></div>`:'<p class="muted">Nenhum anúncio ativo sem promoção agora.</p>'}
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          ${semPromo.length?`<button class="btn acc" data-criarcampanha="${esc(loja)}">Criar campanha (14 dias) com os produtos configurados</button>`:''}
+          <button class="btn" data-atualizarpromo="${esc(loja)}" ${cache.carregando?'disabled':''}>${cache.carregando?'Consultando…':'🔄 Atualizar status de promoções'}</button>
+        </div>
+        ${cache.itens?`<div style="margin-top:16px">
+          <h4 style="margin:0 0 6px">Candidatos em campanhas do Mercado Livre <span class="badge ${candidatos.length?'pend':'okv'}">${candidatos.length}</span></h4>
+          ${candidatos.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+            <th>SKU</th><th>Tipo</th><th class="num">Preço original</th><th class="num">Sugerido</th><th></th>
+          </tr></thead><tbody>${candidatos.map((c,idx)=>`<tr>
+            <td class="mono">${esc(c.item.sku||c.item.titulo||'')}</td>
+            <td>${esc(c.cand.sub_type||c.cand.promotion_type||'')}</td>
+            <td class="num">${fmtMoney(c.cand.original_price)}</td>
+            <td class="num">${c.cand.suggested_discounted_price!=null?fmtMoney(c.cand.suggested_discounted_price):'—'}</td>
+            <td><button class="btn sm" data-entrarcandidato="${esc(loja)}|${idx}">Entrar</button></td>
+          </tr>`).join('')}</tbody></table></div>`:'<p class="muted">Nenhum candidato encontrado agora.</p>'}
+        </div>`:''}
+      </div>`;
+    }).join('')}
   `;
-  document.getElementById('promoLoja').onchange=e=>{ state.promocoes.cfg.loja=e.target.value; persist(); };
-  const btnAtu=document.getElementById('btnAtualizarPromocoes');
-  if(btnAtu) btnAtu.onclick=()=>atualizarStatusPromocoes(loja);
   el.querySelectorAll('[data-descontopromo]').forEach(inp=>{
     inp.onchange=e=>{
       const p=prodById(e.target.dataset.descontopromo); if(!p) return;
@@ -12758,10 +12760,18 @@ function renderPromocoes(){
       persist();
     };
   });
-  const btnCriar=document.getElementById('btnCriarCampanha');
-  if(btnCriar) btnCriar.onclick=()=>abrirConfirmacaoCampanha(loja,semPromo);
+  el.querySelectorAll('[data-criarcampanha]').forEach(btn=>{
+    btn.onclick=()=>{ const loja=btn.dataset.criarcampanha; abrirConfirmacaoCampanha(loja,produtosSemPromocao(loja)); };
+  });
+  el.querySelectorAll('[data-atualizarpromo]').forEach(btn=>{
+    btn.onclick=()=>{ atualizarStatusPromocoes(btn.dataset.atualizarpromo); };
+  });
   el.querySelectorAll('[data-entrarcandidato]').forEach(btn=>{
-    btn.onclick=()=>{ const c=candidatos[Number(btn.dataset.entrarcandidato)]; if(c) abrirConfirmacaoCandidato(loja,c.item,c.cand); };
+    btn.onclick=()=>{
+      const [loja,idxStr]=btn.dataset.entrarcandidato.split('|');
+      const c=(candidatosPorLoja[loja]||[])[Number(idxStr)];
+      if(c) abrirConfirmacaoCandidato(loja,c.item,c.cand);
+    };
   });
 }
 function renderAll(){
