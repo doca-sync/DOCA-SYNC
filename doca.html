@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v436</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v437</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1260,19 +1260,13 @@ function migrar(){
        da semana atual" como conversão normal do próprio anúncio (ver ofertaComProblema). */
     if(p.mlVisitas30d===undefined) p.mlVisitas30d=null;
     /* NOVO 11/09 (aba Promoções): mlOriginalPrice vem do /sync (original_price em ml_produtos) -
-       null/undefined = sem promoção de preço ativa agora. descontoPromocao/precoFinalManual são
-       configurados 1x pelo Felipe direto na aba Promoções e reaproveitados pelo Doca sempre que
-       cria/renova uma campanha - "configura 1 vez, o Doca repete" (pedido dele). */
+       null/undefined = sem promoção de preço ativa agora. descontoPromocao é configurado 1x pelo
+       Felipe direto na aba Promoções e reaproveitado pelo Doca sempre que cria/renova uma
+       campanha - "configura 1 vez, o Doca repete" (pedido dele). SIMPLIFICADO 11/09 (3ª volta,
+       Felipe: "não dá pra deixar configurando só pelo desconto?"): chegou a existir um campo de
+       "preço final manual" (piso, depois preço direto) - removido, é só desconto% pra tudo agora. */
     if(p.mlOriginalPrice===undefined) p.mlOriginalPrice=null;
     if(p.descontoPromocao===undefined) p.descontoPromocao=null;
-    /* CORRIGIDO 11/09 (2ª volta, Felipe: "a coluna de preço mínimo não precisa, é o desconto% que
-       manda - mas tem produto tipo o Substrato que não tem desconto, já está configurado com o
-       valor final certo"): o campo que era "preço mínimo" (piso pra combinar com o desconto%)
-       virou "preço final manual" - quando preenchido, MANDA sozinho, sem precisar de desconto%
-       nenhum (pensado pra produto que o Felipe já sabe o valor final exato, sem calcular %). Migra
-       o valor já digitado no campo antigo (ex: Substrato=27.75) pra não perder o que já foi
-       configurado - o número não muda, só o que ele SIGNIFICA daqui pra frente. */
-    if(p.precoFinalManual===undefined) p.precoFinalManual=(typeof p.precoMinimoPromocao==='number')?p.precoMinimoPromocao:null;
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
     if(p.mlTransferencia===undefined) p.mlTransferencia=null;
@@ -12573,8 +12567,8 @@ function imprimirRelatorioEstoqueMinimo(loja){
    (vem do /sync, ver aplicarItemSincronizado) - vazio/null = sem promoção agora. Produto de R$19
    fica de fora da lista de propósito (Felipe: "produtos de 38 reais nunca devem ficar abaixo de
    19 reais" - quem já está em 19 não tem como aplicar desconto nenhum). (2) desconto/preço
-   final manual configurado 1 VEZ por produto (p.descontoPromocao/p.precoFinalManual - ver
-   defaults perto de mlVisitas30d), reaproveitado sempre que o Doca criar ou renovar campanha - "configura
+   desconto configurado 1 VEZ por produto (p.descontoPromocao - ver defaults perto de
+   mlVisitas30d), reaproveitado sempre que o Doca criar ou renovar campanha - "configura
    1 vez, o Doca repete". (3) nada é criado sozinho - sempre pede confirmação antes de qualquer
    chamada real no Mercado Livre (mesma filosofia adotada no Full depois de abandonar a detecção
    automática). Limite real do Mercado Livre, checado ao vivo em 11/09 (documentação oficial,
@@ -12592,16 +12586,12 @@ function produtosSemPromocao(loja){
   );
 }
 /* preço final calculado a partir da REGRA configurada 1x no produto - nunca vem de conta
-   automática de margem, exatamente como o Felipe pediu ("cada produto tem o seu"). Duas formas,
-   nessa ordem de prioridade:
-   1) precoFinalManual preenchido -> usa esse valor direto, ignora o desconto% (pensado pra
-      produto que já tem o valor final certo, tipo o Substrato, sem precisar calcular %).
-   2) senão, calcula a partir do descontoPromocao% em cima do preço atual do anúncio.
-   Ex: produto de R$38 com 50% de desconto -> preço final R$19, sem precisar digitar nada além
-   do desconto (o piso separado foi removido a pedido do Felipe, 11/09 - o desconto% já é
-   suficiente, e quem precisa de um valor fixo usa o preço final manual). */
+   automática de margem, exatamente como o Felipe pediu ("cada produto tem o seu"). SIMPLIFICADO
+   11/09 (3ª volta, Felipe: "não dá pra deixar configurando só pelo desconto?"): removido o campo
+   de preço final manual (existiu por 1 versão) - agora é só o descontoPromocao% em cima do preço
+   atual do anúncio, pra todo produto, sem exceção. Produto tipo o Substrato (que já tem um valor
+   final certo em mente) usa o % equivalente, calculado por quem configura. */
 function precoComDesconto(p){
-  if(typeof p.precoFinalManual==='number'&&p.precoFinalManual>0) return Math.round(p.precoFinalManual*100)/100;
   if(!(typeof p.mlPreco==='number')||!(p.descontoPromocao>0)) return null;
   return Math.round(p.mlPreco*(1-p.descontoPromocao/100)*100)/100;
 }
@@ -12728,17 +12718,15 @@ function renderPromocoes(){
     ${ativos.length?`<div class="aviso ok" style="margin-bottom:14px">✓ ${ativos.map(a=>`Campanha do Doca ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
     <div class="card-vg">
       <h3>Sem promoção ativa <span class="badge ${semPromo.length?'pend':'okv'}">${semPromo.length} produto(s)</span></h3>
-      <p class="sub">Anúncios ativos sem nenhuma promoção de preço rodando agora, separado por conta (produtos de R$19 ficam de fora — não é possível aplicar desconto neles). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha. Pra produto que já tem um valor final certo (sem precisar calcular %, tipo o Substrato), preencha direto o <b>preço final manual</b> — quando preenchido, ele manda sozinho e o desconto% é ignorado.</p>
+      <p class="sub">Anúncios ativos sem nenhuma promoção de preço rodando agora, separado por conta (produtos de R$19 ficam de fora — não é possível aplicar desconto neles). Preencha o <b>desconto %</b> de cada produto 1 vez só — o Doca reaproveita sempre que você criar ou renovar uma campanha.</p>
       ${semPromo.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-        <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço final manual</th><th class="num">Preço da promoção</th>
+        <th>SKU</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço da promoção</th>
       </tr></thead><tbody>${semPromo.map(p=>{
         const final=precoComDesconto(p);
-        const manual=typeof p.precoFinalManual==='number'&&p.precoFinalManual>0;
         return `<tr>
           <td class="mono">${esc(p.sku||p.codigo||'')}</td>
           <td class="num">${fmtMoney(p.mlPreco)}</td>
-          <td class="num"><input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%" ${manual?'disabled title="Preço final manual preenchido - desconto % ignorado"':''}></td>
-          <td class="num"><input type="number" min="0" step="0.01" style="width:76px;text-align:right" value="${p.precoFinalManual!=null?p.precoFinalManual:''}" data-precofinal="${p.id}" placeholder="opcional"></td>
+          <td class="num"><input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%"></td>
           <td class="num">${final!=null?('<b>'+fmtMoney(final)+'</b>'):'<span class="muted">configure o desconto</span>'}</td>
         </tr>`;
       }).join('')}</tbody></table></div>
@@ -12767,14 +12755,6 @@ function renderPromocoes(){
       const p=prodById(e.target.dataset.descontopromo); if(!p) return;
       const v=e.target.value===''?null:Number(e.target.value);
       p.descontoPromocao=(v!=null&&!isNaN(v)&&v>0)?Math.min(80,v):null;
-      persist();
-    };
-  });
-  el.querySelectorAll('[data-precofinal]').forEach(inp=>{
-    inp.onchange=e=>{
-      const p=prodById(e.target.dataset.precofinal); if(!p) return;
-      const v=e.target.value===''?null:Number(e.target.value);
-      p.precoFinalManual=(v!=null&&!isNaN(v)&&v>0)?v:null;
       persist();
     };
   });
