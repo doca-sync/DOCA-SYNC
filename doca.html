@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v448</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v449</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1267,6 +1267,11 @@ function migrar(){
        Felipe: "não dá pra deixar configurando só pelo desconto?"): chegou a existir um campo de
        "preço final manual" (piso, depois preço direto) - removido, é só desconto% pra tudo agora. */
     if(p.mlOriginalPrice===undefined) p.mlOriginalPrice=null;
+    /* CORRIGIDO 12/09: mlOriginalPrice não é confiável pra saber se tem promoção ativa (ver
+       comentário em produtosSemPromocao) - promocaoAtivaAgora é quem manda agora, gravado pela
+       automação do servidor a cada rodada. undefined/null = ainda não conferido (ou sem promoção
+       na última conferência) - tratado como "sem promoção" até a automação confirmar o contrário. */
+    if(p.promocaoAtivaAgora===undefined) p.promocaoAtivaAgora=null;
     if(p.descontoPromocao===undefined) p.descontoPromocao=null;
     if(p.mlAtualizadoEm===undefined) p.mlAtualizadoEm=null;
     if(p.mlACaminho===undefined) p.mlACaminho=null;
@@ -12605,10 +12610,18 @@ let promocaoDestravados=new Set();
    de desconto (não é possível promocionar esse preço, ver precoEhFixo19 abaixo). Lista ordenada
    do maior ticket pro menor. */
 function precoEhFixo19(p){ return typeof p.mlPreco==='number' && Math.abs(p.mlPreco-19)<0.005; }
+/* CORRIGIDO 12/09 (Felipe: card mostrando 74 produtos "sem promoção ativa" quando quase todos já
+   tinham, confirmado pelo Alicatinho da TorvShop): a checagem usava mlOriginalPrice, que vem do
+   /sync comum (item.original_price da API pública do Mercado Livre) - esse campo não reflete de
+   forma confiável promoções feitas por SELLER_CAMPAIGN/DEAL (mesmo problema que já tinha aparecido
+   antes e nos fez cruzar com o /promocao/status manualmente). Agora usa promocaoAtivaAgora, que a
+   PRÓPRIA automação grava no produto a cada rodada (7:30/12:30) depois de consultar o status de
+   verdade no Mercado Livre - ver rodarAutomacaoPromocoes no server.js. Só fica "pendente" quem a
+   automação realmente confirmou que não tem promoção, ou quem ainda não foi conferido nenhuma vez. */
 function produtosSemPromocao(loja){
   return state.produtos.filter(p=>
     p.loja===loja && !p.mlAusente && p.mlItemId && p.mlStatus==='active' &&
-    typeof p.mlPreco==='number' && p.mlOriginalPrice==null
+    typeof p.mlPreco==='number' && p.promocaoAtivaAgora!==true
   ).sort((a,b)=>b.mlPreco-a.mlPreco);
 }
 /* preço final calculado a partir da REGRA configurada 1x no produto - nunca vem de conta

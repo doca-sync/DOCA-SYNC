@@ -5279,6 +5279,14 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
     for (const p of elegiveis) {
       const st = await buscarStatusPromocaoItem(accessToken, p.mlItemId);
       if (!st.ok) { erros.push({ sku: p.sku || p.codigo, erro: st.erro }); continue; }
+      /* NOVO 12/09 (Felipe: card da Visão Geral mostrando 74 produtos "sem promoção ativa" quando
+         quase todos já tinham - o mlOriginalPrice, vindo do /sync normal via item.original_price,
+         não reflete de forma confiável promoções feitas por SELLER_CAMPAIGN/DEAL, o mesmo problema
+         que já tinha nos obrigado a cruzar com o /promocao/status manualmente antes. Agora que a
+         automação já consulta esse status de verdade em toda rodada, grava aqui o resultado
+         CONFIÁVEL (promocaoAtivaAgora) direto no produto - o doca.html passa a usar esse campo em
+         vez do mlOriginalPrice pra decidir quem está "sem promoção". */
+      if (p.promocaoAtivaAgora !== st.temPromocaoAtiva) { p.promocaoAtivaAgora = st.temPromocaoAtiva; mudou = true; }
       if (st.temPromocaoAtiva && !forcar) continue; // ja coberto - so entra de novo se for o teste forcado
       const candidatas = (st.candidatas || []).filter(c => TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR.includes(c.type) && (c.id || c.promotion_id));
       let entrouEmAlgo = false;
@@ -5296,6 +5304,7 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
           if (rItem.ok) {
             entrados.push({ sku: p.sku || p.codigo, campanha: cand.name || idCampanha, preco });
             entrouEmAlgo = true;
+            p.promocaoAtivaAgora = true;
             mudou = true;
             break; // 1 campanha nova por item ja basta nessa rodada
           } else {
@@ -5337,7 +5346,7 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
                 body: JSON.stringify({ promotion_id: campanha.id, promotion_type: 'SELLER_CAMPAIGN', deal_price: preco })
               });
               const jItem = await rItem.json();
-              if (rItem.ok) itensCriados.push({ ml_item_id: p.mlItemId, sku: p.sku || p.codigo, desconto: p.descontoPromocao, precoFinal: preco });
+              if (rItem.ok) { itensCriados.push({ ml_item_id: p.mlItemId, sku: p.sku || p.codigo, desconto: p.descontoPromocao, precoFinal: preco }); p.promocaoAtivaAgora = true; }
               else erros.push({ sku: p.sku || p.codigo, erro: JSON.stringify(jItem) });
             } catch (e) {
               erros.push({ sku: p.sku || p.codigo, erro: e.message });
