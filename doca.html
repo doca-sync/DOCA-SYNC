@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v449</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v450</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4363,7 +4363,17 @@ function renderDashboard(){
            o que já é venda perdida acontecendo. */
         /* AJUSTADO 03/09 (Felipe): o Mercado Livre pausa o anúncio sozinho quando o Full zera,
            então não existe "vendendo sem estoque" - a mensagem é só o fato: sem estoque. */
-        const semEstoqueFull=!(r.k&&r.k.full>0);
+        /* CORRIGIDO 14/09 (Felipe: card dizia "zera em 2 dias" no ESCOVACACHOS, mas o anúncio já
+           tinha sido pausado pelo próprio Mercado Livre por falta de estoque no Full - confirmado
+           direto na API: available_quantity=0, e os "32 em transferência" que o Doca ainda contava
+           como full não eram estoque de verdade chegando, eram estoque preso/saindo (not_available
+           status "transfer", sem garantia nenhuma de virar estoque vendável). r.k.full soma
+           aptas+transferência+em processamento - transferência pode ficar presa por dias sem nunca
+           virar estoque, e nesse meio tempo o ML já pausou o anúncio de verdade. Agora, se o próprio
+           Mercado Livre já pausou o anúncio (r.p.mlStatus==='paused', o mesmo dado 100% fresco que a
+           aba Produtos usa pra mostrar "Pausado"), o card confia nisso e mostra SEM ESTOQUE na hora,
+           mesmo que ainda sobre algum número de "em transferência" no cálculo. */
+        const semEstoqueFull=!(r.k&&r.k.full>0)||r.p.mlStatus==='paused';
         const zeraTxt=semEstoqueFull
           ?'<b class="pend">SEM ESTOQUE</b>'
           :(r.cobDias<=0?'<b>zerando agora</b>':`zera em <b>${r.cobDias} dia(s)</b>`);
