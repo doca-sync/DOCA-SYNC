@@ -405,16 +405,34 @@ async function processarReclamacaoAutomatico(loja, claim, accessToken) {
     await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: 'falha ao buscar o pedido: ' + e.message });
     return { claimId, erro: e.message };
   }
+  const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
+  const acoes = (respondent.available_actions || []).map(a => a.action);
   /* regra nova do Felipe (24/08): preco unitario do produto acima de R$20 NAO entra na resolucao
      automatica - fica pendente pra revisao manual mesmo (mesmo padrao de "sucesso:false com
      motivo" ja usado nos outros casos que pulam a automacao, pra aparecer certinho como pendente
-     na tela). Abaixo de R$20 continua tudo automatico como ja era. */
+     na tela). Abaixo de R$20 continua tudo automatico como ja era.
+     CORRIGIDO 14/09 (Felipe: "tem reclamações que o próprio Mercado Livre já resolve, como as da
+     TorvStore - quero que apareça só as que realmente precisam de revisão, como as da Dor Block"):
+     confirmado com dado real (/debug/claims/buscar) que as reclamações "falso positivo" da
+     TorvStore eram todas type=mediations/stage=dispute com available_actions=[] pro vendedor - ou
+     seja, a reclamação já virou mediação e o Mercado Livre (mediador) é quem decide sozinho; não
+     existe NENHUM botão/ação que o vendedor (nem o Felipe manualmente) poderia tomar. Marcar isso
+     como "precisa revisão manual" é enganoso - não há o que revisar, só esperar o mediador decidir.
+     Antes, a regra do R$20 cortava ANTES de olhar as ações disponíveis, então toda reclamação
+     acima de R$20 virava "pendente" igual, tivesse ação disponível ou não. Agora: só entra como
+     "pendente de revisão manual" de verdade quando existe pelo menos 1 ação disponível pro vendedor
+     (ex: refund) que o Felipe poderia tomar na mão mas o Doca não toma sozinho por ser >R$20. Sem
+     nenhuma ação disponível (mediação em aberto, sem botão nenhum) conta como resolvida da nossa
+     parte (nada a fazer), só que com motivo deixando claro que está em mediação aguardando o
+     Mercado Livre - não confundir com "resolvida" de verdade (comprador ganhou/perdeu). */
   if (valorVenda > 20) {
-    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: `Produto de R$${valorVenda.toFixed(2).replace('.', ',')} (acima de R$20) - fora da regra automática, precisa revisão manual` });
+    if (!acoes.length) {
+      await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, acaoTomada: 'nenhuma - em mediação com o Mercado Livre', sucesso: true, motivo: `Produto de R$${valorVenda.toFixed(2).replace('.', ',')} (acima de R$20), mas sem nenhuma ação disponível pro vendedor (estágio: ${claim.stage || '?'}) - já está em mediação, o Mercado Livre decide sozinho, nada pra revisar da nossa parte` });
+      return { claimId, ok: true, acao: 'em-mediacao-sem-acao' };
+    }
+    await salvarLogReclamacao(loja, claimId, { orderId, reasonId: claim.reason_id, sucesso: false, motivo: `Produto de R$${valorVenda.toFixed(2).replace('.', ',')} (acima de R$20) - fora da regra automática, precisa revisão manual (ações disponíveis: ${acoes.join(', ')})` });
     return { claimId, pulado: true, motivo: 'valor da venda acima de R$20 - revisao manual' };
   }
-  const respondent = (claim.players || []).find(p => p.role === 'respondent') || {};
-  const acoes = (respondent.available_actions || []).map(a => a.action);
   /* CORRIGIDO 26/08 de novo (insight do Felipe, apos o erro real da claim 5565994624/R$9,36): a
      decisao NAO tenta mais PREVER se o frete de devolucao seria gratis (tentativa anterior usava
      base_cost do shipment - ver historico) - previsao de custo se mostrou pouco confiavel (foi
