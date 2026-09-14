@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v450</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v451</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6015,6 +6015,40 @@ function tetoAdsDoItem(p,aliquota,it){
   if(!m||!(m.margemPct>0)) return null;
   return {metaPct:m.metaPct,teto:valor*(m.metaPct/100),margemUnit:m.margemUnit,margemPct:m.margemPct,detalhe:m};
 }
+/* META DE TACOS DA CONTA (pedido do Felipe 14/09: "como cada anúncio tem a sua, quero uma meta
+   global da conta, e no fim do relatório a meta das 4 contas juntas") - cada produto já tem sua
+   própria meta de TACOS (1/3 da margem unitária dele - ver metaTacosUnit), mas não faz sentido
+   somar % de produtos diferentes direto; pondera cada meta pelo FATURAMENTO do produto no período
+   (mesmo princípio que já existe pra campanha em metaTacosCampanha, só que aqui olha TODOS os
+   produtos vendidos da loja no período, não só os de 1 campanha só). Devolve null quando não há
+   nenhum produto com meta calculável (sem venda, ou sem preço/custo suficiente pra calcular). */
+function metaTacosConta(loja,itensVendidos){
+  const aliquota=finLoja(loja).aliquotaImposto||0;
+  const linhas=(itensVendidos||[]).map(it=>{
+    const qtd=it.qtd||0, valor=it.valor||0;
+    if(!(qtd>0&&valor>0)) return null;
+    const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+    const m=metaTacosUnit(p,aliquota,{precoUnit:valor/qtd,comissaoUnit:(it.tarifa||0)/qtd,freteUnit:(it.freteMl||0)/qtd});
+    return m?{valor,metaPct:m.metaPct}:null;
+  }).filter(Boolean);
+  if(!linhas.length) return null;
+  const somaValor=linhas.reduce((s,l)=>s+l.valor,0);
+  const somaMetaReais=linhas.reduce((s,l)=>s+l.valor*l.metaPct/100,0);
+  return somaValor>0?(somaMetaReais/somaValor*100):null;
+}
+/* meta de TACOS combinada de VÁRIAS lojas de uma vez (usado no total geral do fechamento das 4
+   contas) - mesmo princípio, ponderado pelo faturamento de cada loja no período. Recebe já o
+   resultado por loja no formato {loja,faturamento,itensVendidos} pra não recalcular o resumo. */
+function metaTacosContaTotal(lojas){
+  const linhas=lojas.map(l=>{
+    const m=metaTacosConta(l.loja,l.itensVendidos);
+    return (m!=null&&l.faturamento>0)?{faturamento:l.faturamento,metaPct:m}:null;
+  }).filter(Boolean);
+  if(!linhas.length) return null;
+  const somaFat=linhas.reduce((s,l)=>s+l.faturamento,0);
+  const somaMetaReais=linhas.reduce((s,l)=>s+l.faturamento*l.metaPct/100,0);
+  return somaFat>0?(somaMetaReais/somaFat*100):null;
+}
 function metaTacosPorProduto(camp,loja){
   if(!adsLucroResultado) return [];
   const aliquota=finLoja(loja).aliquotaImposto||0;
@@ -8903,6 +8937,13 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     });
     const gastoAds=r.resumo.ads&&r.resumo.ads.custo||0;
     const margemPosAds=r.m.margem-gastoAds;
+    /* META/TACOS DA CONTA (pedido do Felipe 14/09) - ver metaTacosConta/metaTacosContaTotal. Meta
+       pondera a meta de cada produto vendido no período pelo faturamento dele; TACOS real da conta
+       é simplesmente Ads ÷ Faturamento da loja inteira no período (mesma conta que já aparecia
+       como "% do faturamento" embaixo de Gasto em Ads, só que agora nomeada e comparada com a
+       meta). null quando não dá pra calcular (sem venda no período). */
+    const metaTacosContaPct=metaTacosConta(r.loja,r.resumo.itensVendidos);
+    const tacosRealContaPct=r.resumo.faturamento>0?(gastoAds/r.resumo.faturamento*100):null;
     /* só no relatório de fechamento (não na tela de Finanças) - pedido do Felipe 19/08: mostrar
        as DUAS versões da Margem Líquida lado a lado. "custo total" desconta despesas + fatura ML
        do MÊS INTEIRO em valor cheio. "rateada" pega esse mesmo total e divide pelos dias do mês,
@@ -8911,7 +8952,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
        pedido do Felipe): agora rateia despesas e fatura ML igual (calculado dentro de
        calcularMargensResumo) - antes só a fatura ML era rateada, então com período "Hoje" uma
        despesa mensal inteira caía sobre 1 dia de faturamento e dava número sem sentido. */
-    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada:r.m.margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo),
+    return {loja:r.loja,pedidos:r.resumo.pedidosValidos||0,unidades,faturamento:r.resumo.faturamento,margem:r.m.margem,margemPosAds,gastoAds,metaTacosContaPct,tacosRealContaPct,itensVendidos:r.resumo.itensVendidos,margemLiquidaTotal:r.m.margemLiquida,margemLiquidaRateada:r.m.margemLiquidaRateada,produtos,unidSemCusto:r.m.unidSemCusto||0,porSocio:r.porSocio,fonte:rotuloFonteFechamento(r.resumo),
       // guardado só pra mostrar o detalhamento embaixo dos cards (diagnóstico visual - pedido do
       // Felipe 26/08 pra conseguir ver DE ONDE vem cada dedução sem precisar bater conta manual)
       custosPeriodo:r.m.custosPeriodo,faturaMlPeriodo:r.m.faturaMlPeriodo,custosRateado:r.m.custosRateado,faturaMlRateada:r.m.faturaMlRateada,mesDe:r.m.mesDe,mesAte:r.m.mesAte,diasMes:r.m.diasMes,diasSel:r.m.diasSel};
@@ -8932,10 +8973,19 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
   const totalGastoAds=porLoja.reduce((s,r)=>s+r.gastoAds,0);
   const totalMargemLiquidaTotal=porLoja.reduce((s,r)=>s+r.margemLiquidaTotal,0);
   const totalMargemLiquidaRateada=porLoja.reduce((s,r)=>s+r.margemLiquidaRateada,0);
+  /* META DE TACOS DAS 4 CONTAS JUNTAS (pedido do Felipe 14/09) - pondera a meta de cada loja
+     (já calculada acima) pelo faturamento dela, mesmo princípio de metaTacosConta um nível acima
+     - ver metaTacosContaTotal. */
+  const totalMetaTacosPct=metaTacosContaTotal(porLoja);
+  const totalTacosRealPct=totalFat>0?(totalGastoAds/totalFat*100):null;
   const rotulos={hoje:'Hoje',ontem:'Ontem','7d':'Últimos 7 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
   const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
   const metrica=(lbl,val,neg,pctVal)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val${neg?' neg':''}">${val}</div>${pctVal!=null?`<div class="pctv">${pctVal.toFixed(1)}% do faturamento</div>`:''}</div>`;
   const pctDe=(v,fat)=>fat>0?(v/fat*100):0;
+  /* META DE TACOS DA CONTA, lado a lado com o realizado (pedido do Felipe 14/09) - mesmo padrão
+     visual usado na tabela de produtos (verde dentro da meta, vermelho fora), só que aqui é 1
+     número só representando a conta inteira (ou todas as 4 juntas, no total geral). */
+  const metricaTacos=(lbl,metaPct,realPct)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val">${metaPct==null?'—':metaPct.toFixed(1)+'%'}</div><div class="pctv">meta ponderada pelo faturamento${realPct!=null?` · real: <b style="color:${metaPct!=null&&realPct<=metaPct?'var(--ok)':'var(--danger)'}">${realPct.toFixed(1)}%</b>`:''}</div></div>`;
   const cardLoja=r=>`<div class="loja-card">
       <h2>${esc(r.loja)}</h2>
       <div class="metrics">
@@ -8945,6 +8995,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Contribuição',fmtMoney(r.margem),r.margem<0,pctDe(r.margem,r.faturamento))}
         ${metrica('Margem pós Ads',fmtMoney(r.margemPosAds),r.margemPosAds<0,pctDe(r.margemPosAds,r.faturamento))}
         ${metrica('Gasto em Ads',fmtMoney(r.gastoAds),false,pctDe(r.gastoAds,r.faturamento))}
+        ${metricaTacos('Meta de TACOS (conta)',r.metaTacosContaPct,r.tacosRealContaPct)}
         ${metrica('Margem Líquida (rateada)',fmtMoney(r.margemLiquidaRateada),r.margemLiquidaRateada<0,pctDe(r.margemLiquidaRateada,r.faturamento))}
         ${metrica('Margem Líquida (custo total)',fmtMoney(r.margemLiquidaTotal),r.margemLiquidaTotal<0,pctDe(r.margemLiquidaTotal,r.faturamento))}
       </div>
@@ -8985,6 +9036,7 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
         ${metrica('Margem Contribuição',fmtMoney(totalMargem),totalMargem<0,pctDe(totalMargem,totalFat))}
         ${metrica('Margem pós Ads',fmtMoney(totalMargemPosAds),totalMargemPosAds<0,pctDe(totalMargemPosAds,totalFat))}
         ${metrica('Gasto em Ads',fmtMoney(totalGastoAds),false,pctDe(totalGastoAds,totalFat))}
+        ${metricaTacos('Meta de TACOS (4 contas)',totalMetaTacosPct,totalTacosRealPct)}
         ${metrica('Margem Líquida (rateada)',fmtMoney(totalMargemLiquidaRateada),totalMargemLiquidaRateada<0,pctDe(totalMargemLiquidaRateada,totalFat))}
         ${metrica('Margem Líquida (custo total)',fmtMoney(totalMargemLiquidaTotal),totalMargemLiquidaTotal<0,pctDe(totalMargemLiquidaTotal,totalFat))}
       </div>
@@ -9363,6 +9415,13 @@ function renderResumoFinanceiroResultado(resumo,loja){
      era rateada e a despesa entrava no valor cheio, o que gerava número sem sentido (ex: descontar
      uma despesa mensal inteira de 1 dia de faturamento só porque venceu bem naquele dia). */
   const margemLiquidaRateadaPct=resumo.faturamento>0?(margemLiquidaRateada/resumo.faturamento*100):0;
+  /* META DE TACOS DA CONTA (pedido do Felipe 14/09: "quero uma meta global de tacos da conta, já
+     que cada anúncio tem a sua") - ver metaTacosConta. Pondera a meta individual (1/3 da margem)
+     de cada produto vendido no período pelo faturamento dele; o realizado é simplesmente
+     Ads ÷ Faturamento da loja inteira (a mesma conta que já aparecia solta como "% do faturamento"
+     do card ADS logo abaixo, agora comparada lado a lado com a meta). */
+  const metaTacosContaPct=metaTacosConta(loja,resumo.itensVendidos);
+  const tacosRealContaPct=resumo.faturamento>0?(resumo.ads.custo/resumo.faturamento*100):null;
   const pct=v=>resumo.faturamento>0?(v/resumo.faturamento*100).toFixed(1)+'% do faturamento':'';
   const cartao=(titulo,valor,sub)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px">${fmtMoney(valor)}</b>${sub?`<div class="hint" style="margin:2px 0 0;font-size:11px">${sub}</div>`:''}</div>`;
   /* badge ▲/▼ comparando com o período anterior equivalente (mesmo tanto de dias, logo antes) -
@@ -9401,6 +9460,7 @@ function renderResumoFinanceiroResultado(resumo,loja){
         <b style="font-size:22px" class="${margem>=0?'okv':'pend'}">${fmtMoney(margem)}</b>
         <div class="hint" style="margin:2px 0 0">${margemPct.toFixed(1)}% do faturamento${badge(margem,margensAnt?margensAnt.margem:null,false)}</div>
         <div class="hint" style="margin:2px 0 0" title="Margem de Contribuição menos o gasto de Ads do período - só informativo, não desconta de novo na Margem Líquida (que já desconta via fatura ML pendente)">Margem pós Ads: <b class="${margemPosAds>=0?'okv':'pend'}">${fmtMoney(margemPosAds)}</b> (${margemPosAdsPct.toFixed(1)}% do faturamento)</div>
+        <div class="hint" style="margin:2px 0 0" title="Meta pondera a meta de TACOS de cada produto vendido no período (1/3 da margem unitária dele) pelo faturamento — não é mais configurável direto, sai sozinha da margem de cada anúncio.">Meta de TACOS da conta: <b>${metaTacosContaPct==null?'—':metaTacosContaPct.toFixed(1)+'%'}</b>${tacosRealContaPct!=null?` · real: <b class="${metaTacosContaPct!=null&&tacosRealContaPct<=metaTacosContaPct?'okv':'pend'}">${tacosRealContaPct.toFixed(1)}%</b>`:''}</div>
       </div>
       <div class="card" style="margin:0">
         <div class="muted" style="font-size:11px">MARGEM LÍQUIDA (RATEADA)</div>
