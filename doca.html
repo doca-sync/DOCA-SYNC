@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v451</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v452</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12106,10 +12106,20 @@ function renderPrevisao(){
   const c=fullCfg(), R=fullResumo(), D=Math.max(0,diasEntre(hoje(),c.envio));
   const l=fullItensLoja().map(i=>({i,k:fullCalc(i)})).sort((a,b)=>{
     if(fFiltro.ordem==='ruptura'){
-      const ra=a.k.rompe?1:0, rb=b.k.rompe?1:0;
-      if(ra!==rb) return rb-ra;
-      if(a.k.rompe&&b.k.rompe) return (a.k.diaRuptura||'9999-99-99').localeCompare(b.k.diaRuptura||'9999-99-99');
-      return b.k.qtd-a.k.qtd;
+      /* CORRIGIDO 16/09 (Felipe: "dia 8 é antes do dia 11", ESPONJAMANGA de 08/10 aparecendo
+         depois de ESCOVACACHOS de 11/10): a ordenação só comparava datas entre quem "rompe"
+         (k.rompe = zera ANTES do envio programado) - quem não rompe (estoque aguenta até depois
+         do envio) caía num critério totalmente diferente (quantidade a enviar), misturando duas
+         réguas na mesma lista e resultando em datas fora de ordem pra quem não rompe. k.aguentaAte
+         é a MESMA data projetada de zerar (ver fullCalc), só que calculada sempre - rompendo antes
+         do envio ou não - então dá pra ordenar TUDO por essa única data, sem precisar separar em
+         dois grupos: quem zera mais cedo (rompendo ou não) sobe pro topo sozinho. Quem não tem
+         média de venda (sem projeção possível) fica sempre por último. */
+      const da=a.k.aguentaAte, db=b.k.aguentaAte;
+      if(da==null&&db==null) return b.k.qtd-a.k.qtd;
+      if(da==null) return 1;
+      if(db==null) return -1;
+      return da.localeCompare(db);
     }
     if(fFiltro.ordem==='curva') return b.k.media-a.k.media;
     return b.k.qtd-a.k.qtd;
