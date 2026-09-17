@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v456</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v457</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2797,10 +2797,16 @@ function removerCompraDoEnvio(p,envioId,qtd){
   }
   sincronizarPedidos(p);
 }
-function reverterItem(item,envioId){
+function reverterItem(item,envioId,manterCompra){
   const p=prodById(item.produtoId); if(!p) return;
   p.qtd.local+=(item.alocado||0);
-  if(item.geradoCompra>0) removerCompraDoEnvio(p,envioId,item.geradoCompra);
+  /* CORRIGIDO 17/09 (Felipe: "quando remover produtos de algum full programado e tiver produtos
+     programados pra comprar, aparecer a mensagem se é pra remover de comprar ou manter"):
+     manterCompra permite preservar a ordem de compra já gerada (aba Comprar) mesmo removendo o
+     item deste envio - útil quando o produto ainda vai ser comprado de qualquer forma, só não
+     mais dentro DESTE envio específico. Default (sem passar nada) continua removendo a compra
+     junto, igual sempre foi - só quem explicitamente pede pra manter é que muda o comportamento. */
+  if(!manterCompra&&item.geradoCompra>0) removerCompraDoEnvio(p,envioId,item.geradoCompra);
   p.atualizadoEm=Date.now();
 }
 function cancelarEnvio(envioId){
@@ -2825,12 +2831,12 @@ function itensDoGrupoKit(envio,kitItemId){
 }
 /* remove o kit inteiro (guarda-chuva + componentes) de um envio - reverte cada peça pro
    estoque/compra antes de tirar da lista, igual removerItemEnvio faria pra cada uma. */
-function removerGrupoKitEnvio(envioId,kitItemId){
+function removerGrupoKitEnvio(envioId,kitItemId,manterCompra){
   const e=envioById(envioId); if(!e) return;
   const grupo=itensDoGrupoKit(e,kitItemId);
   const kit=grupo.find(i=>i.id===kitItemId), p=kit&&prodById(kit.produtoId);
   snapshot('remoção do kit '+(p?p.sku:'')+' do envio '+e.nome);
-  grupo.forEach(it=>reverterItem(it,envioId));
+  grupo.forEach(it=>reverterItem(it,envioId,manterCompra));
   const idsGrupo=new Set(grupo.map(i=>i.id));
   e.itens=e.itens.filter(i=>!idsGrupo.has(i.id));
   persist();
@@ -2880,12 +2886,12 @@ function moverGrupoKitEnvio(envioIdOrigem,kitItemId,envioIdDestino){
   persist();
   return {ok:true,sku:p.sku,qtd:kit.solicitado||0,destinoNome:ed.nome};
 }
-function removerItemEnvio(envioId,itemId){
+function removerItemEnvio(envioId,itemId,manterCompra){
   const e=envioById(envioId); if(!e) return;
   const it=e.itens.find(i=>i.id===itemId); if(!it) return;
   const p=prodById(it.produtoId);
   snapshot('remoção de '+(p?p.sku:'item')+' do envio '+e.nome);
-  reverterItem(it,envioId);
+  reverterItem(it,envioId,manterCompra);
   e.itens=e.itens.filter(i=>i.id!==itemId);
   persist();
 }
@@ -10805,10 +10811,7 @@ function renderEnvio(){
   });
   el.querySelectorAll('[data-remitem]').forEach(b=>b.onclick=()=>{
     const [eid,iid]=b.dataset.remitem.split('|');
-    const e=envioById(eid), it=e.itens.find(i=>i.id===iid), p=prodById(it.produtoId);
-    confirmAction(`Remover esta programação de ${p.sku} (${fmtInt(it.solicitado)} un.) do envio "${e.nome}"? ${fmtInt(it.alocado||0)} un. voltam pro Local${it.reservadoColeta?`, ${fmtInt(it.reservadoColeta)} un. voltam a ficar livres em Coletar`:''}${it.geradoCompra?` e ${fmtInt(it.geradoCompra)} un. saem de Comprar`:''}.`,()=>{
-      removerItemEnvio(eid,iid); toast('Programação removida do envio.');
-    });
+    modalRemoverItemEnvio(eid,iid,false);
   });
   el.querySelectorAll('[data-movitem]').forEach(b=>b.onclick=()=>{
     const [eid,iid]=b.dataset.movitem.split('|');
@@ -10831,10 +10834,7 @@ function renderEnvio(){
   });
   el.querySelectorAll('[data-remkit]').forEach(b=>b.onclick=()=>{
     const [eid,iid]=b.dataset.remkit.split('|');
-    const e=envioById(eid); const it=e.itens.find(i=>i.id===iid); const p=prodById(it.produtoId);
-    confirmAction(`Remover o kit ${p.sku} (${fmtInt(it.solicitado)} un.) do envio "${e.nome}"? Libera de volta o estoque/compra de cada componente.`,()=>{
-      removerGrupoKitEnvio(eid,iid); toast('Kit removido do envio.'); renderEnvio();
-    });
+    modalRemoverItemEnvio(eid,iid,true);
   });
   el.querySelectorAll('[data-envkitdet]').forEach(b=>b.onclick=()=>{
     const id=b.dataset.envkitdet;
@@ -10893,38 +10893,41 @@ function renderEnvio(){
     });
   });
 }
-function modalRecalculo(envioId,novaData,localColeta,r){
-  const e=envioById(envioId);
-  const body=openModal(true);
-  const desc=c=>{
-    if(c.semMedia) return '<span style="opacity:.5">sem média guardada — fica igual</span>';
-    if(c.dif>0) return '<span class="okv">+'+fmtInt(c.dif)+' — reserva ou ordem de compra</span>';
-    if(c.dif<0) return '<span class="okv">'+fmtInt(c.dif)+' — sai da compra ou volta ao disponível</span>';
-    return '<span style="opacity:.5">sem mudança</span>';
-  };
-  const soma=r.linhas.reduce((a,l)=>a+Math.max(0,l.dif),0), sub=r.linhas.reduce((a,l)=>a+Math.max(0,-l.dif),0);
-  body.innerHTML=`<h3>Nova data: ${fmtData(novaData)}</h3>
-    <p class="hint" style="margin:0 0 12px">De ${fmtData(e.data)} para ${fmtData(novaData)} · agora são <b>${r.D} dia(s)</b> até o envio ·
-      cobertura de <b>${r.cob}</b> dias. O sistema refez as quantidades pela média de vendas guardada quando este envio foi criado.</p>
-    <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-      <th>SKU</th><th class="num">Vendas/dia</th><th class="num">Hoje</th><th class="num">Nova</th><th class="num">Diferença</th><th>O que acontece</th>
-    </tr></thead><tbody>${r.linhas.map(c=>`<tr${c.dif===0?' style="opacity:.45"':''}>
-      <td class="mono">${esc(c.produto.sku)}</td><td class="num">${c.media!=null?c.media.toFixed(2):'—'}</td>
-      <td class="num">${fmtInt(c.atual)}</td><td class="num">${fmtInt(c.novo)}</td>
-      <td class="num"><b>${c.dif>0?'+':''}${fmtInt(c.dif)}</b></td><td>${desc(c)}</td></tr>`).join('')}</tbody></table></div>
-    <div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>Total: <b>+${fmtInt(soma)}</b> un. a mais${sub?` e <b>${fmtInt(sub)}</b> un. liberadas`:''}. O que aumentar sai do galpão, depois do Coletar, e só o resto vira ordem de compra.</span></div>
-    <div class="modal-actions"><button class="btn" id="btnRecCanc">Cancelar</button>
-      <button class="btn" id="btnRecSo">Só mudar a data</button>
-      <button class="btn gold" id="btnRecOk">Aplicar e recalcular</button></div>`;
-  document.getElementById('btnRecCanc').onclick=closeModal;
-  document.getElementById('btnRecSo').onclick=()=>{ editarEnvio(envioId,{nome:fmtData(novaData),data:novaData,localColeta}); closeModal(); toast('Data alterada. As quantidades ficaram como estavam.'); };
-  document.getElementById('btnRecOk').onclick=()=>{
-    const res=aplicarRecalculo(envioId,novaData);
-    if(localColeta) editarEnvio(envioId,{localColeta});
+/* CORRIGIDO 17/09 (Felipe: "editar somente a data do envio e manter os produtos já cadastrados
+   no envio"): existia um modal de "recalcular" que refazia as quantidades de todo mundo sempre
+   que a data de um envio já criado mudava, podendo até mudar quantidade de itens que o Felipe já
+   tinha revisado/ajustado. Removido - mudar a data de um envio agora SÓ muda a data (ver
+   openEnvioModal), nunca mais mexe em quantidade/reserva/compra sozinho. */
+/* modal usado ao remover 1 item (ou 1 kit inteiro) de um envio programado - pedido do Felipe
+   17/09: "quando remover produtos de algum full programado e tiver produtos programados pra
+   comprar na aba comprar, aparecer a mensagem se é pra remover de comprar ou manter". Antes, tirar
+   um item do envio sempre cancelava a ordem de compra ligada a ele (reverterItem) sem perguntar -
+   às vezes o produto ainda vai ser comprado de qualquer forma, só não mais dentro deste envio
+   específico. kit=true trata o item como o guarda-chuva de um kit (usa removerGrupoKitEnvio). */
+function modalRemoverItemEnvio(envioId,itemId,kit){
+  const e=envioById(envioId); if(!e) return;
+  const it=e.itens.find(i=>i.id===itemId); if(!it) return;
+  const p=prodById(it.produtoId); if(!p) return;
+  const temCompra=(it.geradoCompra||0)>0;
+  const body=openModal(false);
+  const resumoLiberado=`${fmtInt(it.alocado||0)} un. voltam pro Local${it.reservadoColeta?`, ${fmtInt(it.reservadoColeta)} un. voltam a ficar livres em Coletar`:''}`;
+  body.innerHTML=`<h3>Remover ${kit?'kit':'programação'}</h3>
+    <p class="hint" style="margin:0 0 12px">Remover ${esc(p.sku)} (${fmtInt(it.solicitado)} un.) do envio "${esc(e.nome)}"? ${resumoLiberado}.</p>
+    ${temCompra?`<div class="aviso atencao"><span>⚠</span><span>Este item tem <b>${fmtInt(it.geradoCompra)} un.</b> geradas como ordem de compra na aba <b>Comprar</b>. O que fazer com essa ordem?</span></div>`:''}
+    <div class="modal-actions">
+      <button class="btn" id="mriCanc">Cancelar</button>
+      ${temCompra?`<button class="btn" id="mriManter">Remover, manter em Comprar</button><button class="btn danger" id="mriTirar">Remover e tirar de Comprar</button>`
+        :`<button class="btn danger" id="mriTirar">Remover</button>`}
+    </div>`;
+  document.getElementById('mriCanc').onclick=closeModal;
+  const doRemover=manterCompra=>{
+    if(kit) removerGrupoKitEnvio(envioId,itemId,manterCompra); else removerItemEnvio(envioId,itemId,manterCompra);
     closeModal();
-    if(!res.ok){ alert(res.msg); return; }
-    toast(`Envio recalculado para ${fmtData(novaData)}.`+(res.soma?` +${fmtInt(res.soma)} un.`:'')+(res.sub?` −${fmtInt(res.sub)} un. liberadas.`:''));
+    toast(manterCompra?'Programação removida do envio — a ordem de compra continua na aba Comprar.':'Programação removida do envio.');
+    renderEnvio();
   };
+  document.getElementById('mriTirar').onclick=()=>doRemover(false);
+  if(temCompra) document.getElementById('mriManter').onclick=()=>doRemover(true);
 }
 /* modal do botão "↦ Mover" na linha do item, dentro de Envios FULL: mover pra outro envio já
    programado da mesma loja, ou criar um FULL de emergência separado só com este item (pra
@@ -10999,7 +11002,6 @@ function openEnvioModal(id,lojaPadrao){
       <label class="span2">Local da coleta<select id="eColeta">${optsColeta(e?e.localColeta:LOCAIS_COLETA[0])}</select></label>
     </div>
     ${e?'<p class="hint">A loja não pode ser alterada porque os SKUs já reservados pertencem a ela. Se precisar trocar, cancele e crie outro envio.</p>':''}
-    ${e&&e.medias?'<div class="aviso" style="margin:0 0 4px"><span>ℹ</span><span>Este envio veio da <b>Previsão FULL</b>. Se mudar a data, o sistema refaz as quantidades pela média de vendas guardada e mostra a comparação antes de aplicar.</span></div>':''}
     <div class="modal-actions"><button class="btn" id="btnCancelar">Cancelar</button>
       <button class="btn acc" id="btnCriarEnvio">${e?'Salvar alterações':'Criar envio'}</button></div>`;
   document.getElementById('btnCancelar').onclick=closeModal;
@@ -11007,10 +11009,9 @@ function openEnvioModal(id,lojaPadrao){
     const data=document.getElementById('eData').value;
     const localColeta=document.getElementById('eColeta').value;
     const nome=fmtData(data);
-    if(e&&e.medias&&data&&data!==e.data){
-      const r=recalcularEnvioPorData(id,data);
-      if(r.ok&&r.mudou.length){ closeModal(); modalRecalculo(id,data,localColeta,r); return; }
-    }
+    /* CORRIGIDO 17/09 (Felipe: "editar somente a data do envio e manter os produtos já
+       cadastrados no envio"): mudar a data aqui NUNCA mais recalcula quantidade - só atualiza a
+       data/nome/local de coleta do envio, os itens ficam exatamente como estavam. */
     if(e){ editarEnvio(id,{nome,data,localColeta}); closeModal(); toast('Envio atualizado.'); }
     else{
       const loja=document.getElementById('eLoja').value;
@@ -11425,8 +11426,11 @@ function mediaHistorica(i,n){
   return {media:h.reduce((a,x)=>a+x.media,0)/h.length,leituras:h.length,desde:h[0].data};
 }
 /* cria o envio no Doca direto da previsão */
-function criarFullDaPrevisao(loja,data,localColeta){
-  const l=fullItensLoja(loja).map(i=>({i,k:fullCalc(i)})).filter(x=>x.k.qtd>0);
+function criarFullDaPrevisao(loja,data,localColeta,lPreCalc){
+  /* lPreCalc (17/09): permite passar a lista já calculada pelo modal "Criar Full no Doca" -
+     ver comentário em modalCriarFull sobre por que a quantidade não deve mais depender da data
+     escolhida DENTRO do modal. Sem lPreCalc (outros usos futuros), calcula do jeito de sempre. */
+  const l=lPreCalc||fullItensLoja(loja).map(i=>({i,k:fullCalc(i)})).filter(x=>x.k.qtd>0);
   if(!l.length) return {ok:false,msg:'Nenhum produto com quantidade a enviar nesta loja.'};
   let criados=0,ger=0,cam=0,alo=0;
   const nome=fmtData(data);
@@ -11508,39 +11512,6 @@ function criarFullEmergencia(loja,data,localColeta){
   });
   return {ok:true,envio,criados:0,alocado:alo,aCaminho:cam,gerado:ger,itens:l.length};
 }
-/* recalcula um envio da Previsão para uma nova data — só calcula, não altera */
-function recalcularEnvioPorData(envioId,novaData){
-  const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
-  if(!e.medias) return {ok:false,msg:'Este envio não veio da Previsão FULL, então não há média de vendas guardada para recalcular.'};
-  const D=Math.max(0,diasEntre(hoje(),novaData));
-  const cob=fullCfg().cobertura||30;
-  const linhas=[];
-  e.itens.forEach(it=>{
-    const p=prodById(it.produtoId); if(!p) return;
-    const m=e.medias[p.id]; if(!m) { linhas.push({item:it,produto:p,atual:it.solicitado,novo:it.solicitado,dif:0,semMedia:true}); return; }
-    const proj=(m.full||0)-m.media*D;
-    const bruto=m.media*cob-proj;
-    const novo=bruto>0?Math.ceil(bruto):0;
-    linhas.push({item:it,produto:p,media:m.media,atual:it.solicitado||0,novo,dif:novo-(it.solicitado||0)});
-  });
-  return {ok:true,D,cob,linhas,mudou:linhas.filter(l=>l.dif!==0)};
-}
-function aplicarRecalculo(envioId,novaData){
-  const r=recalcularEnvioPorData(envioId,novaData);
-  if(!r.ok) return r;
-  const e=envioById(envioId);
-  let soma=0,sub=0;
-  batch('mudança da data do envio '+e.nome+' para '+fmtData(novaData),()=>{
-    r.linhas.forEach(l=>{
-      if(l.dif===0) return;
-      aplicarAjusteItem(e,l.item,l.produto,l.novo);
-      if(l.dif>0) soma+=l.dif; else sub+=-l.dif;
-    });
-    if(e.data!==novaData) e.coletaConfirmada=false; /* ver comentário em editarEnvio */
-    e.data=novaData; e.nome=fmtData(novaData);
-  });
-  return {ok:true,soma,sub};
-}
 /* ---------- Previsão FULL: prompt, importação, inbound, criar envio ---------- */
 function copiarTexto(t,msg){
   if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(()=>toast(msg||'Copiado.'),()=>fallbackCopia(t,msg));
@@ -11564,23 +11535,25 @@ function abrirCriarFull(){
 }
 function modalCriarFull(l0,c){
   const body=openModal(true);
-  let dataAtual=c.envio;
-  /* recalcula tudo (resumo + tabela) pra uma data — chamado de novo toda vez que a pessoa
-     muda a data do envio no modal, sem precisar fechar/reabrir pra ver a sugestão certa */
-  function calcular(data){
-    return fullItensLoja(c.loja).map(i=>({i,k:fullCalc(i,data)})).filter(x=>x.k.qtd>0);
-  }
-  function renderCorpo(data){
-    const l=calcular(data);
+  const dataInicial=c.envio;
+  /* CORRIGIDO 17/09 (Felipe: "editar somente a data do envio e manter os produtos já cadastrados
+     no envio"): l0 já vem pronta de abrirCriarFull, calculada com a data configurada na Previsão
+     (c.envio) - antes, mudar a data AQUI DENTRO do modal recalculava tudo de novo (podia até mudar
+     quais SKUs entram na lista, se algum cruzasse de "precisa enviar" pra "não precisa" ou o
+     contrário), o que não batia mais com o que o Felipe já tinha revisado/ajustado na tela da
+     Previsão antes de abrir este modal. Agora a lista e as quantidades ficam FIXAS - o campo de
+     data aqui dentro só define a data gravada no envio (rótulo/logística). Pra mudar quantidade,
+     ajusta na tela da Previsão antes de abrir "Criar Full no Doca". */
+  const l=l0;
+  function renderCorpo(){
     const semCad=l.filter(x=>!fullProduto(x.i)).length;
     const rup=l.filter(x=>x.k.rompe).length;
     document.getElementById('cfResumo').innerHTML=
       `${l.length} produto(s) · ${fmtInt(l.reduce((a,x)=>a+x.k.qtd,0))} unidades · loja <b>${esc(c.loja)}</b>.`;
     document.getElementById('cfCorpo').innerHTML=`
-      ${!l.length?`<div class="aviso atencao"><span>⚠</span><span>Nenhum produto precisa de envio nesta data.</span></div>`:''}
       ${semCad?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${semCad} SKU(s) ainda não estão cadastrados — serão criados com custo R$ 0,00. Ajuste depois em Produtos.</span></div>`:''}
       ${rup?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${rup} produto(s) zeram no FULL antes desta data.</span></div>`:''}
-      ${l.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr><th>SKU</th><th class="num">A enviar</th><th>De onde sai</th></tr></thead><tbody>
+      <div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr><th>SKU</th><th class="num">A enviar</th><th>De onde sai</th></tr></thead><tbody>
       ${l.map(({i,k})=>{const p=fullProduto(i);
         /* CORRIGIDO 17/09 (Felipe: "mostrou 555 a comprar no modal, mas depois de gerar mandou
            comprar só 300 - acho que é porque compartilha estoque"): confirmado. Pra um SKU
@@ -11596,28 +11569,22 @@ function modalCriarFull(l0,c){
         const comprar=k.qtd-doLocal-doCol;
         return `<tr><td class="mono">${esc(fullSku(i))}</td><td class="num">${fmtInt(k.qtd)}</td>
           <td>${[doLocal?fmtInt(doLocal)+' do galpão':'',doCol?fmtInt(doCol)+' do coletar':'',comprar?'<b>'+fmtInt(comprar)+' a comprar</b>':''].filter(Boolean).join(' · ')||'—'}</td></tr>`;}).join('')}
-      </tbody></table></div>`:''}`;
-    const ok=document.getElementById('cfOk'); if(ok) ok.disabled=!l.length;
+      </tbody></table></div>`;
   }
   body.innerHTML=`<h3>Criar FULL no Doca</h3>
     <p class="hint" id="cfResumo" style="margin:0 0 12px"></p>
     <div class="form-grid">
-      <label>Data do envio<input id="cfData" type="date" value="${esc(dataAtual)}"></label>
+      <label>Data do envio<input id="cfData" type="date" value="${esc(dataInicial)}"></label>
       <label>Local da coleta<select id="cfColeta">${optsColeta(LOCAIS_COLETA[0])}</select></label>
     </div>
     <div id="cfCorpo"></div>
     <div class="modal-actions"><button class="btn" id="cfCanc">Cancelar</button><button class="btn gold" id="cfOk">Criar envio</button></div>`;
-  renderCorpo(dataAtual);
-  document.getElementById('cfData').onchange=e=>{
-    if(!e.target.value) return;
-    dataAtual=e.target.value;
-    renderCorpo(dataAtual);
-  };
+  renderCorpo();
   document.getElementById('cfCanc').onclick=closeModal;
   document.getElementById('cfOk').onclick=()=>{
     const data=document.getElementById('cfData').value||c.envio;
     if(data!==c.envio){ snapshot('mudança da data da previsão'); fullCfg().envio=data; }
-    const r=criarFullDaPrevisao(c.loja,data,document.getElementById('cfColeta').value);
+    const r=criarFullDaPrevisao(c.loja,data,document.getElementById('cfColeta').value,l);
     closeModal();
     if(!r.ok){ alert(r.msg); return; }
     let m=`Envio "${fmtData(data)}" criado com ${r.itens} produto(s).`;
