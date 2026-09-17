@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v454</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v456</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -532,12 +532,10 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-sub="previsao" aria-selected="true">Previsão de reposição</button>
       <button data-sub="envio" aria-selected="false">Envios programados</button>
       <button data-sub="ruptura" aria-selected="false">Ruptura de estoque</button>
-      <button data-sub="demanda" aria-selected="false">Demanda acelerando</button>
     </div>
     <div id="tab-previsao"></div>
     <div id="tab-envio" class="hidden"></div>
     <div id="tab-ruptura" class="hidden"></div>
-    <div id="tab-demanda" class="hidden"></div>
   </section>
   <section id="tab-estoqueminimo" class="tabpanel hidden"></section>
   <section id="tab-amauri" class="tabpanel hidden"></section>
@@ -4414,6 +4412,40 @@ function renderDashboard(){
           ${STORES.map(loja=>{
             const itens=porLoja[loja]||[];
             return vgColunaLoja(loja,itens.length,itens.map(linhaRup).join(''),'Nenhum SKU em risco.');
+          }).join('')}
+        </div>
+      </div>`;
+    })()}
+    ${(()=>{
+      /* DEMANDA ACELERANDO (pedido do Felipe 17/09): "mandamos full dia 15 e dia 30, cobrindo 30
+         dias pra frente da data do envio, mas alguns produtos aceleram a venda NO MEIO do ciclo e
+         furam o estoque antes do próximo envio, pegando a gente de surpresa". O envio é
+         dimensionado pela média PONDERADA (r7×3+r15×2+r30×1, ver fullCalc) - uma "foto" do ritmo
+         no dia em que o FULL foi criado. Este card compara o ritmo dos ÚLTIMOS 7 DIAS com o dos
+         ÚLTIMOS 30 DIAS (a parte mais "lenta" de reagir da média ponderada) e avisa ANTES de virar
+         risco de ruptura de verdade - por isso fica logo abaixo do card de ruptura, mesmo desenho
+         (uma coluna por loja). Ver critério completo em demandaAcelerandoLojaLista. */
+      const demandaPorLoja={}; let totalDemanda=0;
+      STORES.forEach(loja=>{ const l=demandaAcelerandoLojaLista(loja); demandaPorLoja[loja]=l; totalDemanda+=l.length; });
+      if(!totalDemanda) return '';
+      const linhaDemanda=r=>{
+        const {k,p,i,aumentoPct,cobNoRitmoNovo,diaZeroNovo,zeraAntesDoEnvio,unidadesExtras}=r;
+        const curva=(p&&curvasPorLoja[i.loja])?curvasPorLoja[i.loja].get(p.id):null;
+        const esqSku=`${curva?`<span class="curva-badge curva-${curva}">${curva}</span> `:''}${esc(fullSku(i))}`;
+        const aguentaTxt=diaZeroNovo?`no ritmo novo, aguenta <b>${cobNoRitmoNovo} dia(s)</b> (${fmtData(diaZeroNovo)})`:'no ritmo novo, ainda aguenta folgado';
+        const acaoTxt=zeraAntesDoEnvio
+          ?'<span class="pend">🚨 zera antes do próximo envio programado — aumente a quantidade</span>'
+          :(unidadesExtras>0?`sugestão: <b>+${fmtInt(unidadesExtras)}</b> un. no próximo envio`:'dentro do que já foi programado');
+        const sub=`▲ ${aumentoPct.toFixed(0)}% (de ${k.r30.toFixed(2)} pra ${k.r7.toFixed(2)}/dia) · ${aguentaTxt}<br>${acaoTxt}`;
+        return vgLinha(esqSku,'',sub);
+      };
+      return `<div class="card-vg">
+        <h3>📈 Demanda acelerando <span class="badge pend">${totalDemanda} SKU(s)</span></h3>
+        <p class="sub">Produtos cujo ritmo de venda dos últimos 7 dias já subiu bem acima do ritmo de 30 dias usado pra montar o último envio — antes de virar risco de ruptura.</p>
+        <div class="vg-cols">
+          ${STORES.map(loja=>{
+            const itens=demandaPorLoja[loja]||[];
+            return vgColunaLoja(loja,itens.length,itens.map(linhaDemanda).join(''),'Nenhum SKU acelerando.');
           }).join('')}
         </div>
       </div>`;
@@ -11178,9 +11210,12 @@ function openPdfPreviewModal(){
     const loja=document.getElementById('pLoja').value;
     document.getElementById('pdfRows').innerHTML=linhas.map((l,idx)=>{
       const p=state.produtos.find(x=>x.loja===loja&&x.sku.toLowerCase()===l.sku.toLowerCase());
+      /* CORRIGIDO 17/09: mesmo fix do modal "Criar FULL no Doca" - SKU vinculado tem o estoque
+         de verdade no mestre (produtoEfetivo), não em p.qtd.local/coletarLivre(p) direto. */
+      const pEf=p?produtoEfetivo(p):null;
       return `<tr><td class="mono">${esc(l.sku)}</td><td>${esc(l.codigo||'—')}</td>
         <td>${p?'<span class="okv">cadastrado</span>':'<span class="pend">novo — será criado</span>'}</td>
-        <td class="num">${p?fmtInt(p.qtd.local):0}</td><td class="num">${p?fmtInt(coletarLivre(p)):0}</td>
+        <td class="num">${pEf?fmtInt(pEf.qtd.local):0}</td><td class="num">${pEf?fmtInt(coletarLivre(pEf)):0}</td>
         <td><input type="number" min="0" value="${l.qtd}" class="qty-acao" data-idx="${idx}"></td></tr>`;
     }).join('');
   }
@@ -11412,6 +11447,14 @@ function criarFullDaPrevisao(loja,data,localColeta){
       /* guarda a média e o estoque lido, para recalcular se a data mudar */
       envio.medias[p.id]={media:k.media,full:k.full,lidoEm:state.full.lidoEm[loja]||Date.now()};
       i.enviado={qtd:k.qtd,envioId:envio.id,envio:nome,em:Date.now()};
+      /* CORRIGIDO 17/09 (Felipe: "o ajuste manual fica salvo depois, quando entra de novo - devia
+         voltar automático depois que gerar o full"): antes, um ajuste manual (i.ajuste) só era
+         limpo quando o envio era CONFIRMADO como recebido de verdade (confirmarEnvioFull, dias/
+         semanas depois) - até lá, k.qtd continuava travado no número digitado à mão, mesmo já
+         tendo sido gerado. A quantidade enviada já ficou registrada em i.enviado.qtd (linha acima);
+         não tem mais razão pro ajuste manual continuar valendo depois disso - limpa aqui, na hora
+         de gerar, pra próxima leitura desse SKU já nascer no automático de novo. */
+      i.ajuste=null;
     });
   });
   return {ok:true,envio,criados,alocado:alo,aCaminho:cam,gerado:ger,itens:l.length};
@@ -11460,6 +11503,7 @@ function criarFullEmergencia(loja,data,localColeta){
       alo+=r.alocado; cam+=r.aCaminho; ger+=r.gerado;
       envio.medias[p.id]={media:k.media,full:k.full,lidoEm:state.full.lidoEm[loja]||Date.now()};
       i.enviado={qtd,envioId:envio.id,envio:nome,em:Date.now()};
+      i.ajuste=null; /* mesmo motivo do criarFullDaPrevisao - ver comentário lá */
     });
   });
   return {ok:true,envio,criados:0,alocado:alo,aCaminho:cam,gerado:ger,itens:l.length};
@@ -11538,8 +11582,17 @@ function modalCriarFull(l0,c){
       ${rup?`<div class="aviso atencao" style="margin:12px 0 0"><span>⚠</span><span>${rup} produto(s) zeram no FULL antes desta data.</span></div>`:''}
       ${l.length?`<div class="table-wrap" style="margin-top:12px"><table class="tbl-produtos"><thead><tr><th>SKU</th><th class="num">A enviar</th><th>De onde sai</th></tr></thead><tbody>
       ${l.map(({i,k})=>{const p=fullProduto(i);
-        const doLocal=p?Math.min(k.qtd,p.qtd.local):0;
-        const doCol=p?Math.min(k.qtd-doLocal,coletarLivre(p)):0;
+        /* CORRIGIDO 17/09 (Felipe: "mostrou 555 a comprar no modal, mas depois de gerar mandou
+           comprar só 300 - acho que é porque compartilha estoque"): confirmado. Pra um SKU
+           vinculado (estoque físico compartilhado com outro anúncio, ex. ALICATINHO/ALICATE), o
+           estoque de verdade mora no produto MESTRE (produtoEfetivo) - p.qtd.local de um vinculado
+           fica sempre travado em 0. Esta prévia usava p.qtd.local/coletarLivre(p) direto (do SKU
+           escolhido, não do mestre), por isso "via" 0 de estoque disponível e mandava tudo pra
+           comprar. A geração de verdade (alocarNoEnvio) já usava produtoEfetivo - agora a prévia
+           usa o mesmo, pra mostrar o número que realmente vai virar compra. */
+        const pEf=p?produtoEfetivo(p):null;
+        const doLocal=pEf?Math.min(k.qtd,pEf.qtd.local):0;
+        const doCol=pEf?Math.min(k.qtd-doLocal,coletarLivre(pEf)):0;
         const comprar=k.qtd-doLocal-doCol;
         return `<tr><td class="mono">${esc(fullSku(i))}</td><td class="num">${fmtInt(k.qtd)}</td>
           <td>${[doLocal?fmtInt(doLocal)+' do galpão':'',doCol?fmtInt(doCol)+' do coletar':'',comprar?'<b>'+fmtInt(comprar)+' a comprar</b>':''].filter(Boolean).join(' · ')||'—'}</td></tr>`;}).join('')}
@@ -12116,49 +12169,6 @@ function demandaAcelerandoLojaLista(loja){
     .sort((a,b)=>b.aumentoPct-a.aumentoPct)
     .map(x=>({...x,prox}));
 }
-function renderDemandaAcelerando(){
-  const el=document.getElementById('tab-demanda'); if(!el) return;
-  const secoes=STORES.map(loja=>{
-    const l=demandaAcelerandoLojaLista(loja);
-    const prox=proximoEnvioLoja(loja);
-    const antesDoEnvio=l.filter(x=>x.zeraAntesDoEnvio).length;
-    return {loja,l,prox,antesDoEnvio};
-  });
-  const totalAcelerando=secoes.reduce((a,s)=>a+s.l.length,0);
-  const totalAntes=secoes.reduce((a,s)=>a+s.antesDoEnvio,0);
-  el.innerHTML=`
-  <div class="card">
-    <p class="hint" style="margin:0">Compara o ritmo de venda dos últimos 7 dias com o ritmo dos últimos 30 dias. Quando um SKU acelera bem acima do que foi usado pra montar o último envio, ele aparece aqui ANTES de virar risco de ruptura (aba ao lado), já com quantas unidades a mais mandar no próximo envio.</p>
-  </div>
-  <div class="cards-linha">
-    <div class="card mini ${totalAcelerando?'alerta':''}"><span class="rot">SKU(s) acelerando (todas as lojas)</span><b>${fmtInt(totalAcelerando)}</b>
-      <small>ritmo de 7 dias pelo menos 25% acima do ritmo de 30 dias</small></div>
-    <div class="card mini ${totalAntes?'alerta':''}"><span class="rot">No ritmo novo, zerariam antes do próximo envio</span><b>${fmtInt(totalAntes)}</b>
-      <small>${totalAntes?'vale aumentar a quantidade desses SKUs no próximo envio':'nenhum, com os envios programados de hoje'}</small></div>
-  </div>
-  ${secoes.map(({loja,l,prox,antesDoEnvio})=>`
-    <div class="card">
-      <div class="acoes-linha" style="justify-content:space-between;align-items:center">
-        <h3 style="margin:0">${esc(loja)}</h3>
-        <span class="hint" style="margin:0">${prox?'Próximo envio programado: <b>'+fmtData(prox.data)+'</b> ('+esc(prox.nome)+')':'Nenhum envio programado para esta loja'}</span>
-      </div>
-      ${!l.length?`<p class="empty-inline">Nenhum SKU com demanda acelerando nesta loja no momento.</p>`:`
-      ${antesDoEnvio?`<div class="aviso risco" style="margin-top:10px"><span>🚨</span><span><b>${antesDoEnvio} SKU(s), no ritmo novo, vão zerar antes do próximo envio programado.</b> Vale aumentar a quantidade desses SKUs no envio que está sendo montado.</span></div>`:''}
-      <div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
-        <th>SKU</th><th class="num">Ritmo 30d</th><th class="num">Ritmo 7d</th><th class="num">Aumento</th><th class="num">Estoque aguenta (ritmo novo)</th><th class="num">Unidades a mais sugeridas</th><th></th></tr></thead><tbody>
-        ${l.map(({i,k,p,aumentoPct,cobNoRitmoNovo,diaZeroNovo,zeraAntesDoEnvio,unidadesExtras})=>`<tr>
-          <td class="mono">${esc(fullSku(i))}</td>
-          <td class="num">${k.r30.toFixed(2)}/dia</td>
-          <td class="num">${k.r7.toFixed(2)}/dia</td>
-          <td class="num"><span class="pend">▲ ${aumentoPct.toFixed(0)}%</span></td>
-          <td class="num">${diaZeroNovo?(zeraAntesDoEnvio?`<span class="pend">${cobNoRitmoNovo} d (${fmtData(diaZeroNovo)} — antes do envio)</span>`:`${cobNoRitmoNovo} d (${fmtData(diaZeroNovo)})`):'—'}</td>
-          <td class="num">${unidadesExtras>0?`<b>+${fmtInt(unidadesExtras)}</b>`:'—'}${k.jaEnviado?' <span class="muted" title="Já existe um envio criado pra este SKU — se for aumentar, edite a quantidade direto nele, em Envios programados.">(já tem envio criado)</span>':''}</td>
-          <td><button class="btn sm" data-dver="${loja}" title="Ver e ajustar na Previsão de reposição">Ver na Previsão</button></td>
-        </tr>`).join('')}
-      </tbody></table></div>`}
-    </div>`).join('')}`;
-  el.querySelectorAll('[data-dver]').forEach(b=>b.onclick=()=>{ fullCfg().loja=b.dataset.dver; persist(); irParaAba('previsao'); });
-}
 /* ---------- Estoque Mínimo (pedido do Felipe 22/08) ----------
    Compara o estoque mínimo já calculado pelo sistema (mesma conta da Previsão de reposição: média
    de vendas/dia x 30 dias de cobertura, com fallback pro valor manual) com TUDO que já é dono hoje
@@ -12445,7 +12455,7 @@ function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],['promoções',renderPromocoes],
-   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['demanda acelerando',renderDemandaAcelerando],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
+   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
@@ -12453,12 +12463,12 @@ function renderAll(){
 /* ---------- init ---------- */
 function irParaSub(nome){
   document.querySelectorAll('#subFull button').forEach(x=>x.setAttribute('aria-selected',x.dataset.sub===nome?'true':'false'));
-  ['previsao','envio','ruptura','demanda'].forEach(n=>{ const p=document.getElementById('tab-'+n); if(p) p.classList.toggle('hidden',n!==nome); });
+  ['previsao','envio','ruptura'].forEach(n=>{ const p=document.getElementById('tab-'+n); if(p) p.classList.toggle('hidden',n!==nome); });
 }
 function irParaAba(nome){
-  /* previsão, envios, ruptura e demanda acelerando moram na mesma aba FULL */
+  /* previsão, envios e ruptura moram na mesma aba FULL */
   let sub=null;
-  if(nome==='previsao'||nome==='envio'||nome==='ruptura'||nome==='demanda'){ sub=nome; nome='full'; }
+  if(nome==='previsao'||nome==='envio'||nome==='ruptura'){ sub=nome; nome='full'; }
   const b=document.querySelector('#mainNav button[data-tab='+nome+']'); if(!b) return;
   document.querySelectorAll('#mainNav button').forEach(x=>x.setAttribute('aria-selected','false'));
   b.setAttribute('aria-selected','true');
