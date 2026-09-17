@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v452</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v453</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -6541,156 +6541,6 @@ function avaliarSugestoesRoas7d(loja,dados){
   });
   return resultado;
 }
-/* ================= ESTUDO DE CURVA DE RANQUEAMENTO (04/09, pedido do Felipe) =================
-   "data que o produto foi cadastrado, começou a vender, começou a dar mais lucro do que gasto em
-   ads e quando começou a ficar dentro da meta de tacos, pra entendermos a curva de ranqueamento
-   de produtos (...) os anúncios que não ficarem dentro da média a gente analisa pra ver se vale a
-   pena descontinuar ou insistir mais um pouco".
-   Roda sob demanda (botão na aba Ads) pra 1 loja de cada vez - é um job pesado no backend (lê
-   Ads dia a dia dos últimos N meses + todos os pedidos do período). O backend devolve só os dados
-   BRUTOS (série diária de vendas e de Ads por produto); a conta de margem/lucro/meta de TACOS é
-   feita aqui, com a MESMA fórmula já usada em toda a aba Ads (ver metaTacosUnit) - pra não ter
-   dois critérios diferentes de "meta de TACOS" no Doca.
-   LIMITAÇÃO CONHECIDA: a margem usa o preço/custo ATUAIS do produto pra todos os dias analisados,
-   porque o Doca não guarda histórico de preço/custo dia a dia - é uma aproximação, não o valor
-   exato que valia em cada dia do passado (fica dito na tela). */
-let estudoRankLoja=null,estudoRankResultado=null,estudoRankCarregando=false,estudoRankErro=null,estudoRankProgresso=null;
-/* CORRIGIDO 04/09 (Felipe: "Failed to execute 'json' on 'Response': Unexpected end of JSON
-   input"): o backend gratuito do Render "dorme" depois de um tempo sem uso e demora até 50s+ pra
-   acordar - a primeira chamada às vezes volta com o corpo vazio nesse meio-tempo, e chamar
-   .json() direto numa resposta vazia dá esse erro cru e pouco explicativo. Tenta de novo sozinho
-   1 vez (dando um tempo pro servidor acabar de acordar) antes de mostrar erro de verdade. */
-async function fetchJsonComRetry(url,tentativas){
-  /* CORRIGIDO 04/09 (2ª volta - Felipe: mesmo erro, mas com HTTP 429 dessa vez): 1 tentativa extra
-     com 4s não foi suficiente - o Render (plano gratuito) pode ficar recusando/devolvendo vazio
-     por mais tempo enquanto acorda ou está sob pico de chamadas. Agora tenta mais vezes, com
-     espera CRESCENTE (4s, 8s, 16s) em vez de sempre a mesma - dá mais chance de pegar o servidor
-     já de pé sem desistir cedo demais. */
-  /* 6 tentativas com espera crescente MAS travada em 15s (5,10,15,15,15) = quase 1 minuto de
-     paciência total - cobre com folga o "50 segundos ou mais" que o próprio Render avisa que o
-     plano gratuito pode demorar pra acordar (04/09, 3ª volta: 4 tentativas/28s ainda não bastou). */
-  tentativas=tentativas||6;
-  let ultimoErro=null;
-  for(let i=0;i<tentativas;i++){
-    try{
-      const r=await fetch(url);
-      const texto=await r.text();
-      let j=null;
-      if(texto){ try{ j=JSON.parse(texto); }catch(e){ /* nao era JSON - j fica null, cai no erro abaixo */ } }
-      if(!j) throw new Error(`Resposta vazia/inválida do servidor (HTTP ${r.status}) — provavelmente ele ainda estava "acordando" ou sob pico de chamadas (plano gratuito do Render).`);
-      return {r,j};
-    }catch(e){ ultimoErro=e; if(i<tentativas-1) await sleep(Math.min(15000,5000*Math.pow(2,i))); }
-  }
-  throw ultimoErro;
-}
-async function rodarEstudoRanqueamento(loja){
-  const base=backendUrl();
-  if(!base){ toast('⚠ Configure a URL do backend antes (a mesma do Atualizar do Mercado Livre).'); return; }
-  estudoRankCarregando=true; estudoRankErro=null; estudoRankResultado=null; estudoRankProgresso=null; estudoRankLoja=loja; renderAds();
-  try{
-    const {j}=await fetchJsonComRetry(`${base}/estudo/ranqueamento/iniciar?loja=${encodeURIComponent(loja)}&meses=6`);
-    if(!j.ok) throw new Error(j.erro||'Falha ao iniciar o estudo.');
-    const jobId=j.jobId;
-    const poll=async()=>{
-      const {j:j2}=await fetchJsonComRetry(`${base}/estudo/ranqueamento/status?id=${encodeURIComponent(jobId)}`);
-      if(!j2.ok) throw new Error(j2.erro||'Falha ao consultar o andamento.');
-      estudoRankProgresso=j2.progresso;
-      if(j2.status==='rodando'){ renderAds(); setTimeout(()=>{ poll().catch(e=>{ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }); },3000); return; }
-      if(j2.status==='erro') throw new Error(j2.erro||'Falha desconhecida no estudo.');
-      estudoRankResultado=processarEstudoRanqueamento(j2.resultado);
-      estudoRankCarregando=false; renderAds();
-    };
-    await poll();
-  }catch(e){ estudoRankErro=e.message; estudoRankCarregando=false; renderAds(); }
-}
-function mediana(arr){
-  if(!arr||!arr.length) return null;
-  const s=arr.slice().sort((a,b)=>a-b);
-  const meio=Math.floor(s.length/2);
-  return s.length%2?s[meio]:(s[meio-1]+s[meio])/2;
-}
-function processarEstudoRanqueamento(resultado){
-  if(!resultado) return null;
-  const aliquota=finLoja(resultado.loja).aliquotaImposto||0;
-  const hoje=new Date();
-  const linhas=(resultado.itens||[]).map(it=>{
-    const p=state.produtos.find(x=>x.mlItemId===it.itemId);
-    const dataCriacao=it.dateCreated?new Date(it.dateCreated):null;
-    const diasNoAr=dataCriacao?Math.round((hoje-dataCriacao)/864e5):null;
-    const diasAtePrimeiraVenda=(it.primeiraVendaData&&dataCriacao)?Math.round((new Date(it.primeiraVendaData+'T00:00:00')-dataCriacao)/864e5):null;
-    const m=p?metaTacosUnit(p,aliquota,null):null;
-    if(!m||!p){
-      return {itemId:it.itemId,sku:(p&&p.sku)||it.sku||it.itemId,semDados:true,
-        motivo:!p?'Produto não encontrado no Doca (sem SKU vinculado a este anúncio)':'Sem preço de anúncio ou custo cadastrado pra calcular margem',
-        dataCriacao,diasNoAr,diasAtePrimeiraVenda,janelaTruncada:it.janelaTruncada};
-    }
-    const margemUnit=m.margemUnit,metaPct=m.metaPct;
-    const adsPorDia=new Map((it.seriesAds||[]).map(d=>[d.date,d]));
-    const dias=(it.seriesVendas||[]).map(d=>{
-      const ads=adsPorDia.get(d.date)||{};
-      const custoAdsDia=Number(ads.cost)||0;
-      const receitaAdsDia=(Number(ads.total_amount)||0)+(Number(ads.organic_units_amount)||0);
-      const margemDia=margemUnit*(d.unidades||0);
-      const tacosDia=receitaAdsDia>0?(custoAdsDia/receitaAdsDia*100):(custoAdsDia>0?999:0);
-      return {date:d.date,lucroDia:margemDia-custoAdsDia,tacosDia};
-    });
-    /* "sustentado" = 7 dias SEGUIDOS batendo o critério, pra não marcar um único dia bom como se
-       fosse a virada de verdade (mesmo raciocínio de janela de 7 dias já usado no resto da aba Ads). */
-    function primeiroDiaSustentado(campo,bate){
-      for(let i=6;i<dias.length;i++){
-        let ok=true;
-        for(let k=i-6;k<=i;k++){ if(!bate(dias[k][campo])){ ok=false; break; } }
-        if(ok) return dias[i].date;
-      }
-      return null;
-    }
-    const dataLucro=dias.length>=7?primeiroDiaSustentado('lucroDia',v=>v>0):null;
-    const dataTacos=dias.length>=7?primeiroDiaSustentado('tacosDia',v=>v<=metaPct):null;
-    const diasAteLucro=(dataLucro&&dataCriacao)?Math.round((new Date(dataLucro+'T00:00:00')-dataCriacao)/864e5):null;
-    const diasAteTacos=(dataTacos&&dataCriacao)?Math.round((new Date(dataTacos+'T00:00:00')-dataCriacao)/864e5):null;
-    return {itemId:it.itemId,sku:(p&&p.sku)||it.sku||it.itemId,semDados:false,dataCriacao,diasNoAr,
-      diasAtePrimeiraVenda,diasAteLucro,diasAteTacos,margemPct:m.margemPct,metaPct,
-      janelaTruncada:it.janelaTruncada,aindaSemLucroSustentado:!dataLucro};
-  });
-  const comDados=linhas.filter(l=>!l.semDados);
-  const medianaLucro=mediana(comDados.filter(l=>l.diasAteLucro!=null).map(l=>l.diasAteLucro));
-  const medianaTacos=mediana(comDados.filter(l=>l.diasAteTacos!=null).map(l=>l.diasAteTacos));
-  linhas.forEach(l=>{
-    if(l.semDados) return;
-    /* candidato a rever: já no ar por bem mais tempo que a mediana dos outros pra "lucro > Ads",
-       e ainda não chegou lá nem uma vez sustentado - pedido do Felipe: "os anúncios que não
-       ficarem dentro da média a gente analisa pra ver se vale a pena descontinuar". */
-    l.candidatoDescontinuar=!!(l.aindaSemLucroSustentado&&medianaLucro!=null&&l.diasNoAr!=null&&l.diasNoAr>medianaLucro*1.5);
-  });
-  return {loja:resultado.loja,meses:resultado.meses,geradoEm:resultado.geradoEm,avisos:resultado.avisos||[],linhas,medianaLucro,medianaTacos};
-}
-function renderEstudoRankTabela(rk){
-  if(!rk.linhas.length) return '<p class="hint">Nenhum produto com campanha de Ads ativa (com gasto nos últimos 30 dias) pra analisar.</p>';
-  const linhasOrdenadas=rk.linhas.slice().sort((a,b)=>{
-    if(!!a.semDados!==!!b.semDados) return a.semDados?1:-1;
-    return (b.diasNoAr||0)-(a.diasNoAr||0);
-  });
-  return `<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><thead><tr>
-      <th>Produto</th><th class="num">Dias no ar</th><th class="num">Dias até 1ª venda</th>
-      <th class="num">Dias até lucro &gt; Ads<br><span class="muted" style="font-weight:400">(7 dias seguidos)</span></th>
-      <th class="num">Dias até meta TACOS<br><span class="muted" style="font-weight:400">(7 dias seguidos)</span></th><th></th>
-    </tr></thead><tbody>
-    ${linhasOrdenadas.map(l=>{
-      if(l.semDados) return `<tr><td>${esc(l.sku)}</td><td colspan="4" class="muted">${esc(l.motivo)}</td><td></td></tr>`;
-      const tagLucro=l.diasAteLucro!=null?fmtInt(l.diasAteLucro):'<span class="muted" title="Ainda não teve 7 dias seguidos com lucro maior que o gasto em Ads, dentro do período analisado">— ainda não</span>';
-      const tagTacos=l.diasAteTacos!=null?fmtInt(l.diasAteTacos):'<span class="muted" title="Ainda não teve 7 dias seguidos dentro da meta de TACOS, dentro do período analisado">— ainda não</span>';
-      const alerta=l.candidatoDescontinuar?` <span title="No ar há ${fmtInt(l.diasNoAr)} dia(s) e ainda não teve 7 dias seguidos de lucro maior que o gasto em Ads — bem acima da mediana dos outros produtos analisados (${rk.medianaLucro!=null?fmtInt(rk.medianaLucro)+' dia(s)':'—'}). Candidato a rever: descontinuar ou dar mais um tempo/investimento?" style="color:var(--danger);font-weight:700;cursor:help">⚠ rever</span>`:'';
-      return `<tr><td>${esc(l.sku)}${l.janelaTruncada?` <span class="muted" title="Anúncio mais antigo que a janela de ${rk.meses} meses analisada — os dias foram contados só a partir do início da janela, não da data real de cadastro">*</span>`:''}</td>
-        <td class="num">${l.diasNoAr!=null?fmtInt(l.diasNoAr):'—'}</td>
-        <td class="num">${l.diasAtePrimeiraVenda!=null?fmtInt(l.diasAtePrimeiraVenda):'<span class="muted">sem venda</span>'}</td>
-        <td class="num">${tagLucro}</td>
-        <td class="num">${tagTacos}</td>
-        <td>${alerta}</td>
-      </tr>`;
-    }).join('')}
-    </tbody></table></div>
-    <p class="hint" style="margin-top:8px">Mediana "dias até lucro &gt; Ads": ${rk.medianaLucro!=null?fmtInt(rk.medianaLucro)+' dia(s)':'—'} · Mediana "dias até meta TACOS": ${rk.medianaTacos!=null?fmtInt(rk.medianaTacos)+' dia(s)':'—'}. Margem calculada com o preço/custo ATUAIS do produto (o Doca não guarda histórico dia a dia) — serve como aproximação da curva, não como valor exato de cada dia passado. Gerado em ${new Date(rk.geradoEm).toLocaleString('pt-BR')}.${rk.avisos.length?'<br>'+rk.avisos.map(a=>'⚠ '+esc(a)).join('<br>'):''}</p>`;
-}
 function renderAds(){
   const el=document.getElementById('tab-ads'); if(!el) return;
   const c=adsCfg();
@@ -6818,15 +6668,6 @@ function renderAds(){
       ${adsLucroCarregando?(adsLucroProgresso&&adsLucroProgresso.total?barraProgresso(adsLucroProgresso.feito,adsLucroProgresso.total,'💰 '+(adsLucroProgresso.etapa||'Calculando custo/lucro do período...')):barraIndeterminada('💰 Calculando custo/lucro do período...')):''}
       ${adsSugestaoRoasStatus==='rodando'?(()=>{ const p=adsSugestaoRoasProgresso||{feito:0,total:90}; return barraProgresso(p.feito,p.total,'💡 Calculando sugestão de ROAS (todas as campanhas, 90 dias)...'); })():''}
       ${adsSugestaoRoasStatus==='erro'?`<p class="hint" style="color:#e66;margin-top:6px">⚠ Sugestão de ROAS: ${esc(adsSugestaoRoasErro||'')}</p>`:''}
-    </div>
-    <div class="card">
-      <div class="acoes-linha" style="flex-wrap:wrap;align-items:center">
-        <button class="btn sm" id="btnEstudoRank" ${estudoRankCarregando?'disabled':''}>${estudoRankCarregando?'Rodando estudo...':'📊 Estudo de curva de ranqueamento (6 meses)'}</button>
-        <span style="flex:1;font-size:12px;color:var(--muted)">Cadastro do anúncio → 1ª venda → lucro passar o gasto em Ads → bater a meta de TACOS — pra achar quem está fora da curva normal e vale a pena rever (descontinuar ou insistir).</span>
-      </div>
-      ${estudoRankCarregando?barraProgresso((estudoRankProgresso&&estudoRankProgresso.feito)||0,(estudoRankProgresso&&estudoRankProgresso.total)||1,'📊 '+((estudoRankProgresso&&estudoRankProgresso.etapa)||'Rodando...')):''}
-      ${estudoRankErro?`<p class="hint" style="color:#e66;margin-top:8px">⚠ ${esc(estudoRankErro)}</p>`:''}
-      ${(estudoRankResultado&&estudoRankLoja===c.loja)?renderEstudoRankTabela(estudoRankResultado):''}
     </div>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos tbl-ads"><thead><tr>
       <th>Campanha</th>
@@ -7021,8 +6862,6 @@ function renderAds(){
     </tbody></table></div>`:`<p class="empty-inline">${personalizado?(adsPersonalizadoCarregando?'Calculando...':(adsPersonalizadoResultado?'Nenhuma campanha encontrada nesse período.':'Escolha as datas e clique em Calcular.')):(dados.atualizadoEm?'Nenhuma campanha encontrada nesse período.':'Clique em Atualizar pra puxar as campanhas dessa loja.')}</p>`}
   `;
   document.getElementById('adLoja').onchange=e=>{ c.loja=e.target.value; persist(); renderAds(); };
-  const btnEstudoRank=document.getElementById('btnEstudoRank');
-  if(btnEstudoRank) btnEstudoRank.onclick=()=>rodarEstudoRanqueamento(c.loja);
   document.getElementById('adPeriodo').onchange=e=>{ adsPeriodoApi=e.target.value; renderAds(); };
   document.getElementById('adFiltro').onchange=e=>{
     /* só troca a ordenação — NÃO recalcula mais nada aqui. O cálculo de Lucro Bruto e a
@@ -7529,10 +7368,6 @@ async function pesquisarResumoFinanceiro(){
 let financasSubAba='resumo'; // 'resumo' | 'despesas' | 'retiradas' - sub-abas dentro de Financas
 let financasFechTodasCarregando=false, financasFechTodasErro=null;
 let financasFechTodasProgresso=null; // {feito,total,etapa} - "feito"/"total" contam lojas (etapa mostra a loja+% dela)
-/* DRE + DFC por loja (27/08, pedido do Felipe: ao lado do fechamento das 4 lojas, um relatório com
-   DRE e DFC de cada loja separado, terminando com análise + sugestão de retirada por sócio). */
-let financasDreDfcCarregando=false, financasDreDfcErro=null;
-let financasDreDfcProgresso=null;
 let auditoriaLoja=STORES[0];
 let auditoriaDe='', auditoriaAte='';
 let auditoriaJobId=null, auditoriaStatus=null, auditoriaProgresso=null, auditoriaResultado=null, auditoriaErro=null;
@@ -9051,250 +8886,6 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
     </body></html>`);
   win.document.close();
 }
-/* DRE + DFC por loja (27/08, pedido do Felipe) - separado do fechamento das 4 lojas: reaproveita o
-   MESMO resumo/margens (calcularMargensResumo = a base do DRE) e ACRESCENTA:
-   1) DFC (Demonstrativo de Fluxo de Caixa) do período - só dinheiro que REALMENTE já
-      entrou/saiu, não lucro contábil. Entrada: como o Doca não guarda um histórico dia a dia do
-      saldo do Mercado Pago, estima usando um SEGUNDO resumo de vendas deslocado pelo prazo real de
-      liberação da própria loja (ex: prazo 8 dias, período 01-10/09 -> busca vendas de 24/08-02/09,
-      que são as que estariam liberando agora), líquido de tarifa/frete vendedor (mesma dedução que
-      vira SETTLEMENT_NET_AMOUNT no relatório do Mercado Pago). Loja sem prazo sincronizado ainda
-      fica sem essa estimativa (mostra aviso, não inventa número). Saída: despesas MARCADAS COMO
-      PAGAS com vencimento no período (todas as origens — diferente do DRE, que separa fatura
-      ML/imposto pra não descontar 2x) + retiradas de sócio já efetivadas no período. Reembolso NÃO
-      entra aqui — confirmado com o Felipe 27/08: reembolso é uma dívida da empresa com o sócio (ele
-      pagou do próprio bolso) que só vira caixa de verdade quando for de fato devolvido no
-      fechamento, não no dia em que foi lançado.
-   2) Análise: lucro (DRE) x caixa (DFC) do período, mais o mesmo "fôlego" que já existe no Fluxo de
-      Caixa (projecaoCaixaBase Garantido, 60 dias).
-   3) Sugestão de retirada: reaproveita o MESMO ajuste por sócio do fechamento das 4 lojas
-      (cota-retirou+reembolso, pra não divergir de um relatório pro outro) e enfileira contra o
-      Garantido dos próximos 90 dias (mesma função primeiroDiaComCaixaEmDense usada em Compras
-      Pendentes) — cada sócio na fila já considera que o(s) anterior(es) reservaram a fatia deles. */
-async function calcularRelatorioDreDfc(){
-  if(financasDreDfcCarregando) return;
-  mostrarOverlayVideoCarregando();
-  financasDreDfcCarregando=true; financasDreDfcErro=null; financasDreDfcProgresso={feito:0,total:STORES.length,etapa:''}; renderFinancas();
-  try{
-    if(financasResumoPeriodo==='personalizado'&&(!financasResumoDe||!financasResumoAte)) throw new Error('Informe as duas datas do período personalizado.');
-    const resultados=[];
-    for(let i=0;i<STORES.length;i++){
-      const loja=STORES[i];
-      let resumo=await fetchResumoJob(loja,financasResumoPeriodo,financasResumoDe,financasResumoAte,(p)=>{
-        financasDreDfcProgresso={feito:i,total:STORES.length,etapa:`${loja}: ${p&&p.etapa?p.etapa:''} (${p?p.feito:0}%)`};
-        renderFinancas();
-        atualizarOverlayProgresso(((i+(p&&p.feito?p.feito/100:0))/STORES.length)*100);
-      });
-      resumo=await aplicarPrioridadeFechamento(resumo,loja,resumo.periodo.de,resumo.periodo.ate);
-      const m=calcularMargensResumo(resumo,loja);
-      // comparação com o período anterior equivalente (28/08, pedido do Felipe) - mesmo padrão já
-      // usado no Resumo Financeiro (periodoAnteriorEquivalente/badge), só que aqui via fetchResumoJob
-      // (espera o job terminar de verdade) em vez do fetch direto, pra não pegar resultado parcial.
-      let mAnt=null,resumoAnt=null;
-      try{
-        const {de:anDe,ate:anAte}=periodoAnteriorEquivalente(resumo.periodo.de,resumo.periodo.ate);
-        resumoAnt=await fetchResumoJob(loja,'personalizado',anDe,anAte,(p)=>{
-          financasDreDfcProgresso={feito:i,total:STORES.length,etapa:`${loja}: comparando com período anterior (${p?p.feito:0}%)`};
-          renderFinancas();
-        });
-        mAnt=calcularMargensResumo(resumoAnt,loja);
-      }catch(e){ mAnt=null; resumoAnt=null; }
-      // imposto (28/08, pedido do Felipe) - status do imposto JÁ REGISTRADO (base no faturamento do
-      // mês anterior ao período do relatório, vencimento dia 20) + quanto está ACUMULANDO agora pro
-      // próximo (m.impostoCalc, já calculado acima em cima do faturamento deste período mesmo).
-      const refMesImposto=mesAnteriorStr(m.mesDe.slice(0,7));
-      const despesaImposto=despesasArr().find(d=>d.origem==='imposto'&&d.loja===loja&&d.impostoRefMes===refMesImposto)||null;
-      // DFC - entradas estimadas (venda deslocada pelo prazo real de liberação da loja)
-      const prazoDias=finLoja(loja).prazoLiberacaoDias!=null?Number(finLoja(loja).prazoLiberacaoDias):null;
-      let entradasCaixa=null,periodoEntradas=null;
-      if(prazoDias!=null){
-        const deSloc=_somaDiasISO(resumo.periodo.de,-prazoDias), ateSloc=_somaDiasISO(resumo.periodo.ate,-prazoDias);
-        try{
-          const resumoEntradas=await fetchResumoJob(loja,'personalizado',deSloc,ateSloc,(p)=>{
-            financasDreDfcProgresso={feito:i,total:STORES.length,etapa:`${loja}: estimando entrada de caixa (${p?p.feito:0}%)`};
-            renderFinancas();
-          });
-          entradasCaixa=Math.max(0,(resumoEntradas.faturamento||0)-(resumoEntradas.tarifas||0)-((resumoEntradas.frete&&resumoEntradas.frete.vendedor)||0));
-          periodoEntradas={de:deSloc,ate:ateSloc};
-        }catch(e){ entradasCaixa=null; }
-      }
-      // DFC - saídas reais: despesas JÁ PAGAS com vencimento no período (qualquer origem) + retiradas
-      // de sócio já efetivadas no período (reembolso fica de fora - ver comentário acima)
-      const despesasPagas=despesasArr().filter(d=>d.loja===loja&&d.pago&&d.dataPagamento&&d.dataPagamento>=resumo.periodo.de&&d.dataPagamento<=resumo.periodo.ate).reduce((s,d)=>s+(Number(d.valor)||0),0);
-      let retiradasPeriodo=0;
-      if(PAPEL_CAIXA_LOJA[loja]!=='reserva'){
-        sociosDaLoja(loja).forEach(s=>{
-          (sociosLoja(loja)[s]||[]).forEach(mv=>{
-            if(mv.tipo==='retirada'&&mv.data&&mv.data>=resumo.periodo.de&&mv.data<=resumo.periodo.ate) retiradasPeriodo+=Number(mv.valor)||0;
-          });
-        });
-      }
-      const saidasCaixa=despesasPagas+retiradasPeriodo;
-      const resultadoCaixa=entradasCaixa!=null?(entradasCaixa-saidasCaixa):null;
-      // ajuste por sócio (idêntico ao fechamento das 4 lojas, pra não divergir de um relatório pro outro)
-      let porSocio=null,baseSocios=null;
-      const mesSocios=resumo.periodo.de.slice(0,7);
-      if(PAPEL_CAIXA_LOJA[loja]!=='reserva'){
-        const bd=baseDistribuivelLoja(loja,m.margemLiquida,mesSocios);
-        baseSocios=bd.base;
-        const ownership=OWNERSHIP_LOJA[loja]||{};
-        porSocio=sociosDaLoja(loja).map(s=>{
-          const lista=movimentosSocioMes(loja,s,mesSocios);
-          const retirou=totalPorTipo(lista,'retirada');
-          const reembolso=totalPorTipo(lista,'reembolso');
-          const pct=ownership[s]||0;
-          const cota=baseSocios*(pct/100);
-          const ajuste=cota-retirou+reembolso;
-          return {socio:s,pct,cota,retirou,reembolso,ajuste};
-        });
-      }
-      // sugestão de retirada: fila em ordem decrescente de participação, contra o Garantido de 90 dias
-      let sugestoes=null;
-      if(porSocio){
-        const projLoja=projecaoCaixaBase([loja],90);
-        let denseAjustado=projLoja.dense.map(x=>({...x}));
-        sugestoes=porSocio.filter(p=>p.ajuste>0.01).sort((a,b)=>b.pct-a.pct).map(p=>{
-          const check=primeiroDiaComCaixaEmDense(denseAjustado,p.ajuste);
-          if(check) denseAjustado=denseAjustado.map(x=>x.data>=check.data?{...x,saldo:x.saldo-p.ajuste}:x);
-          // guarda o detalhe do cálculo junto (28/08, pedido do Felipe: "me explique como chegou na
-          // sugestão de retirada") - assim o próprio relatório mostra de onde veio o número, sem
-          // precisar perguntar. Fórmula: ajuste = cota (base do mês × % do sócio) − retirou + reembolso.
-          return {socio:p.socio,pct:p.pct,cota:p.cota,retirou:p.retirou,reembolso:p.reembolso,valor:p.ajuste,dataSegura:check?check.data:null};
-        });
-      }
-      // análise: reaproveita o mesmo "fôlego" do Fluxo de Caixa (Garantido, 60 dias)
-      const projLoja60=projecaoCaixaBase([loja],60);
-      const piorSaldoLoja=Math.min(...projLoja60.dense.map(x=>x.saldo));
-      const diaPiorLoja=projLoja60.dense.find(x=>x.saldo===piorSaldoLoja);
-      resultados.push({loja,resumo,m,mAnt,resumoAnt,despesaImposto,entradasCaixa,periodoEntradas,despesasPagas,retiradasPeriodo,saidasCaixa,resultadoCaixa,prazoDias,porSocio,baseSocios,sugestoes,piorSaldoLoja,diaPiorLoja});
-      financasDreDfcProgresso={feito:i+1,total:STORES.length,etapa:`${loja} concluída`};
-      renderFinancas();
-      atualizarOverlayProgresso(((i+1)/STORES.length)*100);
-      await sleep(150);
-    }
-    financasDreDfcCarregando=false; financasDreDfcProgresso=null;
-    imprimirRelatorioDreDfc(resultados);
-    return;
-  }catch(e){
-    financasDreDfcErro=e.message;
-  }
-  financasDreDfcCarregando=false; financasDreDfcProgresso=null; renderFinancas(); esconderOverlayVideoCarregando();
-}
-function imprimirRelatorioDreDfc(resultados){
-  const win=window;
-  const metrica=(lbl,val,neg,pctVal,badgeHtml)=>`<div class="metric"><div class="lbl">${lbl}</div><div class="val${neg?' neg':''}">${val}</div>${pctVal!=null?`<div class="pctv">${pctVal.toFixed(1)}% do faturamento</div>`:''}${badgeHtml?`<div class="pctv">${badgeHtml}</div>`:''}</div>`;
-  const pctDe=(v,fat)=>fat>0?(v/fat*100):0;
-  /* mesmo padrão de ▲/▼ do Resumo Financeiro (renderResumoFinanceiroResultado), reaproveitado aqui
-     pra comparar cada loja com o período anterior equivalente (28/08, pedido do Felipe). */
-  const badge=(atual,anteriorValor,inverterBom)=>{
-    if(anteriorValor==null) return '';
-    if(anteriorValor===0) return atual>0?'<span style="color:var(--ok)">▲ novo (era R$ 0,00)</span>':'';
-    const variacao=(atual-anteriorValor)/Math.abs(anteriorValor)*100;
-    const melhorou=inverterBom?variacao<0:variacao>0;
-    const seta=variacao>=0?'▲':'▼';
-    return `<span style="color:${melhorou?'var(--ok)':'var(--danger)'}">${seta} ${Math.abs(variacao).toFixed(1)}% vs. período anterior</span>`;
-  };
-  const rotulos={hoje:'Hoje',ontem:'Ontem','7d':'Últimos 7 dias',mes_corrente:'Mês corrente',personalizado:fmtData(financasResumoDe)+' a '+fmtData(financasResumoAte)};
-  const rotuloPeriodo=rotulos[financasResumoPeriodo]||financasResumoPeriodo;
-  const cardLojaDreDfc=r=>{
-    const aliquota=finLoja(r.loja).aliquotaImposto||0;
-    const analiseParagrafos=[];
-    if(r.resultadoCaixa!=null){
-      const diffLucroCaixa=r.m.margemLiquidaRateada-r.resultadoCaixa;
-      if(Math.abs(diffLucroCaixa)>Math.max(30,Math.abs(r.m.margemLiquidaRateada)*0.1)){
-        analiseParagrafos.push(diffLucroCaixa>0
-          ?`Lucro (${fmtMoney(r.m.margemLiquidaRateada)}) maior que o caixa efetivamente movimentado no período (${fmtMoney(r.resultadoCaixa)}) — parte do lucro ainda não virou dinheiro na conta, provavelmente porque parte das vendas mais recentes ainda está no prazo de liberação (${r.prazoDias!=null?r.prazoDias+' dias':'prazo ainda não sincronizado'}).`
-          :`Caixa movimentado no período (${fmtMoney(r.resultadoCaixa)}) maior que o lucro contábil (${fmtMoney(r.m.margemLiquidaRateada)}) — entrou dinheiro de vendas de um período anterior, mais do que o lucro gerado agora. Não é um sinal de piora nem melhora por si só, só timing entre venda e liberação.`);
-      }else{
-        analiseParagrafos.push(`Lucro e caixa do período estão próximos (${fmtMoney(r.m.margemLiquidaRateada)} de lucro, ${fmtMoney(r.resultadoCaixa)} de caixa movimentado) — sem descasamento relevante de timing nesse período.`);
-      }
-    }else{
-      analiseParagrafos.push(`Ainda não dá pra comparar lucro com caixa real — essa loja ainda não sincronizou o prazo de liberação real (sincroniza sozinho; volte a gerar esse relatório depois).`);
-    }
-    analiseParagrafos.push(r.piorSaldoLoja<0
-      ?`⚠ No Fluxo de Caixa (garantido), o saldo dessa loja fica negativo em ${fmtData(r.diaPiorLoja.data)} — antes de retirar qualquer coisa, resolver isso é prioridade.`
-      :`No Fluxo de Caixa (garantido) dos próximos 60 dias, a folga mínima é de ${fmtMoney(r.piorSaldoLoja)} em ${fmtData(r.diaPiorLoja.data)} — é o teto real de segurança pra qualquer retirada.`);
-    const impostoStatus=r.despesaImposto
-      ?(r.despesaImposto.pago
-        ?`<span style="color:var(--ok)">✓ pago</span> — ${fmtMoney(r.despesaImposto.valor)} (base ${mesLabel(r.despesaImposto.impostoRefMes)}, venceu ${fmtData(r.despesaImposto.dataPagamento)})`
-        :`<span style="color:${r.despesaImposto.dataPagamento<hoje()?'var(--danger)':'var(--gold)'}">${r.despesaImposto.dataPagamento<hoje()?'⚠ vencido, não pago':'pendente'}</span> — ${fmtMoney(r.despesaImposto.valor)} (base ${mesLabel(r.despesaImposto.impostoRefMes)}, vence ${fmtData(r.despesaImposto.dataPagamento)})`)
-      :'sem despesa de imposto registrada pra esse mês de referência ainda (sincroniza sozinho, ou alíquota não configurada)';
-    return `<div class="loja-card">
-      <h2>${esc(r.loja)}</h2>
-      <h3 style="font-size:12.5px;margin:0 0 8px;color:var(--violet-l)">DRE — Demonstrativo de Resultado</h3>
-      <div class="metrics">
-        ${metrica('Faturamento',fmtMoney(r.resumo.faturamento),false,null,r.mAnt?badge(r.resumo.faturamento,r.resumoAnt.faturamento,false):'')}
-        ${metrica('CMV',fmtMoney(r.m.cmv),false,pctDe(r.m.cmv,r.resumo.faturamento))}
-        ${metrica('Tarifas (comissão)',fmtMoney(r.resumo.tarifas),false,pctDe(r.resumo.tarifas,r.resumo.faturamento))}
-        ${metrica('Impostos ('+(aliquota||0)+'%)',fmtMoney(r.m.impostoCalc),false,pctDe(r.m.impostoCalc,r.resumo.faturamento))}
-        ${metrica('Ads',fmtMoney(r.resumo.ads.custo),false,pctDe(r.resumo.ads.custo,r.resumo.faturamento))}
-        ${metrica('Frete (vendedor)',fmtMoney(r.resumo.frete.vendedor),false,pctDe(r.resumo.frete.vendedor,r.resumo.faturamento))}
-        ${metrica('Margem de Contribuição',fmtMoney(r.m.margem),r.m.margem<0,pctDe(r.m.margem,r.resumo.faturamento),r.mAnt?badge(r.m.margem,r.mAnt.margem,false):'')}
-        ${metrica('Margem Líquida (rateada)',fmtMoney(r.m.margemLiquidaRateada),r.m.margemLiquidaRateada<0,pctDe(r.m.margemLiquidaRateada,r.resumo.faturamento),r.mAnt?badge(r.m.margemLiquidaRateada,r.mAnt.margemLiquidaRateada,false):'')}
-        ${metrica('Margem Líquida (custo total)',fmtMoney(r.m.margemLiquida),r.m.margemLiquida<0,pctDe(r.m.margemLiquida,r.resumo.faturamento),r.mAnt?badge(r.m.margemLiquida,r.mAnt.margemLiquida,false):'')}
-      </div>
-      <p class="vazio">"Rateada" divide as despesas/fatura ML do mês pelos dias do período. "Custo total" desconta o mês INTEIRO de despesas de uma vez — é essa que serve de base pra cota de retirada dos sócios abaixo (por isso costuma ficar bem menor no meio do mês, antes do faturamento fechar).</p>
-      ${!r.mAnt?`<p class="vazio">Não deu pra comparar com o período anterior (falha ao buscar).</p>`:''}
-      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Imposto</h3>
-      <p class="vazio">Já registrado (mês vencido/a vencer): ${impostoStatus}. Acumulando agora, ainda não vencido — reserva recomendada pra esse período: <b style="color:var(--text)">${fmtMoney(r.m.impostoCalc)}</b> (vira despesa de imposto no dia 20 do mês seguinte).</p>
-      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">DFC — Demonstrativo de Fluxo de Caixa (caixa real do período)</h3>
-      ${r.entradasCaixa!=null?`<div class="metrics">
-        ${metrica('Entradas (estimada)',fmtMoney(r.entradasCaixa))}
-        ${metrica('Despesas pagas',fmtMoney(r.despesasPagas),true)}
-        ${metrica('Retiradas de sócio',fmtMoney(r.retiradasPeriodo),true)}
-        ${metrica('Resultado de caixa',fmtMoney(r.resultadoCaixa),r.resultadoCaixa<0)}
-      </div>
-      <p class="vazio">Entrada estimada a partir das vendas de ${fmtData(r.periodoEntradas.de)} a ${fmtData(r.periodoEntradas.ate)} (deslocado ${r.prazoDias} dia(s) — o prazo real de liberação medido pra essa loja), líquido de tarifa e frete vendedor. Despesas pagas e retiradas já são valor real, não estimativa.</p>`
-      :`<div class="metrics">
-        ${metrica('Despesas pagas',fmtMoney(r.despesasPagas),true)}
-        ${metrica('Retiradas de sócio',fmtMoney(r.retiradasPeriodo),true)}
-      </div>
-      <p class="vazio">Entrada de caixa não estimada — essa loja ainda não sincronizou o prazo real de liberação (sincroniza sozinho no Fluxo de Caixa).</p>`}
-      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Análise</h3>
-      ${analiseParagrafos.map(p=>`<p class="vazio" style="font-size:12.5px">${p}</p>`).join('')}
-      <h3 style="font-size:12.5px;margin:14px 0 8px;color:var(--violet-l)">Sugestão de retirada</h3>
-      ${r.sugestoes?(r.sugestoes.length?`<p class="vazio" style="margin:0 0 8px">Base do mês (Margem Líquida custo total): <b style="color:var(--text)">${fmtMoney(r.baseSocios)}</b>. Cota de cada sócio = base × % de participação. Valor sugerido = cota − o que já retirou este mês + reembolso que a empresa ainda deve a ele.</p>
-        <div class="tbl-scroll"><table><thead><tr><th>Sócio</th><th class="n">%</th><th class="n">Cota</th><th class="n">Já retirou</th><th class="n">Reembolso devido</th><th class="n">Valor sugerido</th><th class="n">Data segura</th></tr></thead><tbody>
-          ${r.sugestoes.map(s=>`<tr><td>${NOME_SOCIO[s.socio]||s.socio}</td><td class="n">${s.pct.toFixed(s.pct%1?2:0)}%</td><td class="n">${fmtMoney(s.cota)}</td><td class="n">${fmtMoney(s.retirou)}</td><td class="n">${fmtMoney(s.reembolso)}</td><td class="n"><b>${fmtMoney(s.valor)}</b></td><td class="n">${s.dataSegura?fmtData(s.dataSegura):'sem data em 90 dias que caiba esse valor sem furar o caixa'}</td></tr>`).join('')}
-        </tbody></table></div>
-        <p class="vazio" style="margin-top:6px">Data é o primeiro dia em que o caixa garantido aguenta essa retirada SEM ficar negativo depois — já considera que os sócios acima na lista reservaram a fatia deles primeiro.</p>`
-        :`<p class="vazio">Nenhum sócio com valor pendente a receber nesse fechamento (já retiraram o que tinham direito, ou ainda devem devolver).</p>`)
-      :`<p class="vazio">Loja de reserva/reinvestimento — sem retirada de sócio.</p>`}
-    </div>`;
-  };
-  const totalFat=resultados.reduce((s,r)=>s+r.resumo.faturamento,0);
-  const totalMargemLiquida=resultados.reduce((s,r)=>s+r.m.margemLiquidaRateada,0);
-  const totalCaixa=resultados.reduce((s,r)=>s+(r.resultadoCaixa||0),0);
-  const totalSugerido=resultados.reduce((s,r)=>s+(r.sugestoes||[]).reduce((s2,x)=>s2+x.valor,0),0);
-  win.document.open();
-  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>DRE + DFC — Todas as Lojas</title>
-    <style>${relatorioDarkCss()}
-      .metrics{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-bottom:6px}
-      .metric .lbl{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
-      .metric .val{font-size:16px;font-weight:700;margin-top:3px;color:var(--ok)}
-      .metric .val.neg{color:var(--danger)}
-      .metric .pctv{font-size:10.5px;color:var(--muted);margin-top:1px}
-      .tot-card h2{border:none;margin-bottom:12px;padding:0;color:var(--violet-l)}
-      @media (min-width:560px){ .metrics{grid-template-columns:repeat(4,1fr)} }
-    </style></head><body>
-    <h1>DRE + DFC — Todas as Lojas</h1>
-    <div class="sub">Período: ${esc(rotuloPeriodo)} · Gerado em ${new Date().toLocaleString('pt-BR')}</div>
-    ${resultados.map(cardLojaDreDfc).join('')}
-    <div class="tot-card">
-      <h2>Comparativo — Todas as Lojas</h2>
-      <div class="tbl-scroll"><table><thead><tr><th>Loja</th><th class="n">Faturamento</th><th class="n">Margem Líquida</th><th class="n">Caixa do período</th><th class="n">Retirada sugerida</th></tr></thead><tbody>
-        ${resultados.map(r=>`<tr><td>${esc(r.loja)}</td><td class="n">${fmtMoney(r.resumo.faturamento)}</td><td class="n">${fmtMoney(r.m.margemLiquidaRateada)}</td><td class="n">${r.resultadoCaixa!=null?fmtMoney(r.resultadoCaixa):'—'}</td><td class="n">${fmtMoney((r.sugestoes||[]).reduce((s,x)=>s+x.valor,0))}</td></tr>`).join('')}
-        <tr style="font-weight:700"><td>Total</td><td class="n">${fmtMoney(totalFat)}</td><td class="n">${fmtMoney(totalMargemLiquida)}</td><td class="n">${fmtMoney(totalCaixa)}</td><td class="n">${fmtMoney(totalSugerido)}</td></tr>
-      </tbody></table></div>
-    </div>
-    ${relatorioShareBoxHtml()}
-    <div class="gerado">Doca · Abastecimento Full · Mercado Livre</div>
-    <script>${relatorioShareScript('DRE + DFC Doca')}<\/script>
-    </body></html>`);
-  win.document.close();
-}
 /* CMV = soma de (custo cadastrado do produto × quantidade vendida no período), casando pelo
    mlItemId salvo em cada produto. Item vendido sem produto vinculado (ou sem custo cadastrado)
    entra em "semCusto" pra avisar que o CMV está subestimado, em vez de fingir que é zero. */
@@ -9650,12 +9241,6 @@ function renderFinancas(){
       </div>
       ${financasFechTodasCarregando&&financasFechTodasProgresso?barraProgresso(financasFechTodasProgresso.feito,financasFechTodasProgresso.total,'📋 '+(financasFechTodasProgresso.etapa||'Calculando fechamento...')):''}
       ${financasFechTodasErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasFechTodasErro)}</p>`:''}
-      <div class="acoes-linha" style="margin-top:14px;border-top:1px solid var(--line2);padding-top:14px;flex-wrap:wrap">
-        <button class="btn" id="btnGerarDreDfc" ${financasDreDfcCarregando?'disabled':''}>${financasDreDfcCarregando?'Calculando...':'📐 Gerar DRE + DFC por loja'}</button>
-        <span class="hint" style="margin:0">Relatório separado por loja (mesmo período acima): DRE (com comparação vs período anterior), DFC (caixa real do período), status do imposto (pago/pendente + reserva recomendada), análise e sugestão de valor/data de retirada por sócio sem comprometer o caixa. Demora mais que o fechamento normal (busca resumos extras por loja).</span>
-      </div>
-      ${financasDreDfcCarregando&&financasDreDfcProgresso?barraProgresso(financasDreDfcProgresso.feito,financasDreDfcProgresso.total,'📐 '+(financasDreDfcProgresso.etapa||'Calculando DRE + DFC...')):''}
-      ${financasDreDfcErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(financasDreDfcErro)}</p>`:''}
     </div>
     `:''}
     ${financasSubAba==='despesas'?`
@@ -9813,8 +9398,6 @@ function renderFinancas(){
   if(frPctFaturaMl) frPctFaturaMl.onchange=e=>{ atualizarFinanceiro(financasResumoLoja,{pctFaturaMl:e.target.value}); renderFinancas(); };
   const btnFecharTodasLojas=document.getElementById('btnFecharTodasLojas');
   if(btnFecharTodasLojas) btnFecharTodasLojas.onclick=calcularFechamentoTodasLojas;
-  const btnGerarDreDfc=document.getElementById('btnGerarDreDfc');
-  if(btnGerarDreDfc) btnGerarDreDfc.onclick=calcularRelatorioDreDfc;
   const audLoja=document.getElementById('audLoja');
   if(audLoja) audLoja.onchange=e=>{ auditoriaLoja=e.target.value; };
   const audPeriodoBtn=document.getElementById('audPeriodoBtn');
@@ -12159,7 +11742,7 @@ function renderPrevisao(){
     <div class="card mini ${R.rupturas?'alerta':''}"><span class="rot">Rupturas antes do envio</span><b>${fmtInt(R.rupturas)}</b>
       <small>${R.rupturas?'o estoque zera antes de ' + fmtData(c.envio):'nenhum produto zera antes'}</small></div>
   </div>
-  ${R.rupturas?`<div class="aviso risco"><span>🚨</span><span><b>${R.rupturas} produto(s) vão zerar no FULL antes de ${fmtData(c.envio)}.</b> Para esses, mandar só na data prevista não evita a parada de venda — antecipe o envio já programado se der. Se não der, crie um envio separado só com eles.</span><button class="btn sm danger" id="fEmergencia">🚨 FULL de emergência</button></div>`:''}
+  ${R.rupturas?`<div class="aviso risco"><span>🚨</span><span><b>${R.rupturas} produto(s) vão zerar no FULL antes de ${fmtData(c.envio)}.</b> Para esses, mandar só na data prevista não evita a parada de venda — antecipe o envio já programado se der. Se não der, crie um envio separado só com eles.</span></div>`:''}
   ${(()=>{ const cri=l.filter(({i})=>i.enviado&&envioById(i.enviado.envioId));
     if(!cri.length) return '';
     const grupos={}; cri.forEach(({i})=>{ const e=i.enviado; (grupos[e.envioId]=grupos[e.envioId]||{nome:e.envio,itens:0,un:0}); grupos[e.envioId].itens++; grupos[e.envioId].un+=e.qtd; });
@@ -12291,7 +11874,6 @@ function renderPrevisao(){
   el.querySelectorAll('[data-verenvio]').forEach(b=>b.onclick=()=>irParaAba('envio'));
   document.getElementById('fPdf').onclick=gerarInboundPrevisao;
   document.getElementById('fCriar').onclick=abrirCriarFull;
-  const be=document.getElementById('fEmergencia'); if(be) be.onclick=abrirCriarFullEmergencia;
 }
 /* ---------- Ruptura de estoque: todas as lojas de uma vez, comparando com o envio FULL
    já programado de verdade (Envios programados), não com a data manual da Previsão ---------- */
