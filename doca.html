@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v458</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v459</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12360,10 +12360,19 @@ function produtosSemPromocao(loja){
    quando o produto está com promoção rodando, que é quando também pode fazer sentido ajustar o %.
    Mesmo filtro de "anúncio ativo com preço" de produtosSemPromocao, mas SEM o corte por
    promocaoAtivaAgora - mostra todo mundo, com uma coluna de status pra diferenciar quem já tem
-   promoção ativa de quem ainda está pendente. */
+   promoção ativa de quem ainda está pendente.
+   CORRIGIDO 18/09 (2ª volta - Felipe: "anúncio pausado não aparece aqui, está faltando o
+   EFFERVESCENT que foi criado novo, quando subir um anúncio novo tem que mostrar, independente
+   se tiver pausado"): removido também o corte por mlStatus==='active' - um anúncio novo pode
+   nascer pausado (aguardando aprovação, revisão de catálogo, ou já correndo pra zerar estoque no
+   dia 1) e o Felipe quer poder configurar o % ANTES dele ficar ativo, não só depois. mlAusente
+   continua de fora (esse sim significa excluído/encerrado de verdade no ML, não faz sentido
+   configurar promoção pra ele). A automação em si (rodarAutomacaoPromocoes, server.js) continua
+   só criando promoção de verdade pra anúncio ATIVO - aqui é só configuração, fica pronta esperando
+   o anúncio ativar. */
 function produtosPromocaoTodos(loja){
   return state.produtos.filter(p=>
-    p.loja===loja && !p.mlAusente && p.mlItemId && p.mlStatus==='active' && typeof p.mlPreco==='number'
+    p.loja===loja && !p.mlAusente && p.mlItemId && typeof p.mlPreco==='number'
   ).sort((a,b)=>b.mlPreco-a.mlPreco);
 }
 /* preço final calculado a partir da REGRA configurada 1x no produto - nunca vem de conta
@@ -12408,9 +12417,13 @@ function renderPromocoes(){
           const fixo19=precoEhFixo19(p);
           const travado=!fixo19 && p.descontoPromocao!=null && !promocaoDestravados.has(p.id);
           const ativa=p.promocaoAtivaAgora===true;
+          const pausado=p.mlStatus!=='active';
+          const statusTxt=pausado
+            ?`<span class="badge" title="Anúncio pausado no Mercado Livre — a automação só cria promoção de verdade em anúncio ativo. O % já fica configurado, pronto pra quando ele reativar.">⏸ pausado</span>`
+            :(ativa?'<span class="badge okv">✓ ativa</span>':'<span class="badge pend">pendente</span>');
           return `<tr${fixo19?' style="opacity:.55"':''}>
             <td class="mono">${esc(p.sku||p.codigo||'')}</td>
-            <td>${ativa?'<span class="badge okv">✓ ativa</span>':'<span class="badge pend">pendente</span>'}</td>
+            <td>${statusTxt}</td>
             <td class="num">${fmtMoney(p.mlPreco)}</td>
             <td class="num">${fixo19?'<span class="muted">—</span>':(travado
               ?`<span class="mono">${p.descontoPromocao}%</span> <button class="btn sm" data-destravardesconto="${p.id}" title="Destravar pra editar só este produto">🔒</button>`
