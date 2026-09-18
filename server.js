@@ -1790,6 +1790,47 @@ app.get('/debug/custo-estimado', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* NOVO 18/09 (Felipe: quer construir um app de pesquisa de mercado - estilo Joom Pulse/Metrify -
+   pra puxar anuncios de QUALQUER vendedor por categoria/faixa de preco, nota, vendas etc. Antes de
+   comecar a construir qualquer tela, precisa validar contra a API DE VERDADE (com token de app
+   real) quais desses endpoints ainda respondem, porque a doc nao reflete o estado atual: ha' varias
+   reclamacoes recentes (2025/2026, Reclame Aqui) de apps com token valido recebendo 403 no
+   /sites/MLB/search. Sem token (testado direto daqui), /sites/MLB/search, /items/{id} e
+   /reviews/item/{id} ja voltam 403 "PolicyAgent" - o que e' esperado (exigem auth) e nao prova nada
+   sozinho. O /ml/ranking-categoria acima ja PROVA que /highlights/MLB/category/{id},
+   /items?ids=... (multiget) e /products/{id}/items funcionam com o token real da Doca - mas so'
+   pra produtos que a loja JA vende. O que falta confirmar com token real: busca generica por
+   categoria/preco (o pilar do app novo) e o endpoint de reviews. Esta rota so' faz isso, pra
+   qualquer item publico (nao precisa ser da loja) - e' so' teste, pode ser removida depois. */
+app.get('/debug/pesquisa-mercado/testar', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) {
+      return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    }
+    const itemTeste = req.query.itemId || 'MLB1317505106'; // anuncio publico generico (perfume), so' pra teste
+    const accessToken = await tokenValido(loja);
+    const cab = { Authorization: `Bearer ${accessToken}` };
+    async function testar(nome, url) {
+      try {
+        const r = await fetch(url, { headers: cab });
+        const j = await r.json().catch(() => null);
+        return { nome, url, http_status: r.status, ok: r.ok, amostra: j };
+      } catch (e) { return { nome, url, erro: e.message }; }
+    }
+    const resultados = await Promise.all([
+      testar('busca_generica_por_palavra', `https://api.mercadolibre.com/sites/MLB/search?q=perfume&limit=3`),
+      testar('busca_por_categoria_e_preco', `https://api.mercadolibre.com/sites/MLB/search?category=MLB6284&price=50-200&limit=3`),
+      testar('item_detalhe', `https://api.mercadolibre.com/items/${itemTeste}`),
+      testar('reviews_do_item', `https://api.mercadolibre.com/reviews/item/${itemTeste}`),
+      testar('busca_catalogo_por_categoria', `https://api.mercadolibre.com/products/search?category=MLB6284&status=active&site_id=MLB`)
+    ]);
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, loja, itemTeste, resultados });
+  } catch (e) {
+    res.status(500).json({ ok: false, erro: e.message });
+  }
+});
 /* ---- Mercado Pago: relatorio de Liberacoes (v17) ----
    Fluxo de 3 passos: 1) POST /v1/account/release_report {begin_date, end_date} -> pede a geracao
    2) GET /v1/account/release_report/list -> lista os relatorios pedidos, com "status"
