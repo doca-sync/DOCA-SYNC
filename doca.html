@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v463</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v464</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -2574,7 +2574,14 @@ function atualizarPedido(produtoId,pedidoId,patch){
 }
 /* altera a quantidade de UMA programação do envio, refazendo reserva e compra */
 /* nucleo do ajuste — sem snapshot nem persist, para usar dentro de batch */
-function aplicarAjusteItem(e,i,p,novoTotal){
+/* manterCompra (NOVO 18/09, Felipe: "realizei a remoção de uma quantidade que já estava
+   programada em full e retirou da ordem de compra automático sem perguntar se era pra remover
+   ou manter em comprar arrume isso"): reduzir a quantidade de um item já programado tirava a
+   ordem de compra ligada a essa sobra sem perguntar nada - só o botão de REMOVER item inteiro
+   (modalRemoverItemEnvio, 17/09) perguntava isso; ajustar a quantidade pelo campo numérico não.
+   Mesma lógica de reverterItem: manterCompra=true pula removerCompraDoEnvio, deixando o pedido
+   como está (continua contando em Comprar, só deixa de ser "reservado" por este item do envio). */
+function aplicarAjusteItem(e,i,p,novoTotal,manterCompra){
   const dif=novoTotal-(i.solicitado||0);
   if(dif===0) return 0;
   if(dif>0){
@@ -2594,7 +2601,7 @@ function aplicarAjusteItem(e,i,p,novoTotal){
     /* sobrou: desfaz na ordem inversa — compra, depois coleta, depois galpao */
     let tirar=-dif;
     const daCompra=Math.min(tirar,i.geradoCompra||0);
-    if(daCompra>0){ removerCompraDoEnvio(p,e.id,daCompra); i.geradoCompra-=daCompra; tirar-=daCompra; }
+    if(daCompra>0){ if(!manterCompra) removerCompraDoEnvio(p,e.id,daCompra); i.geradoCompra-=daCompra; tirar-=daCompra; }
     const daColeta=Math.min(tirar,i.reservadoColeta||0);
     if(daColeta>0){ i.reservadoColeta-=daColeta; tirar-=daColeta; }
     const doGalpao=Math.min(tirar,i.alocado||0);
@@ -2650,7 +2657,20 @@ function atualizarEnvioComPdf(envioId,linhas,arquivo){
   });
   return {ok:true,soma,sub,rem,cri,comp};
 }
-function ajustarItemEnvio(envioId,itemId,novoTotal){
+/* só calcula o que essa mudança de quantidade faria, sem mexer em nada - usado pelo campo
+   numérico da tela de Envios pra saber ANTES de aplicar se precisa perguntar o que fazer com a
+   ordem de compra que seria liberada (ver comentario em aplicarAjusteItem, 18/09). */
+function previewAjusteItem(envioId,itemId,novoTotal){
+  const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
+  const i=e.itens.find(x=>x.id===itemId); if(!i) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(i.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  novoTotal=parseInt(novoTotal);
+  if(isNaN(novoTotal)||novoTotal<0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  const dif=novoTotal-(i.solicitado||0);
+  const daCompra=dif<0?Math.min(-dif,i.geradoCompra||0):0;
+  return {ok:true,e,i,p,novoTotal,dif,daCompra};
+}
+function ajustarItemEnvio(envioId,itemId,novoTotal,manterCompra){
   const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
   const i=e.itens.find(x=>x.id===itemId); if(!i) return {ok:false,msg:'Item não encontrado.'};
   const p=prodById(i.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
@@ -2659,7 +2679,7 @@ function ajustarItemEnvio(envioId,itemId,novoTotal){
   const dif=novoTotal-(i.solicitado||0);
   if(dif===0) return {ok:true,dif:0};
   snapshot(`ajuste de ${p.sku} no envio ${e.nome}`);
-  aplicarAjusteItem(e,i,p,novoTotal);
+  aplicarAjusteItem(e,i,p,novoTotal,manterCompra);
   /* alterou à mão a quantidade de um item que já estava num envio programado: o envio real
      no Mercado Livre também precisa mudar (pra menos ou pra mais) — como o Doca não mexe
      nele diretamente, avisa. */
@@ -2949,7 +2969,20 @@ function removerGrupoKitEnvio(envioId,kitItemId,manterCompra){
    o jeito seguro é reverter o grupo inteiro e alocar de novo do zero com o novo total, reusando
    a mesma lógica testada de alocarNoEnvio em vez de tentar calcular a diferença componente a
    componente. */
-function ajustarGrupoKitEnvio(envioId,kitItemId,novoTotal){
+/* preview do ajuste de kit (ver previewAjusteItem acima, mesmo motivo) - soma o geradoCompra de
+   TODOS os componentes do grupo, ja' que reverterItem devolve o grupo inteiro antes de realocar. */
+function previewAjusteGrupoKitEnvio(envioId,kitItemId,novoTotal){
+  const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
+  const grupo=itensDoGrupoKit(e,kitItemId);
+  const kit=grupo.find(i=>i.id===kitItemId); if(!kit) return {ok:false,msg:'Item não encontrado.'};
+  const p=prodById(kit.produtoId); if(!p) return {ok:false,msg:'Produto não encontrado.'};
+  novoTotal=parseInt(novoTotal);
+  if(isNaN(novoTotal)||novoTotal<0) return {ok:false,msg:'Informe uma quantidade válida.'};
+  const totalAntes=kit.solicitado||0;
+  const daCompra=novoTotal<totalAntes?grupo.reduce((s,it)=>s+(it.geradoCompra||0),0):0;
+  return {ok:true,e,grupo,kit,p,novoTotal,dif:novoTotal-totalAntes,daCompra};
+}
+function ajustarGrupoKitEnvio(envioId,kitItemId,novoTotal,manterCompra){
   const e=envioById(envioId); if(!e) return {ok:false,msg:'Envio não encontrado.'};
   const grupo=itensDoGrupoKit(e,kitItemId);
   const kit=grupo.find(i=>i.id===kitItemId); if(!kit) return {ok:false,msg:'Item não encontrado.'};
@@ -2959,7 +2992,7 @@ function ajustarGrupoKitEnvio(envioId,kitItemId,novoTotal){
   const totalAntes=kit.solicitado||0;
   if(novoTotal===totalAntes) return {ok:true,dif:0};
   snapshot(`ajuste do kit ${p.sku} no envio ${e.nome}`);
-  grupo.forEach(it=>reverterItem(it,envioId));
+  grupo.forEach(it=>reverterItem(it,envioId,manterCompra));
   const idsGrupo=new Set(grupo.map(i=>i.id));
   e.itens=e.itens.filter(i=>!idsGrupo.has(i.id));
   if(novoTotal>0) alocarNoEnvio(e,p,novoTotal);
@@ -4845,6 +4878,16 @@ function mlAtualizarFullDoSinc(p,item,loja){
   fi.aCaminhoFonte='api';
   fi.confirmadoNaoVerificado=0;
   fi.movido=null;
+  /* NOVO 18/09 (Felipe: "mesmo atualizando ainda está ficando salvo valor preenchido automático,
+     é interessante que sempre fique mostrando o que precisa ser enviado"): antes, um ajuste
+     manual no campo "A enviar" (i.ajuste) só era limpo ao gerar o Full ou confirmá-lo (ver
+     comentários em criarFullDaPrevisao/criarFullEmergencia/confirmarEnvioFull) - clicar em
+     Atualizar sozinho não mexia nisso, então o número digitado à mão ficava congelado mesmo
+     depois de vendas/estoque novo mudarem a conta de verdade. Felipe confirmou que prefere
+     sempre ver a sugestão recalculada a cada sincronização, mesmo perdendo um ajuste manual
+     antigo - toda vez que dado real e fresco chega do Mercado Livre pra este SKU, volta a
+     mostrar o número automático. */
+  fi.ajuste=null;
   state.full.lidoEm[loja]=Date.now();
   // "Entrada Pendente 2.0" (28/08, 3ª volta): guarda o log real de recebimento (só vem preenchido
   // quando esse item estava na lista "pendentes" do /sync - ver mlSincronizarLoja) e poda a fila de
@@ -10922,18 +10965,11 @@ function renderEnvio(){
   });
   el.querySelectorAll('[data-totitem]').forEach(inp=>inp.onchange=()=>{
     const [eid,iid]=inp.dataset.totitem.split('|');
-    const r=ajustarItemEnvio(eid,iid,inp.value);
-    if(!r.ok){ alert(r.msg); renderEnvio(); return; }
-    if(r.dif>0) toast(`Programação aumentada em ${fmtInt(r.dif)} un. — reserva e compra recalculadas.`);
-    else if(r.dif<0) toast(`Programação reduzida em ${fmtInt(-r.dif)} un. — estoque e compra liberados.`);
+    modalAjustarItemEnvio(eid,iid,inp.value);
   });
   el.querySelectorAll('[data-totkit]').forEach(inp=>inp.onchange=()=>{
     const [eid,iid]=inp.dataset.totkit.split('|');
-    const r=ajustarGrupoKitEnvio(eid,iid,inp.value);
-    if(!r.ok){ alert(r.msg); renderEnvio(); return; }
-    if(r.dif>0) toast(`Kit aumentado em ${fmtInt(r.dif)} un. — reserva e compra de cada componente recalculadas.`);
-    else if(r.dif<0) toast(`Kit reduzido em ${fmtInt(-r.dif)} un. — estoque e compra de cada componente liberados.`);
-    renderEnvio();
+    modalAjustarGrupoKitEnvio(eid,iid,inp.value);
   });
   el.querySelectorAll('[data-remkit]').forEach(b=>b.onclick=()=>{
     const [eid,iid]=b.dataset.remkit.split('|');
@@ -11031,6 +11067,64 @@ function modalRemoverItemEnvio(envioId,itemId,kit){
   };
   document.getElementById('mriTirar').onclick=()=>doRemover(false);
   if(temCompra) document.getElementById('mriManter').onclick=()=>doRemover(true);
+}
+/* NOVO 18/09 (Felipe: "realizei a remoção de uma quantidade que já estava programada em full e
+   retirou da ordem de compra automático sem perguntar se era pra remover ou manter em comprar"):
+   mesma pergunta do modalRemoverItemEnvio acima, só que pra quando REDUZ a quantidade pelo campo
+   numérico em vez de remover o item inteiro - antes isso chamava ajustarItemEnvio direto, sem
+   avisar que uma ordem de compra ia sumir. Só abre o modal quando a redução realmente libera
+   compra (daCompra>0); se não tem nada em Comprar sendo afetado, aplica direto igual antes, sem
+   incomodar à toa. Se o usuário cancelar, refaz o render pra desfazer o número que já tinha
+   digitado no campo (o onchange já disparou antes de perguntar). */
+function modalAjustarItemEnvio(envioId,itemId,novoTotalStr){
+  const pre=previewAjusteItem(envioId,itemId,novoTotalStr);
+  if(!pre.ok){ alert(pre.msg); renderEnvio(); return; }
+  const aplicar=manterCompra=>{
+    const r=ajustarItemEnvio(envioId,itemId,pre.novoTotal,manterCompra);
+    if(!r.ok){ alert(r.msg); renderEnvio(); return; }
+    if(r.dif>0) toast(`Programação aumentada em ${fmtInt(r.dif)} un. — reserva e compra recalculadas.`);
+    else if(r.dif<0) toast(manterCompra?`Programação reduzida em ${fmtInt(-r.dif)} un. — a ordem de compra continua na aba Comprar.`:`Programação reduzida em ${fmtInt(-r.dif)} un. — estoque e compra liberados.`);
+    renderEnvio();
+  };
+  if(pre.daCompra<=0){ aplicar(false); return; }
+  const body=openModal(false);
+  body.innerHTML=`<h3>Reduzir programação</h3>
+    <p class="hint" style="margin:0 0 12px">Reduzir ${esc(pre.p.sku)} de ${fmtInt(pre.i.solicitado)} pra ${fmtInt(pre.novoTotal)} un. no envio "${esc(pre.e.nome)}"?</p>
+    <div class="aviso atencao"><span>⚠</span><span><b>${fmtInt(pre.daCompra)} un.</b> dessa redução já eram ordem de compra na aba <b>Comprar</b>. O que fazer com essa ordem?</span></div>
+    <div class="modal-actions">
+      <button class="btn" id="maiCanc">Cancelar</button>
+      <button class="btn" id="maiManter">Reduzir, manter em Comprar</button>
+      <button class="btn danger" id="maiTirar">Reduzir e tirar de Comprar</button>
+    </div>`;
+  document.getElementById('maiCanc').onclick=()=>{ closeModal(); renderEnvio(); };
+  document.getElementById('maiTirar').onclick=()=>{ closeModal(); aplicar(false); };
+  document.getElementById('maiManter').onclick=()=>{ closeModal(); aplicar(true); };
+}
+/* mesma coisa que modalAjustarItemEnvio, só que pro campo de quantidade do KIT (guarda-chuva) -
+   ver comentario ali e em previewAjusteGrupoKitEnvio. */
+function modalAjustarGrupoKitEnvio(envioId,kitItemId,novoTotalStr){
+  const pre=previewAjusteGrupoKitEnvio(envioId,kitItemId,novoTotalStr);
+  if(!pre.ok){ alert(pre.msg); renderEnvio(); return; }
+  const aplicar=manterCompra=>{
+    const r=ajustarGrupoKitEnvio(envioId,kitItemId,pre.novoTotal,manterCompra);
+    if(!r.ok){ alert(r.msg); renderEnvio(); return; }
+    if(r.dif>0) toast(`Kit aumentado em ${fmtInt(r.dif)} un. — reserva e compra de cada componente recalculadas.`);
+    else if(r.dif<0) toast(manterCompra?`Kit reduzido em ${fmtInt(-r.dif)} un. — a ordem de compra continua na aba Comprar.`:`Kit reduzido em ${fmtInt(-r.dif)} un. — estoque e compra de cada componente liberados.`);
+    renderEnvio();
+  };
+  if(pre.daCompra<=0){ aplicar(false); return; }
+  const body=openModal(false);
+  body.innerHTML=`<h3>Reduzir kit</h3>
+    <p class="hint" style="margin:0 0 12px">Reduzir o kit ${esc(pre.p.sku)} de ${fmtInt(pre.kit.solicitado)} pra ${fmtInt(pre.novoTotal)} un. no envio "${esc(pre.e.nome)}"?</p>
+    <div class="aviso atencao"><span>⚠</span><span><b>${fmtInt(pre.daCompra)} un.</b> (somando os componentes) já eram ordem de compra na aba <b>Comprar</b>. O que fazer com essa ordem?</span></div>
+    <div class="modal-actions">
+      <button class="btn" id="makCanc">Cancelar</button>
+      <button class="btn" id="makManter">Reduzir, manter em Comprar</button>
+      <button class="btn danger" id="makTirar">Reduzir e tirar de Comprar</button>
+    </div>`;
+  document.getElementById('makCanc').onclick=()=>{ closeModal(); renderEnvio(); };
+  document.getElementById('makTirar').onclick=()=>{ closeModal(); aplicar(false); };
+  document.getElementById('makManter').onclick=()=>{ closeModal(); aplicar(true); };
 }
 /* modal do botão "↦ Mover" na linha do item, dentro de Envios FULL: mover pra outro envio já
    programado da mesma loja, ou criar um FULL de emergência separado só com este item (pra
@@ -11951,7 +12045,7 @@ function renderPrevisao(){
           <span class="ln"><span>Estoque FULL hoje</span><b>−${fmtInt(k.full)}</b></span>
           <span class="ln"><span>Consumo em ${k.D} d até o envio</span><b>+${Math.round(k.consumo)}</b></span>
           <span class="ln tot"><span>A enviar</span><b>${fmtInt(k.enviar)}</b></span>
-          <span class="obs">O que já está no FULL é descontado; só entra o que falta para fechar ${c.cobertura} dias no dia do envio.${i.ajuste!=null?'<br><b>Você ajustou à mão para '+fmtInt(i.ajuste)+'.</b> Mudar a data do envio não mexe nisso — pra voltar este item ao cálculo automático, edite a quantidade dele de volta pra '+fmtInt(fullCalc(i).enviar)+'.':''}</span></span></span></td>
+          <span class="obs">O que já está no FULL é descontado; só entra o que falta para fechar ${c.cobertura} dias no dia do envio.${i.ajuste!=null?'<br><b>Você ajustou à mão para '+fmtInt(i.ajuste)+'.</b> Mudar a data do envio não mexe nisso, mas a próxima sincronização (Atualizar) recalcula sozinha — ou edite a quantidade dele de volta pra '+fmtInt(fullCalc(i).enviar)+' agora mesmo.':''}</span></span></span></td>
         <td><button class="btn sm danger-outline" data-fdel="${i.id}" title="Remover da lista">✕</button></td></tr>`;}).join('')}
       </tbody></table></div>`
      :(l.length?`<p class="empty-inline">Nenhum produto precisa de envio nesta data.</p>`
