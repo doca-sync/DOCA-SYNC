@@ -1834,7 +1834,12 @@ app.get('/debug/pesquisa-mercado/testar', async (req, res) => {
       testar('busca_por_categoria_e_preco', `https://api.mercadolibre.com/sites/MLB/search?category=MLB6284&price=50-200&limit=3`),
       testar('item_detalhe_de_outro_vendedor', `https://api.mercadolibre.com/items/${itemTeste}`),
       testar('reviews_de_outro_vendedor', `https://api.mercadolibre.com/reviews/item/${itemTeste}`),
-      testar('catalogo_por_palavra_chave', `https://api.mercadolibre.com/products/search?site_id=MLB&keywords=${encodeURIComponent(palavraTeste)}&status=active`)
+      /* CORRIGIDO 18/09 (2a rodada): o erro 400 nomeava o campo "keywords", mas passar
+         keywords=perfume continuou dando o mesmo 400 - testando sem token direto no navegador,
+         trocar pra "q" mudou o retorno de 400 (param faltando) pra 403 do PolicyAgent (barreira de
+         autenticacao), ou seja "q" e' o nome de verdade que a API aceita - bate com a doc oficial
+         de "recognize existing catalog product", que cita q/product_identifier/parent_product_id. */
+      testar('catalogo_por_palavra_chave', `https://api.mercadolibre.com/products/search?site_id=MLB&q=${encodeURIComponent(palavraTeste)}&status=active`)
     ];
     if (eanTeste) testes.push(testar('catalogo_por_ean_exato', `https://api.mercadolibre.com/products/search?site_id=MLB&product_identifier=${encodeURIComponent(eanTeste)}&status=active`));
     const resultados = await Promise.all(testes);
