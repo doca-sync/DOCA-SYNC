@@ -5367,7 +5367,7 @@ function precoCandidatoServidor(mlPreco, descontoPromocao, cand) {
 const TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR = ['DEAL', 'SELLER_CAMPAIGN']; // mesma lista do doca.html - ver comentario la'
 async function rodarAutomacaoPromocoes(motivo, opts) {
   opts = opts || {};
-  const forcar = !!opts.forcar; // ignora "ja tem campanha ativa" - so' usado no botao manual de teste
+  const forcar = !!opts.forcar; // NAO MEXE MAIS NO COMPORTAMENTO 18/09: antes pulava produto com campanha ja ativa a nao ser que forcar=true - agora toda rodada ja tenta todas as campanhas candidatas (ver comentario abaixo), entao "forcar" ficou sem efeito aqui. Mantido so' pra nao quebrar a chamada existente do botao "Rodar automacao agora" do doca.html.
   const somenteLoja = opts.loja || null;
   const resumo = { porLoja: {} };
   let linha;
@@ -5416,7 +5416,16 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
          CONFIÁVEL (promocaoAtivaAgora) direto no produto - o doca.html passa a usar esse campo em
          vez do mlOriginalPrice pra decidir quem está "sem promoção". */
       if (p.promocaoAtivaAgora !== st.temPromocaoAtiva) { p.promocaoAtivaAgora = st.temPromocaoAtiva; mudou = true; }
-      if (st.temPromocaoAtiva && !forcar) continue; // ja coberto - so entra de novo se for o teste forcado
+      /* CORRIGIDO 18/09 (Felipe: "porque os produtos novos não entrou em todas as campanhas
+         possíveis só em uma?"): antes, assim que o produto entrava em QUALQUER campanha (ou já
+         tinha 1 ativa), a rodada toda pulava ele (`continue` aqui embaixo) e o loop de candidatas
+         parava no primeiro sucesso (`break`) - resultado: 1 campanha só por produto pra sempre,
+         mesmo com outras campanhas rodando em paralelo (PROMO SETEMBRO, etc.) que o produto também
+         se qualificava. Felipe confirmou que quer entrar em TODAS as campanhas elegíveis, contanto
+         que o preço bata com o desconto configurado - que é exatamente o que precoCandidatoServidor
+         já confere (min/max de cada candidata) antes de tentar. Removido o "já coberto, pula" e o
+         "para na primeira" - agora tenta TODAS as candidatas retornadas (que o /promocao/status já
+         só lista como status "candidate", ou seja, nunca repete uma campanha em que já está). */
       const candidatas = (st.candidatas || []).filter(c => TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR.includes(c.type) && (c.id || c.promotion_id));
       let entrouEmAlgo = false;
       for (const cand of candidatas) {
@@ -5435,7 +5444,7 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
             entrouEmAlgo = true;
             p.promocaoAtivaAgora = true;
             mudou = true;
-            break; // 1 campanha nova por item ja basta nessa rodada
+            // sem break: continua tentando as outras candidatas tambem, ver comentario acima
           } else {
             erros.push({ sku: p.sku || p.codigo, erro: JSON.stringify(jItem) });
           }
@@ -5443,7 +5452,7 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
           erros.push({ sku: p.sku || p.codigo, erro: e.message });
         }
       }
-      if (!entrouEmAlgo) precisamCampanhaNova.push(p);
+      if (!entrouEmAlgo && !st.temPromocaoAtiva) precisamCampanhaNova.push(p);
     }
     let criada = null;
     if (precisamCampanhaNova.length) {
