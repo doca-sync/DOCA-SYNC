@@ -1850,41 +1850,18 @@ app.get('/debug/pesquisa-mercado/testar', async (req, res) => {
   }
 });
 /* ================= Pesquisa de mercado (18/09) =================
-   Fase 2 (Felipe: "focar no que funciona - catalogo"). A validacao acima confirmou que a API NAO
-   deixa ler anuncio nem avaliacao de outro vendedor, e busca geral por categoria/preco tambem e'
-   bloqueada - so' /products/search (catalogo oficial, por palavra-chave ou EAN) e /products/{id}/items
-   (todos os vendedores concorrendo naquele produto de catalogo, com preco) funcionam de verdade.
-   Esta rota junta as duas: busca no catalogo e, pra cada produto encontrado, traz menor/maior/media
-   de preco e quantos vendedores estao concorrendo. So' cobre categoria "catalog_required" (a
-   maioria de perfume/marca e' assim) - anuncio tradicional/livre fica de fora, isso e' limite real
-   da API, nao do Doca. */
+   Fase 2 (Felipe: "focar no que funciona - catalogo"). A validacao confirmou que a API NAO deixa
+   ler anuncio nem avaliacao de outro vendedor, busca geral por categoria/preco e' bloqueada, e o
+   /products/{id}/items (que devolveria "quem mais vende esse produto") se mostrou pouco confiavel
+   na pratica - testado com "paco rabanne 1 million" (um dos perfumes mais vendidos do ML) e voltou
+   0 vendedores nos 10 resultados, o que nao bate com a realidade. Por isso o escopo foi reduzido
+   (decisao do Felipe) pra so' o que E' solido: busca no catalogo oficial do ML por palavra-chave ou
+   EAN, trazendo marca/GTIN/atributos - sem tentar estimar preco nem quantidade de concorrentes.
+   Uso principal: descobrir se um produto do catalogo de um FORNECEDOR ja existe no catalogo do ML
+   (por EAN, que e' a forma exata) e puxar como o ML descreve/categoriza aquele produto. */
 function extrairAtributo(produto, idAtributo) {
   const attr = (produto.attributes || []).find(a => a.id === idAtributo);
   return attr ? (attr.value_name || null) : null;
-}
-async function buscarOfertasDoProduto(catalogProductId, cab) {
-  try {
-    const r = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(catalogProductId)}/items?limit=50`, { headers: cab });
-    const j = await r.json();
-    const lista = (j && Array.isArray(j.results)) ? j.results : [];
-    const ofertas = lista.map(o => ({
-      itemId: o.item_id || o.id || null,
-      vendedor: o.seller_id || null,
-      preco: (typeof o.price === 'number') ? o.price : ((o.price && o.price.amount) || null)
-    })).filter(o => typeof o.preco === 'number' && o.preco > 0);
-    if (!ofertas.length) return { vendedores: 0, precoMinimo: null, precoMaximo: null, precoMedio: null, ofertas: [] };
-    const precos = ofertas.map(o => o.preco);
-    const vendedoresUnicos = new Set(ofertas.map(o => o.vendedor).filter(Boolean));
-    return {
-      vendedores: vendedoresUnicos.size,
-      precoMinimo: Math.min(...precos),
-      precoMaximo: Math.max(...precos),
-      precoMedio: Math.round((precos.reduce((s, p) => s + p, 0) / precos.length) * 100) / 100,
-      ofertas: ofertas.slice(0, 20)
-    };
-  } catch (e) {
-    return { vendedores: null, precoMinimo: null, precoMaximo: null, precoMedio: null, ofertas: [], erro: e.message };
-  }
 }
 app.get('/pesquisa-mercado/buscar', async (req, res) => {
   try {
@@ -1895,30 +1872,31 @@ app.get('/pesquisa-mercado/buscar', async (req, res) => {
     const q = (req.query.q || '').trim();
     const ean = (req.query.ean || '').trim();
     if (!q && !ean) return res.status(400).json({ ok: false, erro: 'Informe "q" (palavra-chave) ou "ean" (codigo de barras/GTIN).' });
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const offset = parseInt(req.query.offset, 10) || 0;
     const accessToken = await tokenValido(loja);
     const cab = { Authorization: `Bearer ${accessToken}` };
     const urlBusca = ean
-      ? `https://api.mercadolibre.com/products/search?site_id=MLB&product_identifier=${encodeURIComponent(ean)}&status=active`
-      : `https://api.mercadolibre.com/products/search?site_id=MLB&q=${encodeURIComponent(q)}&status=active`;
+      ? `https://api.mercadolibre.com/products/search?site_id=MLB&product_identifier=${encodeURIComponent(ean)}&status=active&limit=${limit}&offset=${offset}`
+      : `https://api.mercadolibre.com/products/search?site_id=MLB&q=${encodeURIComponent(q)}&status=active&limit=${limit}&offset=${offset}`;
     const rBusca = await fetch(urlBusca, { headers: cab });
     const jBusca = await rBusca.json();
     if (!rBusca.ok) return res.status(rBusca.status).json({ ok: false, erro: 'Busca no catalogo do Mercado Livre falhou.', detalhe: jBusca });
     const produtos = (jBusca && Array.isArray(jBusca.results)) ? jBusca.results : [];
-    const resultados = await Promise.all(produtos.map(async p => {
-      const ofertas = await buscarOfertasDoProduto(p.catalog_product_id || p.id, cab);
-      return {
-        catalogProductId: p.catalog_product_id || p.id,
-        nome: p.name || null,
-        marca: extrairAtributo(p, 'BRAND'),
-        gtin: extrairAtributo(p, 'GTIN'),
-        genero: extrairAtributo(p, 'GENDER'),
-        volume: extrairAtributo(p, 'UNIT_VOLUME'),
-        imagem: (p.pictures && p.pictures[0] && p.pictures[0].url) || null,
-        ...ofertas
-      };
+    const resultados = produtos.map(p => ({
+      catalogProductId: p.catalog_product_id || p.id,
+      nome: p.name || null,
+      marca: extrairAtributo(p, 'BRAND'),
+      gtin: extrairAtributo(p, 'GTIN'),
+      genero: extrairAtributo(p, 'GENDER'),
+      volume: extrairAtributo(p, 'UNIT_VOLUME'),
+      status: p.status || null,
+      dominio: p.domain_id || null,
+      imagem: (p.pictures && p.pictures[0] && p.pictures[0].url) || null,
+      descricao: (p.short_description && p.short_description.content) || null
     }));
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, loja, termo: q || ean, total: (jBusca.paging && jBusca.paging.total) || resultados.length, resultados });
+    res.json({ ok: true, loja, termo: q || ean, total: (jBusca.paging && jBusca.paging.total) || resultados.length, limit, offset, resultados });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }
