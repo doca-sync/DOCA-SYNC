@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v459</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v460</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -500,6 +500,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-tab="financas" aria-selected="false">Finanças</button>
       <button data-tab="ads" aria-selected="false">Ads</button>
       <button data-tab="promocoes" aria-selected="false">Promoções</button>
+      <button data-tab="pesquisamercado" aria-selected="false">Pesquisa de Mercado</button>
       <button data-tab="full" aria-selected="false">FULL</button>
       <button data-tab="estoqueminimo" aria-selected="false">Estoque Mínimo</button>
       <button data-tab="amauri" aria-selected="false">Amauri</button>
@@ -527,6 +528,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <section id="tab-financas" class="tabpanel hidden"></section>
   <section id="tab-ads" class="tabpanel hidden"></section>
   <section id="tab-promocoes" class="tabpanel hidden"></section>
+  <section id="tab-pesquisamercado" class="tabpanel hidden"></section>
   <section id="tab-full" class="tabpanel hidden">
     <div class="subnav" id="subFull">
       <button data-sub="previsao" aria-selected="true">Previsão de reposição</button>
@@ -12447,10 +12449,93 @@ function renderPromocoes(){
     btn.onclick=()=>{ promocaoDestravados.add(btn.dataset.destravardesconto); renderPromocoes(); };
   });
 }
+/* ================= Pesquisa de mercado (18/09) =================
+   Busca no catalogo oficial do Mercado Livre (server: /pesquisa-mercado/buscar) por palavra-chave
+   ou EAN/GTIN. Uso principal: conferir se um produto de fornecedor ja existe no catalogo do ML
+   antes de cadastrar. O resultado NAO fica em `state` (nao precisa persistir/sincronizar entre
+   aparelhos - e' so' uma consulta pontual), fica em variavel local. A aba monta o formulario UMA
+   VEZ (marca com data-init) pra o renderAll() periodico nao apagar o que foi digitado nem o
+   resultado da ultima busca. */
+let pesquisaMercadoResultado=null;
+let pesquisaMercadoBuscando=false;
+function renderPesquisaMercado(){
+  const el=document.getElementById('tab-pesquisamercado'); if(!el) return;
+  if(el.dataset.init==='1') return;
+  el.dataset.init='1';
+  el.innerHTML=`
+    <h1 class="page-title">Pesquisa de mercado</h1>
+    <p class="sub" style="margin:-8px 0 16px">Busca no catálogo oficial do Mercado Livre por palavra-chave ou código de barras (EAN/GTIN). Útil pra conferir se um produto de fornecedor já existe no catálogo antes de cadastrar. Não mostra preço nem quantidade de concorrentes — a API do Mercado Livre não libera esse dado pra anúncio de outro vendedor.</p>
+    <div class="card-vg" style="margin-bottom:18px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="pmLoja" style="min-width:140px">${STORES.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('')}</select>
+        <input id="pmTermo" type="text" placeholder="Palavra-chave (ex: perfume burberry) ou EAN" style="flex:1;min-width:220px">
+        <button class="btn" id="pmBuscar">🔍 Buscar</button>
+      </div>
+      <p class="hint" style="margin-top:8px">Se o texto digitado for só números com 8+ dígitos, o Doca busca por EAN/GTIN exato; senão, busca por palavra-chave.</p>
+    </div>
+    <div id="pmResultado"></div>
+  `;
+  document.getElementById('pmBuscar').onclick=buscarPesquisaMercado;
+  document.getElementById('pmTermo').addEventListener('keydown',e=>{ if(e.key==='Enter') buscarPesquisaMercado(); });
+  renderPesquisaMercadoResultado(); // se ja tinha resultado de uma busca anterior (troca de aba), mostra de novo
+}
+async function buscarPesquisaMercado(){
+  const loja=document.getElementById('pmLoja').value;
+  const termo=(document.getElementById('pmTermo').value||'').trim();
+  const resultDiv=document.getElementById('pmResultado');
+  if(!termo){ toast('Digite uma palavra-chave ou EAN pra buscar.'); return; }
+  if(pesquisaMercadoBuscando) return;
+  pesquisaMercadoBuscando=true;
+  resultDiv.innerHTML='<p class="muted">Buscando no catálogo do Mercado Livre…</p>';
+  try{
+    const base=backendUrl();
+    if(!base){ resultDiv.innerHTML='<p class="muted">⚠ Configure a URL do backend antes.</p>'; return; }
+    const ehEan=/^\d{8,}$/.test(termo);
+    const param=ehEan?`ean=${encodeURIComponent(termo)}`:`q=${encodeURIComponent(termo)}`;
+    const r=await fetch(`${base}/pesquisa-mercado/buscar?loja=${encodeURIComponent(loja)}&${param}&limit=20`,{cache:'no-store'});
+    const j=await r.json().catch(()=>null);
+    if(!r.ok||!j||!j.ok){
+      resultDiv.innerHTML=`<p class="muted">⚠ Busca falhou: ${esc((j&&j.erro)||('HTTP '+r.status))}</p>`;
+      return;
+    }
+    pesquisaMercadoResultado=j;
+    renderPesquisaMercadoResultado();
+  }catch(e){
+    resultDiv.innerHTML=`<p class="muted">⚠ Erro: ${esc(e.message)}</p>`;
+  }finally{
+    pesquisaMercadoBuscando=false;
+  }
+}
+function renderPesquisaMercadoResultado(){
+  const resultDiv=document.getElementById('pmResultado'); if(!resultDiv) return;
+  const j=pesquisaMercadoResultado;
+  if(!j) return;
+  if(!j.resultados||!j.resultados.length){
+    resultDiv.innerHTML='<p class="muted">Nenhum produto de catálogo encontrado pra esse termo.</p>';
+    return;
+  }
+  resultDiv.innerHTML=`
+    <p class="hint" style="margin-bottom:8px">${fmtInt(j.total)} produto(s) de catálogo encontrados pra "${esc(j.termo)}" — mostrando ${j.resultados.length}.</p>
+    <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+      <th></th><th>Produto</th><th>Marca</th><th>GTIN</th><th>Gênero</th><th>Volume</th><th>Domínio</th><th>Status</th>
+    </tr></thead><tbody>
+      ${j.resultados.map(p=>`<tr>
+        <td>${p.imagem?`<img src="${esc(p.imagem)}" style="width:36px;height:36px;object-fit:contain;border-radius:4px" loading="lazy">`:''}</td>
+        <td>${esc(p.nome||'')}</td>
+        <td>${esc(p.marca||'—')}</td>
+        <td class="mono">${esc(p.gtin||'—')}</td>
+        <td>${esc(p.genero||'—')}</td>
+        <td>${esc(p.volume||'—')}</td>
+        <td class="muted" style="font-size:11px">${esc(p.dominio||'—')}</td>
+        <td>${p.status==='active'?'<span class="badge okv">ativo</span>':`<span class="badge">${esc(p.status||'—')}</span>`}</td>
+      </tr>`).join('')}
+    </tbody></table></div>
+  `;
+}
 function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
-   ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],['promoções',renderPromocoes],
+   ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],['promoções',renderPromocoes],['pesquisa de mercado',renderPesquisaMercado],
    ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
