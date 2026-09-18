@@ -1809,6 +1809,8 @@ app.get('/debug/pesquisa-mercado/testar', async (req, res) => {
       return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
     }
     const itemTeste = req.query.itemId || 'MLB1317505106'; // anuncio publico generico (perfume), so' pra teste
+    const palavraTeste = req.query.q || 'perfume';
+    const eanTeste = req.query.ean || null; // opcional: testar /products/search por GTIN/EAN exato
     const accessToken = await tokenValido(loja);
     const cab = { Authorization: `Bearer ${accessToken}` };
     async function testar(nome, url) {
@@ -1818,13 +1820,24 @@ app.get('/debug/pesquisa-mercado/testar', async (req, res) => {
         return { nome, url, http_status: r.status, ok: r.ok, amostra: j };
       } catch (e) { return { nome, url, erro: e.message }; }
     }
-    const resultados = await Promise.all([
-      testar('busca_generica_por_palavra', `https://api.mercadolibre.com/sites/MLB/search?q=perfume&limit=3`),
+    /* CORRIGIDO 18/09 (1a rodada de teste com token real do Felipe): /items/{id} e /reviews/item/{id}
+       de item de OUTRO vendedor voltaram 403 access_denied/forbidden mesmo com token valido -
+       confirma que essas 2 rotas so' servem pra item da PROPRIA loja, nao pra concorrente. E'
+       /sites/{site}/search tambem confirmado bloqueado (403 forbidden) com token real, igual os
+       relatos do Reclame Aqui. So' /products/search respondeu diferente: 400 pedindo 'keywords',
+       'product_identifier' ou 'attributes' - ou seja, RESPONDE, so' faltou o parametro certo. Esta
+       rodada testa /products/search de verdade (por palavra-chave e, se um EAN for passado, por
+       GTIN exato) pra ver se da' pra descobrir concorrente por esse caminho (catalogo, nao anuncio
+       direto) mesmo sem acesso a busca geral nem a item alheio. */
+    const testes = [
+      testar('busca_generica_por_palavra', `https://api.mercadolibre.com/sites/MLB/search?q=${encodeURIComponent(palavraTeste)}&limit=3`),
       testar('busca_por_categoria_e_preco', `https://api.mercadolibre.com/sites/MLB/search?category=MLB6284&price=50-200&limit=3`),
-      testar('item_detalhe', `https://api.mercadolibre.com/items/${itemTeste}`),
-      testar('reviews_do_item', `https://api.mercadolibre.com/reviews/item/${itemTeste}`),
-      testar('busca_catalogo_por_categoria', `https://api.mercadolibre.com/products/search?category=MLB6284&status=active&site_id=MLB`)
-    ]);
+      testar('item_detalhe_de_outro_vendedor', `https://api.mercadolibre.com/items/${itemTeste}`),
+      testar('reviews_de_outro_vendedor', `https://api.mercadolibre.com/reviews/item/${itemTeste}`),
+      testar('catalogo_por_palavra_chave', `https://api.mercadolibre.com/products/search?site_id=MLB&keywords=${encodeURIComponent(palavraTeste)}&status=active`)
+    ];
+    if (eanTeste) testes.push(testar('catalogo_por_ean_exato', `https://api.mercadolibre.com/products/search?site_id=MLB&product_identifier=${encodeURIComponent(eanTeste)}&status=active`));
+    const resultados = await Promise.all(testes);
     res.set('Cache-Control', 'no-store');
     res.json({ ok: true, loja, itemTeste, resultados });
   } catch (e) {
