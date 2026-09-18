@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v462</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v463</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -1151,6 +1151,53 @@ function repararComprasOrfas(){
   });
   if(reparos) console.log('[reparo] '+reparos+' pedido(s) de compra recriado(s) - envio tinha "falta comprar" sem ordem de compra correspondente.');
 }
+/* NOVO 18/09 (Felipe: confirmou 2 envios de BRILHOVIVAI como FULL e "Entrada pendente" não
+   apareceu pra nenhum - achado com o Console: existiam 2 registros no painel Full pro MESMO
+   anúncio/loja, com id diferente e aptas/transferência diferentes um do outro - e não era só
+   esse SKU, praticamente todo SKU de 3 lojas (TorvStore, Orbix Brasil, Dor Block) estava
+   duplicado). Causa raiz: mesclarEstados/mesclarPorId junta listas comparando pelo campo "id" -
+   funciona bem pra envios/produtos/tarefas (cada um só é criado 1x, em 1 aparelho, com 1 id).
+   Mas o painel Full é populado pela PRÓPRIA sincronização com o Mercado Livre (mlAtualizarFullDoSinc),
+   e cada aparelho que sincroniza sozinho ANTES de ter puxado a nuvem gera seu próprio id novo pro
+   mesmo anúncio - pra mesclarPorId, viram "2 itens diferentes" (ids diferentes), e uma mesclagem
+   antiga (provavelmente a 1ª vez com 2 aparelhos/abas usados) juntou as duas cópias em vez de
+   substituir. Dali em diante, toda sincronização só atualiza a cópia que aparece PRIMEIRO no
+   array (fullProduto/.find() sempre pega a 1ª), deixando a outra congelada com número velho -
+   e como "Entrada pendente" compara o total atual contra o total de quando confirmou (ver
+   filaProcessamentoComRestante), ter 2 números divergentes pro mesmo produto embaralha essa
+   conta e o marcador some sem nenhum problema real ter acontecido.
+   Reparo: por (loja + produto), mantém só 1 registro - o que tiver mais histórico de vendas (v7+
+   v15+v30 maior, sinal de que é o que continuou sendo alimentado pelas sincronizações de verdade);
+   empate fica com o primeiro. Depois de reparar, uma sincronização (Atualizar) nova traz o número
+   real e atual do Mercado Livre pra esse registro único. Idempotente: sem duplicata, não mexe em
+   nada. */
+function repararFullItensDuplicados(){
+  const porChave={};
+  const manter=[];
+  let duplicados=0;
+  (state.full.itens||[]).forEach(fi=>{
+    const p=fullProduto(fi);
+    const chave=fi.loja+'|'+(p?('id:'+p.id):('semvinculo:'+(fi.sku||fi.codigo||'')));
+    const existente=porChave[chave];
+    if(!existente){
+      porChave[chave]=fi;
+      manter.push(fi);
+      return;
+    }
+    duplicados++;
+    const pontosExistente=(existente.v7||0)+(existente.v15||0)+(existente.v30||0);
+    const pontosNovo=(fi.v7||0)+(fi.v15||0)+(fi.v30||0);
+    if(pontosNovo>pontosExistente){
+      const idx=manter.indexOf(existente);
+      if(idx>=0) manter[idx]=fi;
+      porChave[chave]=fi;
+    }
+  });
+  if(duplicados){
+    state.full.itens=manter;
+    console.log('[reparo] '+duplicados+' registro(s) duplicado(s) removido(s) do painel Full (mesmo anúncio contado 2x por uma mesclagem antiga entre aparelhos). Clique em Atualizar pra trazer o número real de novo.');
+  }
+}
 function migrar(){
   if(!Array.isArray(state.envios)) state.envios=[];
   if(!Array.isArray(state.avisosFornecedor)) state.avisosFornecedor=[];
@@ -1333,6 +1380,7 @@ function migrar(){
   });
   vincularPedidosAntigos();
   repararComprasOrfas();
+  repararFullItensDuplicados();
   state.envios.forEach(e=>{
     if(e.arquivo===undefined) e.arquivo='';
     if(e.localColeta===undefined) e.localColeta=LOCAIS_COLETA[0];
@@ -1916,6 +1964,7 @@ async function salvarNaNuvem(){
         if(tentativasConflito<5){
           tentativasConflito++;
           state=mesclarEstados(state,j.dados);
+          repararFullItensDuplicados(); // ver comentario 18/09 - mesclarPorId duplica o painel Full quando 2 aparelhos sincronizam antes de puxar a nuvem
           nuvemAtualizadoEm=new Date(j.atualizadoEm).getTime();
           alteracaoLocal=true;
           renderAll();
