@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v465</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v466</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -11537,11 +11537,18 @@ function fullCalc(i,envioOverride){
      + próximos programados) aguenta, mesmo quando ele aguenta folgado até depois do envio. */
   const aguentaAte=(media>0&&cob!==Infinity)?new Date(Date.now()+Math.floor(cob)*864e5).toISOString().slice(0,10):null;
   const vendasIncoer=!mediaPronta&&((i.v7||0)>(i.v15||0)||(i.v15||0)>(i.v30||0));
-  /* se esse SKU ja teve um envio confirmado (Criar FULL no Doca) e o envio ainda existe,
-     nao sugere mandar de novo — mesmo que a conta de demanda desse outro numero. So volta a
-     sugerir se o envio for excluido ou se voce ajustar manualmente. */
+  /* MUDOU 18/09 (Felipe: "independente se foi criado ou não tudo o que precisar enviar tem que
+     ser recalculado sozinho e eu decido"): antes, assim que um SKU já tinha um envio criado
+     (Criar FULL no Doca) pra este ciclo, "A enviar" travava em 0 nessa tela pra sempre - mesmo
+     que a conta de demanda desse outro número (ex: a quantidade enviada foi arredondada pra
+     caixa fechada, ou a média de vendas subiu depois). "full" (algumas linhas acima) já soma
+     "próximos programados" (a quantidade já agendada no envio criado), então "enviar" já sai
+     naturalmente perto de 0 quando o envio criado cobre a demanda - o jaEnviado?0 só escondia os
+     casos em que sobrava uma diferença real. Removido: agora sempre mostra o cálculo de verdade,
+     criado ou não, e quem decide se vale a pena mandar mais é o Felipe (jaEnviado continua
+     retornado abaixo, só não força mais qtd pra 0 - ainda serve pra mostrar a tag "✓ no FULL"). */
   const jaEnviado=!!(i.enviado&&envioById(i.enviado.envioId));
-  const qtd=i.ajuste!=null?i.ajuste:(jaEnviado?0:enviar);
+  const qtd=i.ajuste!=null?i.ajuste:enviar;
   return {r7,r15,r30,soma:somaPond,media,mediaPronta,D,full,proximosProgramados,emProcessamento,consumo,proj,dem,enviar,qtd,cob,
     rompe,diaRuptura,aguentaAte,vendasIncoer,jaEnviado,custo:fullCusto(i),valor:(fullValorBase+emProcessamento)*fullCusto(i)};
 }
