@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v464</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v465</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12060,22 +12060,32 @@ function renderPrevisao(){
   document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; e.target.blur(); persist(); renderFull(); };
   document.getElementById('fEnvio').onclick=()=>abrirSeletorData(c.envio,(iso)=>{
     snapshot('mudança da data da previsão');
-    /* antes, mudar a data zerava o ajuste manual de TODO produto (de todas as lojas, não só
-       desta) - reescrevendo por cima de quantidade que a pessoa tinha corrigido à mão. Agora
-       mudar a data só muda a data; os ajustes manuais continuam do jeito que estavam. Pra
-       voltar 1 item específico ao cálculo automático, edite a quantidade dele em "A enviar"
-       de volta pro valor sugerido (ver dica no ⓘ da coluna). */
+    /* MUDOU DE NOVO 18/09 (Felipe: "estou selecionando outra data e ainda fica preso ao número
+       digitado manualmente e não recalcula"): em 17/09 isso tinha sido trocado pra NÃO zerar
+       ajuste manual nenhum ao mudar a data (só a data mudava, ajustes ficavam intocados - ver
+       histórico do comentário removido aqui). Felipe pediu de novo, agora na direção contrária
+       ("sempre recalcular", mesmo pedido que já valeu pra Atualizar - ver mlAtualizarFullDoSinc):
+       voltou a zerar o ajuste manual de TODO produto (de todas as lojas - fullCfg().envio é um
+       único valor global, a data vale pra todas) sempre que essa data muda, porque muda a conta
+       de TODO mundo (dias até o envio = D em fullCalc). Se voltar a incomodar (ex: usar essa
+       data só pra "espiar" um cenário e depois voltar sem perder os ajustes), avisa que dá pra
+       reverter de novo. */
     fullCfg().envio=iso;
+    state.full.itens.forEach(i=>{ i.ajuste=null; });
     persist();
     renderPrevisao();
   });
-  const num=(id,campo,min)=>{ const n=document.getElementById(id); if(!n) return; n.onchange=()=>{
+  const num=(id,campo,min,afetaCalculo)=>{ const n=document.getElementById(id); if(!n) return; n.onchange=()=>{
     const v=Number(n.value);
     if(isNaN(v)||v<min){ alert('Valor inválido.'); renderPrevisao(); return; }
     snapshot('ajuste de '+campo); fullCfg()[campo]=v;
     if(((fullCfg().p7||0)+(fullCfg().p15||0)+(fullCfg().p30||0))<=0){ toast('Ao menos um peso precisa ser maior que zero.'); fullCfg()[campo]=campo==='p7'?3:(campo==='p15'?2:1); }
+    /* mesmo motivo do fEnvio acima (18/09, "sempre recalcular"): cobertura e pesos 7/15/30d
+       mudam a conta de "A enviar" de todo mundo, então zeram ajuste manual junto. diasAlertaRuptura
+       não entra nessa - só muda o alerta de ruptura, não a quantidade sugerida, então não mexe. */
+    if(afetaCalculo) state.full.itens.forEach(i=>{ i.ajuste=null; });
     persist(); }; };
-  num('fCob','cobertura',1); num('fP7','p7',0); num('fP15','p15',0); num('fP30','p30',0); num('fDiasAlerta','diasAlertaRuptura',1);
+  num('fCob','cobertura',1,true); num('fP7','p7',0,true); num('fP15','p15',0,true); num('fP30','p30',0,true); num('fDiasAlerta','diasAlertaRuptura',1,false);
   el.querySelectorAll('[data-fq]').forEach(inp=>inp.onchange=()=>{
     const i=state.full.itens.find(x=>x.id===inp.dataset.fq); if(!i) return;
     const v=Math.max(0,parseInt(inp.value)||0);
