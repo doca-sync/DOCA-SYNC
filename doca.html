@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v466</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v467</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5324,9 +5324,9 @@ function openOndeReservadoModal(id){
   const body=openModal(false);
   body.innerHTML=`<h3>Onde ${esc(p.sku)} está reservado</h3>
     ${linhas.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-      <th>Envio</th><th>Loja</th><th>No galpão</th><th>A coletar</th><th>Total</th></tr></thead><tbody>
+      <th>Envio</th><th>Loja</th><th>A coletar</th><th>No galpão</th><th>Total</th></tr></thead><tbody>
       ${linhas.map(({e,i})=>`<tr><td>${esc(e.nome)}</td><td><span class="loja-tag">${esc(e.loja)}</span></td>
-        <td class="num okv">${fmtInt(i.alocado||0)}</td><td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
+        <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td><td class="num okv">${fmtInt(i.alocado||0)}</td>
         <td class="num">${fmtInt((i.alocado||0)+(i.reservadoColeta||0))}</td></tr>`).join('')}
       <tr><td colspan="4" style="text-align:right"><b>Total reservado</b></td><td class="num"><b>${fmtInt(reservadoDe(p))}</b></td></tr>
     </tbody></table></div>
@@ -10866,7 +10866,7 @@ function renderEnvio(){
           </div>
         </div>
         ${e.itens.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>SKU</th><th>Código</th><th>A coletar</th><th>Falta comprar</th><th title="Estoque livre pra reservar mais nesse envio, sem contar o que já está reservado aqui">Disponível</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
+          <th>SKU</th><th>Código</th><th>Falta comprar</th><th>A coletar</th><th title="Estoque livre pra reservar mais nesse envio, sem contar o que já está reservado aqui">Disponível</th><th>Total do envio</th><th>Média/dia</th><th>Dura até</th><th></th>
         </tr></thead><tbody>
         ${e.itens.filter(i=>!i.kitDeItemId).map(i=>{
           /* CORRIGIDO 25/08: mostra o SKU REALMENTE escolhido (skuEscolhidoId), não o mestre do
@@ -10895,8 +10895,8 @@ function renderEnvio(){
             const kv=kitVirtualQtd(p);
             const dispKit=kv?kv.disp:null;
             return `<tr><td class="mono">🧩 ${esc(p.sku)}${medalhaProduto(p)} <button class="btn sm" data-envkitdet="${i.id}" style="padding:1px 7px;font-size:11px">${aberto?'▾':'▸'} detalhar</button></td><td>${esc(p.codigo)}</td>
-            <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
             <td class="num ${gc?'pend':''}">${fmtInt(gc)}</td>
+            <td class="num ${rc?'cam':''}">${fmtInt(rc)}</td>
             <td class="num ${dispKit>0?'okv':''}" title="${dispKit==null?'Kit sem componentes cadastrados':'Quantos kits dá pra montar com o estoque livre dos componentes hoje (o componente com menos é quem limita) — veja componente a componente em detalhar'}">${dispKit==null?'—':fmtInt(dispKit)}</td>
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totkit="${e.id}|${i.id}"
               title="Altere a quantidade deste kit — o sistema refaz a reserva/compra de cada componente"></td>
@@ -10908,8 +10908,8 @@ function renderEnvio(){
               const pj=projecaoEnvioItem(pg,g.solicitado);
               const dispG=disponivel(produtoEfetivo(pg));
               return `<tr style="opacity:.75"><td class="mono" style="padding-left:22px">↳ ${esc(pg.sku)}</td><td>${esc(pg.codigo)}</td>
-              <td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
               <td class="num ${g.geradoCompra?'pend':''}">${fmtInt(g.geradoCompra||0)}</td>
+              <td class="num ${g.reservadoColeta?'cam':''}">${fmtInt(g.reservadoColeta||0)}</td>
               <td class="num ${dispG>0?'okv':''}">${fmtInt(dispG)}</td>
               <td class="hint">${fmtInt(g.solicitado)} un. — parte do kit acima</td>
               <td class="num">${pj.media>0?pj.media.toFixed(2):'—'}</td>
@@ -10920,8 +10920,8 @@ function renderEnvio(){
           const pj=projecaoEnvioItem(p,i.solicitado);
           const dispMais=disponivel(produtoEfetivo(p));
           return `<tr><td class="mono">${esc(p.sku)}${medalhaProduto(p)}</td><td>${esc(p.codigo)}</td>
-            <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
             <td class="num ${i.geradoCompra?'pend':''}">${fmtInt(i.geradoCompra||0)}</td>
+            <td class="num ${i.reservadoColeta?'cam':''}">${fmtInt(i.reservadoColeta||0)}</td>
             <td class="num ${dispMais>0?'okv':''}" title="Estoque livre (galpão + comprado aguardando coleta) pra reservar mais nesse envio">${fmtInt(dispMais)}</td>
             <td><input type="number" min="0" value="${i.solicitado}" class="qty-acao" data-totitem="${e.id}|${i.id}"
               title="Altere a quantidade desta programação — o sistema refaz a reserva e a compra">
