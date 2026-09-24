@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v467</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v468</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -9104,8 +9104,18 @@ function despesasPeriodoLoja(loja,de,ate){
    custo real da operação nesse período é o da fatura QUE VENCEU dentro dele, tenha sido paga ou
    não - pago só importa pro Fluxo de Caixa, não pra quanto custou de verdade. */
 function faturaMlPeriodoLoja(loja,de,ate){
+  /* CORRIGIDO 24/09 (Felipe: pagou a fatura do ML mas não tinha saldo total em conta - o débito
+     automático descontou uma parte agora e vai descontando o resto conforme entrar dinheiro. Essa
+     fatura ficou com pagamento PARCIAL, então "valor" (quanto ainda falta pagar) caiu pra só o
+     restante em aberto, e a Margem Líquida passou a contar como custo só essa sobra, não o custo
+     real do período). O mesmo raciocínio do fix de 25/08 (não zerar "valor" quando quita 100%) vale
+     aqui pra quitação PARCIAL: o custo de verdade da fatura pro período é sempre o total dela
+     (valorTotal), pago de uma vez, pago aos poucos ou ainda em aberto - quanto já foi pago ou falta
+     pagar é assunto de Fluxo de Caixa/Despesas, não muda quanto a operação custou. Usa valorTotal
+     sempre que existir; só cai pro "valor" (comportamento antigo) em fatura muito antiga, de antes
+     desse campo existir, que não tenha valorTotal salvo. */
   return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate)
-    .reduce((s,d)=>s+(Number(d.valor)||0),0);
+    .reduce((s,d)=>s+(Number(d.valorTotal!=null?d.valorTotal:d.valor)||0),0);
 }
 /* margem de contribuição e margem líquida a partir de um resumo (do backend) - função separada
    pra ser reaproveitada tanto no Resumo Financeiro quanto no fechamento dos sócios. */
