@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v472</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v473</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -9128,19 +9128,13 @@ function extraFaturaMlDespesa(d){
   return pendente+cobradoPorAtraso;
 }
 function faturaMlPeriodoLoja(loja,de,ate){
-  /* fatura "grudada" (período cobrindo mais de 1 mês, ex: 61 dias) ainda rateia por dia o "extra"
-     (extraFaturaMlDespesa) entre os meses que ela cobre - mesma lógica de antes, só trocou o que é
-     "extra" (ver comentário acima). */
+  /* CORRIGIDO 24/09 (5a vez): removido o rateio por dia pra fatura "grudada" (período cobrindo mais
+     de 1 mês, ex: 61 dias da TorvStore) - Felipe confirmou que quer o valor CHEIO de
+     extraFaturaMlDespesa no mês do vencimento, sem fatiar por dia, pra bater 1:1 com o que aparece
+     na tela do Mercado Livre (era isso que causava a sensação de "valor errado": R$2.804,37 era só
+     22/61 do R$7.903,23 real, matematicamente certo mas impossível de conferir de olho). */
   return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate)
-    .reduce((s,d)=>{
-      const extra=extraFaturaMlDespesa(d);
-      if(!d.periodoDe||!d.periodoAte) return s+extra;
-      const diasFatura=Math.max(1,Math.round((new Date(d.periodoAte)-new Date(d.periodoDe))/864e5)+1);
-      const inicioOverlap=d.periodoDe>de?d.periodoDe:de;
-      const fimOverlap=d.periodoAte<ate?d.periodoAte:ate;
-      const diasOverlap=Math.max(0,Math.round((new Date(fimOverlap)-new Date(inicioOverlap))/864e5)+1);
-      return s+extra*(diasOverlap/diasFatura);
-    },0);
+    .reduce((s,d)=>s+extraFaturaMlDespesa(d),0);
 }
 /* margem de contribuição e margem líquida a partir de um resumo (do backend) - função separada
    pra ser reaproveitada tanto no Resumo Financeiro quanto no fechamento dos sócios. */
