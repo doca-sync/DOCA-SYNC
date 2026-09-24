@@ -4436,14 +4436,32 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
           atual.qtd += oi.quantity || 0;
           atual.valor += valorItem;
           atual.pedidos += 1;
+          /* CORRIGIDO 24/09 (2a vez - Felipe achou um pedido cancelado real da CANETAAZUL com a tag
+             "not_paid": o comprador nem chegou a pagar, então o Mercado Livre nunca cobrou comissão
+             nenhuma dessa venda - não tem "devolução", nunca existiu cobrança pra devolver. Pesquisa
+             com fontes oficiais do ML (Central de Vendedores: "Estornos e Cancelamentos de tarifas")
+             confirma que a comissão de venda É estornada/anulada quando a venda é cancelada - o
+             comentário antigo abaixo, que dizia o contrário, estava errado. Por isso faturamentoTotal
+             e tarifaDeclarada agora só somam pedido NÃO cancelado, igual valor/qtd - antes um pedido
+             cancelado inflava a tarifa (e a base do rateio de frete) sem contar nem 1 centavo de
+             receita real, o mesmo problema que já tinha corrigido pro frete. */
+          atual.faturamentoTotal += valorItem;
+          atual.tarifaDeclarada += saleFee;
         } else {
           atual.qtdCancelada += oi.quantity || 0;
           atual.pedidosCancelados += 1;
         }
-        atual.faturamentoTotal += valorItem;
-        atual.tarifaDeclarada += saleFee;
         itensVendidos.set(itemId, atual);
-        if (pedido.shipping && pedido.shipping.id) {
+        /* CORRIGIDO 24/09 (Felipe: achado real na CANETAAZUL - Doca mostrava R$20,55 de frete pra 2
+           unidades vendidas, quando o Mercado Livre só cobrou R$6,85 por pedido = R$13,70 no total -
+           exatamente 1,5x a mais. Causa: tinha um 3º pedido da mesma CANETAAZUL no período, esse
+           CANCELADO - e o envio dele estava entrando aqui (itensPorShipping/shippingIds) mesmo sem
+           `!cancelado`, então o custo real do envio DELE também era buscado e rateado pra
+           CANETAAZUL, mesmo ele não contando nem 1 unidade nem 1 centavo de faturamento (valor/qtd
+           só somam quando `!cancelado`, ver acima). Resultado: 3 envios cobrados (2 válidos + 1
+           cancelado) divididos por só 2 unidades vendidas = 50% de frete "fantasma" a mais. Só busca/rateia
+           o custo do envio de pedidos NÃO cancelados. */
+        if (!cancelado && pedido.shipping && pedido.shipping.id) {
           const lista = itensPorShipping.get(pedido.shipping.id) || [];
           lista.push({ itemId, qtd: oi.quantity || 1 });
           itensPorShipping.set(pedido.shipping.id, lista);
@@ -4451,7 +4469,7 @@ async function buscarResumoFinanceiro(loja, de, ate, onProgress) {
         itensDoPedido.push({ itemId, valor: valorItem || 1 });
       }
     }
-    if (pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
+    if (!cancelado && pedido.shipping && pedido.shipping.id) shippingIds.add(pedido.shipping.id);
     for (const pg of (pedido.payments || [])) {
       if (pg.status === 'approved' && (pg.installments || 1) > 1 && pg.id) {
         const lista = itensPorPagamento.get(pg.id) || [];
