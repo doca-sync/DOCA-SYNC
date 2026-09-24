@@ -5365,6 +5365,54 @@ function precoCandidatoServidor(mlPreco, descontoPromocao, cand) {
   return configurado;
 }
 const TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR = ['DEAL', 'SELLER_CAMPAIGN']; // mesma lista do doca.html - ver comentario la'
+/* extraido de dentro de rodarAutomacaoPromocoes (24/09) pra poder criar 2 campanhas na mesma rodada:
+   uma pra comecar HOJE (produto sem promocao nenhuma agora) e outra pra comecar AMANHA (renovacao
+   antecipada de uma campanha "Doca auto" que termina hoje - ver comentario em rodarAutomacaoPromocoes).
+   marcarAtivaAgora so' deve ser true quando a campanha comeca HOJE (senao fica "programada", nao ativa
+   ainda, e marcar promocaoAtivaAgora=true seria mentira ate' a meia-noite). */
+async function criarCampanhaDoDoca(accessToken, produtosAlvo, inicioStr, fimStr, erros, marcarAtivaAgora) {
+  if (!produtosAlvo.length) return null;
+  const agora = new Date();
+  // nome unico com dia/hora - evita o erro "The name already exists" ao renovar mais de 1x no mesmo mes.
+  const nomeUnico = `Doca auto ${String(agora.getDate()).padStart(2, '0')}${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getHours()).padStart(2, '0')}${String(agora.getMinutes()).padStart(2, '0')}`;
+  try {
+    const rCampanha = await fetch('https://api.mercadolibre.com/seller-promotions/promotions?app_version=v2', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ promotion_type: 'SELLER_CAMPAIGN', name: nomeUnico, sub_type: 'FLEXIBLE_PERCENTAGE', start_date: inicioStr + 'T00:00:00', finish_date: fimStr + 'T00:00:00' })
+    });
+    const campanha = await rCampanha.json();
+    if (!rCampanha.ok) {
+      erros.push({ sku: '(campanha nova)', erro: 'Falha ao criar campanha: ' + JSON.stringify(campanha) });
+      return null;
+    }
+    const itensCriados = [];
+    for (const p of produtosAlvo) {
+      const preco = precoComDescontoServidor(p.mlPreco, p.descontoPromocao);
+      try {
+        const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${p.mlItemId}?app_version=v2`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ promotion_id: campanha.id, promotion_type: 'SELLER_CAMPAIGN', deal_price: preco })
+        });
+        const jItem = await rItem.json();
+        if (rItem.ok) {
+          itensCriados.push({ ml_item_id: p.mlItemId, sku: p.sku || p.codigo, desconto: p.descontoPromocao, precoFinal: preco });
+          if (marcarAtivaAgora) p.promocaoAtivaAgora = true;
+        } else {
+          erros.push({ sku: p.sku || p.codigo, erro: JSON.stringify(jItem) });
+        }
+      } catch (e) {
+        erros.push({ sku: p.sku || p.codigo, erro: e.message });
+      }
+    }
+    if (!itensCriados.length) return null;
+    return { id: campanha.id, nome: campanha.name || nomeUnico, tipo: 'SELLER_CAMPAIGN', inicio: inicioStr, fim: fimStr, criadoEm: Date.now(), itens: itensCriados };
+  } catch (e) {
+    erros.push({ sku: '(campanha nova)', erro: e.message });
+    return null;
+  }
+}
 async function rodarAutomacaoPromocoes(motivo, opts) {
   opts = opts || {};
   const forcar = !!opts.forcar; // NAO MEXE MAIS NO COMPORTAMENTO 18/09: antes pulava produto com campanha ja ativa a nao ser que forcar=true - agora toda rodada ja tenta todas as campanhas candidatas (ver comentario abaixo), entao "forcar" ficou sem efeito aqui. Mantido so' pra nao quebrar a chamada existente do botao "Rodar automacao agora" do doca.html.
@@ -5387,6 +5435,7 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
   if (!Array.isArray(dados.promocoes.automacaoLog)) dados.promocoes.automacaoLog = [];
   let mudou = false;
   const hojeStr = new Date().toISOString().slice(0, 10);
+  const amanhaStr = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
   for (const loja of LOJAS_VALIDAS) {
     if (somenteLoja && loja !== somenteLoja) continue;
     const elegiveis = produtos.filter(p =>
@@ -5404,7 +5453,9 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
     }
     const entrados = [];
     const precisamCampanhaNova = [];
+    const precisaRenovarAmanha = [];
     const erros = [];
+    const historicoLoja = dados.promocoes.historico[loja] || [];
     for (const p of elegiveis) {
       const st = await buscarStatusPromocaoItem(accessToken, p.mlItemId);
       if (!st.ok) { erros.push({ sku: p.sku || p.codigo, erro: st.erro }); continue; }
@@ -5453,61 +5504,32 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
         }
       }
       if (!entrouEmAlgo && !st.temPromocaoAtiva) precisamCampanhaNova.push(p);
-    }
-    let criada = null;
-    if (precisamCampanhaNova.length) {
-      const agora = new Date();
-      // nome unico com dia/hora - evita o erro "The name already exists" ao renovar mais de 1x no mesmo mes.
-      // CORRIGIDO 11/09 (2a volta - Felipe testou de novo e o Mercado Livre respondeu
-      // "seller_proposition_title: may only be [N] characters long": o nome com "Doca Promo
-      // Setembro auto 11-09 15h36" (36 caracteres) estourou um limite curto de um campo derivado
-      // do nome. Encurtado bastante - so' "Doca" + dia/mes/hora/minuto, sem repetir o mes por
-      // extenso (que ja' e' usado no nome PADRAO sem timestamp, usado quando nao ha' conflito).
-      const nomeUnico = `Doca auto ${String(agora.getDate()).padStart(2, '0')}${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getHours()).padStart(2, '0')}${String(agora.getMinutes()).padStart(2, '0')}`;
-      const inicio = hojeStr + 'T00:00:00';
-      const fimData = new Date(agora.getTime() + 13 * 864e5);
-      try {
-        const rCampanha = await fetch('https://api.mercadolibre.com/seller-promotions/promotions?app_version=v2', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ promotion_type: 'SELLER_CAMPAIGN', name: nomeUnico, sub_type: 'FLEXIBLE_PERCENTAGE', start_date: inicio, finish_date: fimData.toISOString().slice(0, 10) + 'T00:00:00' })
-        });
-        const campanha = await rCampanha.json();
-        if (rCampanha.ok) {
-          const itensCriados = [];
-          for (const p of precisamCampanhaNova) {
-            const preco = precoComDescontoServidor(p.mlPreco, p.descontoPromocao);
-            try {
-              const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${p.mlItemId}?app_version=v2`, {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ promotion_id: campanha.id, promotion_type: 'SELLER_CAMPAIGN', deal_price: preco })
-              });
-              const jItem = await rItem.json();
-              if (rItem.ok) { itensCriados.push({ ml_item_id: p.mlItemId, sku: p.sku || p.codigo, desconto: p.descontoPromocao, precoFinal: preco }); p.promocaoAtivaAgora = true; }
-              else erros.push({ sku: p.sku || p.codigo, erro: JSON.stringify(jItem) });
-            } catch (e) {
-              erros.push({ sku: p.sku || p.codigo, erro: e.message });
-            }
-          }
-          if (itensCriados.length) {
-            criada = { id: campanha.id, nome: campanha.name || nomeUnico, tipo: 'SELLER_CAMPAIGN', inicio: hojeStr, fim: fimData.toISOString().slice(0, 10), criadoEm: Date.now(), itens: itensCriados };
-            if (!dados.promocoes.historico[loja]) dados.promocoes.historico[loja] = [];
-            dados.promocoes.historico[loja].push(criada);
-            mudou = true;
-          }
-        } else {
-          erros.push({ sku: '(campanha nova)', erro: 'Falha ao criar campanha: ' + JSON.stringify(campanha) });
-        }
-      } catch (e) {
-        erros.push({ sku: '(campanha nova)', erro: e.message });
+      /* NOVO 24/09 (Felipe: "hoje é o último dia da campanha, o certo já não era criar hoje pra
+         deixar programado pra entrar às 00:00 de amanhã? sempre criar a nova no último dia da
+         campanha corrente"): antes, uma campanha "Doca auto" só era renovada DEPOIS de expirar de
+         vez (bloco acima, que só dispara quando `!st.temPromocaoAtiva` - ou seja, quando já não tem
+         NADA ativo), deixando o produto de fato sem promoção nenhuma no intervalo entre o fim de uma
+         e a criação da próxima (a próxima rodada agendada só roda 7:30/12:30 do dia seguinte). Agora,
+         já no ÚLTIMO DIA de uma campanha "Doca auto" vigente pra esse item (fim === hoje), cria a
+         substituta programada (start_date de amanhã) SEM esperar expirar, encadeando sem buraco -
+         `jaTemProxima` evita duplicar caso as rodadas de 7:30 e 12:30 do mesmo dia peguem os dois. */
+      const terminaHoje = historicoLoja.some(c => c.tipo === 'SELLER_CAMPAIGN' && c.fim === hojeStr && Array.isArray(c.itens) && c.itens.some(it => it.ml_item_id === p.mlItemId));
+      if (terminaHoje) {
+        const jaTemProxima = historicoLoja.some(c => c.inicio === amanhaStr && Array.isArray(c.itens) && c.itens.some(it => it.ml_item_id === p.mlItemId));
+        if (!jaTemProxima) precisaRenovarAmanha.push(p);
       }
     }
-    if (entrados.length || criada || erros.length) {
-      resumo.porLoja[loja] = { entrados, criada, erros };
+    const criada = await criarCampanhaDoDoca(accessToken, precisamCampanhaNova, hojeStr, new Date(Date.now() + 13 * 864e5).toISOString().slice(0, 10), erros, true);
+    if (criada) { historicoLoja.push(criada); dados.promocoes.historico[loja] = historicoLoja; mudou = true; }
+    const criadaAmanha = await criarCampanhaDoDoca(accessToken, precisaRenovarAmanha, amanhaStr, new Date(Date.parse(amanhaStr) + 13 * 864e5).toISOString().slice(0, 10), erros, false);
+    if (criadaAmanha) { historicoLoja.push(criadaAmanha); dados.promocoes.historico[loja] = historicoLoja; mudou = true; }
+    if (entrados.length || criada || criadaAmanha || erros.length) {
+      resumo.porLoja[loja] = { entrados, criada, criadaAmanha, erros };
       dados.promocoes.automacaoLog.unshift({
         data: new Date().toISOString(), motivo, loja,
-        entrados: entrados.length, criada: criada ? criada.nome : null, itensNaCampanhaNova: criada ? criada.itens.length : 0,
+        entrados: entrados.length,
+        criada: criada ? criada.nome : null, itensNaCampanhaNova: criada ? criada.itens.length : 0,
+        criadaAmanha: criadaAmanha ? criadaAmanha.nome : null, itensNaCampanhaAmanha: criadaAmanha ? criadaAmanha.itens.length : 0,
         erros: erros.length, detalheErros: erros.slice(0, 5)
       });
       mudou = true;
