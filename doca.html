@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v471</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v472</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -9103,41 +9103,34 @@ function despesasPeriodoLoja(loja,de,ate){
    agosto assim que ela fosse marcada como paga (ver faturaMlPendenteLoja, filtra "!pago"). O
    custo real da operação nesse período é o da fatura QUE VENCEU dentro dele, tenha sido paga ou
    não - pago só importa pro Fluxo de Caixa, não pra quanto custou de verdade. */
-/* separa, numa fatura ML (despesa), a parte que JÁ é contada pedido a pedido (tarifa de
-   venda/comissão, tarifa de envio - inclusive Full - e os cancelamentos delas) da parte que NÃO é
-   contada em lugar nenhum (Ads, parcelamento, Minha Página, impostos da fatura etc) - usada tanto
-   pra Margem Líquida (faturaMlPeriodoLoja) quanto pra mostrar na aba Despesas o quanto disso é
-   "extra" de verdade. Sem d.itens ainda buscado (429 do Mercado Livre ou despesa antiga), cai pro
-   saldo pendente (d.valor) como aproximação. */
+/* CORRIGIDO 24/09 (4a vez, definitivo - critério do Felipe, validado nos números reais da Dor
+   Block): o Mercado Livre paga a fatura em 2 "trilhos" bem diferentes - "Pagamento cobrado na
+   operação" é debitado NA HORA, venda por venda, e é isso que sai como Tarifa de venda + Tarifa de
+   envio na fatura (o mesmo valor que o Doca já rastreia pedido a pedido em tarifas/frete.vendedor -
+   conferido nos números reais: cobrado na operação R$41.212,69 ≈ tarifa de venda + envio da fatura
+   R$41.321,40, dá quase exato). O que SOBRA sem caber nesse débito em tempo real (Ads, parcelamento,
+   Minha Página, impostos - tudo que não é atrelado a uma venda específica) só é cobrado DEPOIS, via
+   "Pagamentos cobrados automaticamente devido à fatura vencida" (se já foi debitado) ou fica em
+   "Total da dívida"/unpaid_amount (se ainda não foi) - de novo bate nos números reais (R$9.909,33 +
+   R$0 pendente ≈ Ads R$8.313,79 + parcelamento R$1.547 + Minha Página R$99 + impostos R$4,75 da
+   fatura). Então: o que precisa ser descontado na Margem Líquida é sempre unpaid_amount (d.valor,
+   sempre disponível, sem risco de 429) + o que já foi cobrado à parte por atraso (item do
+   detalhamento com "vencida" no label, ver buscarItensFaturaPorKey no server.js - só entra se o
+   detalhamento tiver sido buscado com sucesso; se não, fica só o unpaid_amount mesmo, que já cobre
+   sozinho o caso mais comum de fatura ainda em aberto). */
 function extraFaturaMlDespesa(d){
+  const pendente=Number(d.valor)||0;
+  let cobradoPorAtraso=0;
   if(Array.isArray(d.itens)&&d.itens.length){
-    const ehTarifaJaContadaPorPedido=label=>{
-      const l=(label||'').toLowerCase();
-      return l.includes('venda')||l.includes('envio')||l.includes('cancelamento');
-    };
-    return d.itens.filter(it=>!ehTarifaJaContadaPorPedido(it.label)).reduce((a,it)=>a+(Number(it.valor)||0),0);
+    const item=d.itens.find(it=>(it.label||'').toLowerCase().includes('vencida'));
+    if(item) cobradoPorAtraso=Math.abs(Number(item.valor)||0);
   }
-  return Number(d.valor)||0;
+  return pendente+cobradoPorAtraso;
 }
 function faturaMlPeriodoLoja(loja,de,ate){
-  /* CORRIGIDO 24/09 (3a vez, definitivo - provado com a fatura real de Setembro/Dor Block): nem
-     valorTotal (fatura inteira) nem d.valor (unpaid_amount/quanto falta pagar) são a métrica
-     certa. valorTotal duplica Tarifas de venda + Tarifas de envios, que JÁ são descontadas pedido
-     a pedido em tarifas/frete.vendedor lá em cima na Margem de Contribuição. d.valor também não
-     serve: é só "quanto ainda não foi debitado da conta" - não tem NENHUMA relação com quanto da
-     fatura é Ads/parcelamento/outras taxas (prova real: a fatura de Setembro da Dor Block já está
-     com dívida R$0,00 no Mercado Livre, mas isso não significa que o custo de Ads embutido nela
-     virou zero). O que precisa ser descontado aqui é só a parte da fatura que não passa por
-     tarifas/frete pedido a pedido: "Tarifa por campanha de publicidade" (Ads), "Taxas de
-     parcelamento", "Tarifa da Minha Página", "Impostos" da fatura, etc. Usa o detalhamento por
-     item que o Doca já busca por trás do botão "Detalhar" (d.itens, ver buscarItensFaturaPorKey no
-     server.js) e separa por label: exclui tudo que for tarifa de venda/comissão, tarifa de envio
-     (inclusive Full, mesmo mecanismo de cobrança por envio) e os cancelamentos delas (créditos que
-     já se refletem na exclusão de pedidos cancelados da Margem de Contribuição) - soma só o resto.
-     Sem detalhamento disponível ainda (Mercado Livre respondeu 429 na hora de buscar, ou despesa
-     antiga de antes desse detalhamento existir - ver d.itensAviso) cai pro saldo pendente (d.valor)
-     como aproximação, melhor que nada mas sujeito ao mesmo problema de não ter relação direta com
-     Ads/extras. */
+  /* fatura "grudada" (período cobrindo mais de 1 mês, ex: 61 dias) ainda rateia por dia o "extra"
+     (extraFaturaMlDespesa) entre os meses que ela cobre - mesma lógica de antes, só trocou o que é
+     "extra" (ver comentário acima). */
   return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate)
     .reduce((s,d)=>{
       const extra=extraFaturaMlDespesa(d);
@@ -9512,7 +9505,7 @@ function renderFinancas(){
         <td>${esc(d.descricao)}${d.origem==='ml_fatura'?' <span class="badge">Auto (ML)</span>':''}${d.origem==='imposto'?' <span class="badge">Auto (imposto)</span>':''}${d.origem==='amauri_repasse'?' <span class="badge">Auto (Amauri)</span>':''}${podeDetalhar?` <button class="btn sm" data-fndetalhar="${d.id}" style="padding:2px 8px;font-size:11px" ${detalhando?'disabled':''}>${detalhando?'Buscando...':(financasExpandido[d.id]?'▾ ocultar':'▸ detalhar')}</button>`:''}
           ${d.origem==='ml_fatura'&&d.periodoDe&&d.periodoAte?`<div class="hint" style="margin:2px 0 0">Cobranças referentes a ${fmtData(d.periodoDe)} a ${fmtData(d.periodoAte)} · vence ${fmtData(d.dataPagamento)}${d.semVencimentoReal?' (estimado pelo ciclo da loja, ainda não confirmado pelo Mercado Livre)':''}</div>`:''}
           ${d.origem==='ml_fatura'&&typeof d.valorTotal==='number'&&d.valorTotal!==d.valor?`<div class="hint" style="margin:2px 0 0">Total do período: ${fmtMoney(d.valorTotal)} · já descontado automaticamente: ${fmtMoney(d.valorTotal-d.valor)} · valor que falta pagar: ${fmtMoney(d.valor)}</div>`:''}
-          ${d.origem==='ml_fatura'?`<div class="hint" style="margin:2px 0 0">Descontado na Margem Líquida (Ads, parcelamento e outras taxas fora de tarifa/frete por pedido): ${fmtMoney(extraFaturaMlDespesa(d))}${!(Array.isArray(d.itens)&&d.itens.length)?' (aproximado pelo saldo pendente - detalhamento indisponível)':''}</div>`:''}
+          ${d.origem==='ml_fatura'?`<div class="hint" style="margin:2px 0 0">Descontado na Margem Líquida (saldo pendente + o que já foi cobrado à parte por atraso - a parcela que não sai debitada na hora da venda): ${fmtMoney(extraFaturaMlDespesa(d))}</div>`:''}
           ${d.origem==='imposto'?`<div class="hint" style="margin:2px 0 0">${d.impostoAliquota||0}% sobre o faturamento de ${esc(mesLabel(d.impostoRefMes))} (${fmtMoney(d.impostoFaturamentoBase||0)}) — já descontado direto na Margem Líquida, isso aqui é só lembrete de pagamento.</div>`:''}
           ${d.origem==='amauri_repasse'?`<div class="hint" style="margin:2px 0 0">Repasse da parceria com o Amauri, base ${esc(mesLabel(d.amauriRefMes))} — calculado à parte (não entra de novo na Margem Líquida geral), isso aqui é só lembrete de pagamento.</div>`:''}
         </td>
