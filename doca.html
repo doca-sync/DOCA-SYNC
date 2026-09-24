@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v468</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v469</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -9109,13 +9109,31 @@ function faturaMlPeriodoLoja(loja,de,ate){
      fatura ficou com pagamento PARCIAL, então "valor" (quanto ainda falta pagar) caiu pra só o
      restante em aberto, e a Margem Líquida passou a contar como custo só essa sobra, não o custo
      real do período). O mesmo raciocínio do fix de 25/08 (não zerar "valor" quando quita 100%) vale
-     aqui pra quitação PARCIAL: o custo de verdade da fatura pro período é sempre o total dela
-     (valorTotal), pago de uma vez, pago aos poucos ou ainda em aberto - quanto já foi pago ou falta
-     pagar é assunto de Fluxo de Caixa/Despesas, não muda quanto a operação custou. Usa valorTotal
-     sempre que existir; só cai pro "valor" (comportamento antigo) em fatura muito antiga, de antes
-     desse campo existir, que não tenha valorTotal salvo. */
+     aqui pra quitação PARCIAL: o custo de verdade da fatura é sempre o total dela (valorTotal), pago
+     de uma vez, pago aos poucos ou ainda em aberto - quanto já foi pago ou falta pagar é assunto de
+     Fluxo de Caixa/Despesas, não muda quanto a operação custou.
+     CORRIGIDO 24/09 (2a vez, achado real na TorvStore: usar valorTotal "cru" deu R$63k de fatura
+     pra um mês que faturou R$3,2k): quando o ciclo anterior não fecha pago, o Mercado Livre não abre
+     um período novo - ele vai GRUDANDO a cobrança nova em cima da mesma fatura em aberto, e o
+     "periodoDe/periodoAte" dela passa a cobrir 2 ou mais meses inteiros num valorTotal só (esse caso
+     real: 23/07 a 22/09, 61 dias, vencimento caindo em setembro). Jogar o valorTotal CHEIO inteiro
+     no mês do vencimento nesse caso conta 2 meses de custo como se fosse 1 só. Em vez disso, rateia
+     o valorTotal pelo tanto de dias do PERÍODO REAL da fatura que cai dentro do mês-alvo (de,ate) -
+     numa fatura normal de ~30 dias cujo período já é quase todo o próprio mês isso dá praticamente o
+     valor cheio (comportamento igual ao fix anterior); numa fatura "grudada" de vários ciclos, só
+     atribui a fatia proporcional a cada mês. Sem periodoDe/periodoAte salvo (fatura antiga, de antes
+     desses campos existirem), cai pro valor cheio como antes - não tem como ratear sem saber o
+     período real coberto. */
   return despesasArr().filter(d=>d.origem==='ml_fatura'&&d.loja===loja&&d.dataPagamento&&d.dataPagamento>=de&&d.dataPagamento<=ate)
-    .reduce((s,d)=>s+(Number(d.valorTotal!=null?d.valorTotal:d.valor)||0),0);
+    .reduce((s,d)=>{
+      const total=Number(d.valorTotal!=null?d.valorTotal:d.valor)||0;
+      if(!d.periodoDe||!d.periodoAte) return s+total;
+      const diasFatura=Math.max(1,Math.round((new Date(d.periodoAte)-new Date(d.periodoDe))/864e5)+1);
+      const inicioOverlap=d.periodoDe>de?d.periodoDe:de;
+      const fimOverlap=d.periodoAte<ate?d.periodoAte:ate;
+      const diasOverlap=Math.max(0,Math.round((new Date(fimOverlap)-new Date(inicioOverlap))/864e5)+1);
+      return s+total*(diasOverlap/diasFatura);
+    },0);
 }
 /* margem de contribuição e margem líquida a partir de um resumo (do backend) - função separada
    pra ser reaproveitada tanto no Resumo Financeiro quanto no fechamento dos sócios. */
