@@ -4199,14 +4199,35 @@ function anoRazoavel(dataIso) {
    de períodos só devolve o mais recente (limit=1), mas o detalhamento por key funciona pra
    qualquer período antigo desde que a gente já saiba a key (o Doca guarda ela em cada despesa,
    ver faturaKey). */
-async function buscarItensFaturaPorKey(loja, key) {
+async function buscarItensFaturaPorKey(loja, key, pular) {
+  // CORRIGIDO 24/09: esse endpoint de detalhamento vem batendo 429 com muita frequência (achado
+  // real: Dor Block continuou travando mesmo depois de 30s de espera e mais tentativas). Período
+  // FECHADO não muda mais de valor - uma vez que o Doca já conseguiu buscar o detalhamento dele
+  // com sucesso alguma vez, não precisa buscar de novo nunca mais. O "pular" vem do frontend
+  // (chavesComItens, ver /financas/fatura-ml) avisando que já tem itens guardados pra essa key -
+  // evita gastar tentativas nessa key de novo, sobrando mais chance pra key que ainda falta. Sem
+  // itens de verdade (undefined, não [] vazio) sinaliza pro frontend "não mexe no que já tem".
+  if (pular) return { itens: undefined, itensAviso: null };
   const accessToken = await tokenValido(loja);
   let itens = [];
   let itensAviso = null;
   if (key) {
     try {
       const urlResumo = `https://api.mercadolibre.com/billing/integration/periods/key/${key}/summary?group=ML&document_type=BILL`;
-      const jResumo = await fetchMLDebug(urlResumo, { headers: { Authorization: `Bearer ${accessToken}` } });
+      // CORRIGIDO 24/09: essa chamada não tinha NENHUM retry (só o /details de fallback abaixo
+      // tinha) - achado real: bateu 429 repetidas vezes seguidas (inclusive depois de 30s de
+      // espera manual), então algumas tentativas com espera aqui também ajudam a não cair direto
+      // pro /details (mais lento, pagina em lotes de 150).
+      let jResumo;
+      for (let tentativa = 0; tentativa < 3; tentativa++) {
+        try {
+          jResumo = await fetchMLDebug(urlResumo, { headers: { Authorization: `Bearer ${accessToken}` } });
+          break;
+        } catch (e) {
+          if (e.http_status === 429 && tentativa < 2) { await sleep(1500 * (tentativa + 1)); continue; }
+          throw e;
+        }
+      }
       const charges = (jResumo.summary && jResumo.summary.charges) || [];
       const bonuses = (jResumo.summary && jResumo.summary.bonuses) || [];
       itens = [
@@ -4222,12 +4243,15 @@ async function buscarItensFaturaPorKey(loja, key) {
         // retry com espera crescente em 429 - pedido do Felipe 24/08: esse endpoint de detalhamento
         // vem esbarrando bastante no limite de chamadas do Mercado Livre logo depois da
         // sincronização automática ao abrir o Doca (que já dispara bastante chamada em sequência).
+        // AUMENTADO 24/09: 4 tentativas com até 2,4s de espera não bastava - achado real (Dor Block)
+        // continuou batendo 429 até depois de 30s esperado manualmente. Mais tentativas, com espera
+        // maior (até 6s), pra dar mais chance de pegar uma janela livre do limite do Mercado Livre.
         async function buscarDetalhesComRetry(url) {
-          for (let tentativa = 0; tentativa < 4; tentativa++) {
+          for (let tentativa = 0; tentativa < 6; tentativa++) {
             try {
               return await fetchMLDebug(url, { headers: { Authorization: `Bearer ${accessToken}` } });
             } catch (e) {
-              if (e.http_status === 429 && tentativa < 3) { await sleep(800 * (tentativa + 1)); continue; }
+              if (e.http_status === 429 && tentativa < 5) { await sleep(1200 * (tentativa + 1)); continue; }
               throw e;
             }
           }
@@ -4253,7 +4277,8 @@ async function buscarItensFaturaPorKey(loja, key) {
   }
   return { itens, itensAviso };
 }
-async function buscarFaturaMl(loja) {
+async function buscarFaturaMl(loja, chavesComItens) {
+  const jaTemItens = key => Array.isArray(chavesComItens) && chavesComItens.includes(key);
   const accessToken = await tokenValido(loja);
   // limit=3 (nao mais 1) - pedido do Felipe 24/08: com limit=1 o Doca so' via' o periodo MAIS
   // RECENTE, que assim que um novo mes abre passa a ser o periodo AINDA EM ANDAMENTO (sem
@@ -4274,7 +4299,7 @@ async function buscarFaturaMl(loja) {
   // com divida (tudo pago ou sem periodo fechado ainda), cai pro mais recente mesmo.
   let p = periodos.find(x => x.period_status === 'CLOSED' && typeof x.unpaid_amount === 'number' && x.unpaid_amount > 0);
   if (!p) p = periodos[0];
-  const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key);
+  const { itens, itensAviso } = await buscarItensFaturaPorKey(loja, p.key, p.period_status === 'CLOSED' && jaTemItens(p.key));
   const extrairVencimento = (per) => {
     // NAO cai pro period.date_to como fallback de vencimento (esse era o bug real, achado no
     // debug 24/08 com Orbix/TorvShop: pra periodo ainda OPEN, esse date_to e' so' a data em que
@@ -4319,7 +4344,12 @@ app.get('/financas/fatura-ml', async (req, res) => {
   try {
     const loja = req.query.loja;
     if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
-    const fatura = await buscarFaturaMl(loja);
+    // chavesComItens (pedido do Felipe 24/09): o frontend manda as keys de fatura que JA tem
+    // itens guardados (ver puxarFaturaMl em doca.html) - pra período FECHADO, evita gastar mais
+    // uma tentativa nesse endpoint que anda batendo 429 com frequência, sobrando mais chance pra
+    // fatura que ainda falta buscar de verdade.
+    const chavesComItens = (req.query.chavesComItens || '').split(',').filter(Boolean);
+    const fatura = await buscarFaturaMl(loja, chavesComItens);
     res.json({ ok: true, loja, fatura });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });

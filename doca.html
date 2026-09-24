@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v473</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v474</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -7229,7 +7229,12 @@ function _camposVencimentoFatura(loja,per){
 async function puxarFaturaMl(loja){
   const base=backendUrl();
   if(!base) throw new Error('Configure a URL do backend primeiro (em Produtos → Atualizar).');
-  const r=await fetch(`${base}/financas/fatura-ml?loja=${encodeURIComponent(loja)}`);
+  /* CORRIGIDO 24/09: manda pro backend quais faturas já tem itens guardados (chavesComItens) -
+     período fechado não muda mais de valor, então não precisa gastar mais uma tentativa nesse
+     endpoint que anda batendo 429 com frequência (achado real: Dor Block travando mesmo depois de
+     várias tentativas) - sobra mais chance pra fatura que realmente ainda falta buscar. */
+  const chavesComItens=despesasArr().filter(x=>x.origem==='ml_fatura'&&x.loja===loja&&Array.isArray(x.itens)&&x.itens.length).map(x=>x.faturaKey).join(',');
+  const r=await fetch(`${base}/financas/fatura-ml?loja=${encodeURIComponent(loja)}&chavesComItens=${encodeURIComponent(chavesComItens)}`);
   let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
   if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar a fatura do Mercado Livre (status '+r.status+').'));
   if(!j.fatura) throw new Error('Nenhuma fatura encontrada pra essa loja ainda.');
@@ -7247,7 +7252,11 @@ async function puxarFaturaMl(loja){
        assim o "Total do mês"/"Já pago" da aba Despesas continua contando o custo real, em vez de
        fingir que a fatura não custou nada só porque já foi quitada. */
     if(f.valor&&!d.valorEditadoManual) d.valor=f.valor;
-    d.dataPagamento=dataPagamento; d.itens=f.itens||[]; d.valorTotal=f.valorTotal; d.itensAviso=f.itensAviso||null;
+    d.dataPagamento=dataPagamento;
+    /* f.itens vem undefined (não [], nem sequer a chave existe no JSON) quando o backend pulou a
+       busca por já ter chavesComItens dessa key (ver puxarFaturaMl) - não mexe no que já tem. */
+    if(f.itens!==undefined){ d.itens=f.itens; d.itensAviso=f.itensAviso||null; }
+    d.valorTotal=f.valorTotal;
     d.periodoDe=f.dataInicio||null; d.periodoAte=f.dataFim||null; d.semVencimentoReal=semVencimentoReal; d.vencimentoEstimado=vencimentoEstimado;
     /* CORRIGIDO 25/08: antes só ligava "pago" (if(valorPendente===0) d.pago=true), nunca
        desligava - então uma fatura que quitou e depois voltou a acumular dívida nova (ou uma
