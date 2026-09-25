@@ -5533,30 +5533,24 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
          pela 1ª vez já com alguma promoção rodando - imperfeito mas nunca pior que o comportamento
          de antes, e se autocorrige assim que a promoção atual terminar). */
       if (!st.temPromocaoAtiva && p.mlPrecoBase !== p.mlPreco) { p.mlPrecoBase = p.mlPreco; mudou = true; }
-      /* REVERTIDO 25/09 (achado real: Alicatinho e outros produtos com promoção contínua ficaram
-         com mlPrecoBase = R$76 quando o preço real deles SEMPRE foi R$38 - a "recuperação por
-         desconto configurado" (mlPreco / (1 - desconto%)) tentada aqui era uma SUPOSIÇÃO errada:
-         assumia que todo produto com promoção ativa está necessariamente vendendo com desconto
-         aplicado agora, mas vários desses produtos rodam a MESMA promoção continuamente há tempo e
-         o "preço atual" (mlPreco) já É o preço real deles, sem nenhum desconto por cima pra
-         reverter. Essa suposição inflou o preço-base de vários produtos que nunca tiveram esse
-         valor mais alto. Removida por completo - só resta a via seguindo abaixo (mlOriginalPrice,
-         mais confiável por vir direto do Mercado Livre, mesmo que às vezes vazio). Sem
-         mlOriginalPrice disponível pra um produto que nunca ficou sem promoção (ex.: KIT5LAB8),
-         fica sem correção automática por enquanto - mlPrecoBase só recupera de verdade quando esse
-         produto finalmente passar por um período sem promoção nenhuma (comportamento mais
-         conservador: não inventa número, só usa dado real confirmado). */
-      if (st.temPromocaoAtiva && typeof p.mlPrecoBase !== 'number' &&
-          typeof p.mlOriginalPrice === 'number' && typeof p.mlPreco === 'number' && p.mlOriginalPrice > p.mlPreco) {
-        p.mlPrecoBase = p.mlOriginalPrice; mudou = true;
-      }
-      /* LIMPEZA 25/09 (única vez): desfaz o estrago da suposição errada acima - qualquer
-         mlPrecoBase que hoje bate EXATAMENTE com a fórmula "mlPreco / (1 - desconto%)" mas NÃO bate
-         com mlOriginalPrice é, com toda probabilidade, um valor inventado pela versão anterior
-         desse código (rodou só nesta janela, 25/09) - limpa de volta pra null, deixando cair no
-         fallback (mlPreco) até esse produto conseguir uma captura de verdade. */
-      if (typeof p.mlPrecoBase === 'number' && p.descontoPromocao > 0 && p.descontoPromocao < 100 &&
-          !(typeof p.mlOriginalPrice === 'number' && Math.abs(p.mlPrecoBase - p.mlOriginalPrice) < 0.01)) {
+      /* REVERTIDO 25/09 (2ª vez - as duas tentativas de "recuperar"/validar um preço-base fictício
+         pra quem já está em promoção contínua se provaram erradas na prática: nem reverter pelo
+         desconto configurado, nem confiar no mlOriginalPrice como prova - o mlOriginalPrice do
+         Mercado Livre ficou com o MESMO valor errado, R$76, pra produtos cujo preço real sempre foi
+         R$38 (documentado 12/09: mlOriginalPrice não é confiável pra item afetado por
+         SELLER_CAMPAIGN/DEAL - inclusive pra VALIDAR outro número, não só pra decidir "tem
+         promoção"). Removida QUALQUER tentativa de adivinhar/confirmar esse valor por inferência -
+         mlPrecoBase só é setado no único jeito realmente seguro (linha acima: produto SEM promoção
+         nenhuma, mlPreco é garantidamente o preço real). Enquanto isso não acontecer pra um produto
+         que já está em promoção contínua desde antes desse fix existir, o cálculo cai pra mlPreco
+         mesmo (linha abaixo) - imperfeito só nesse caso raro (ver KIT5LAB8), mas NUNCA inventa um
+         número maior que não existe de verdade, que é o que estava causando os erros reais de
+         hoje. */
+      /* LIMPEZA 25/09 (única vez, agora incondicional): desfaz TODO mlPrecoBase que bate com a
+         fórmula suspeita "mlPreco / (1 - desconto%)" - não faz mais exceção quando bate com
+         mlOriginalPrice também, porque esse campo se provou igualmente contaminado nos produtos
+         reais testados (Alicatinho e outros, ver acima). */
+      if (typeof p.mlPrecoBase === 'number' && typeof p.mlPreco === 'number' && p.descontoPromocao > 0 && p.descontoPromocao < 100) {
         const formulaSuspeita = Math.round((p.mlPreco / (1 - p.descontoPromocao / 100)) * 100) / 100;
         if (Math.abs(p.mlPrecoBase - formulaSuspeita) < 0.01) { p.mlPrecoBase = undefined; mudou = true; }
       }
