@@ -5533,21 +5533,32 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
          pela 1ª vez já com alguma promoção rodando - imperfeito mas nunca pior que o comportamento
          de antes, e se autocorrige assim que a promoção atual terminar). */
       if (!st.temPromocaoAtiva && p.mlPrecoBase !== p.mlPreco) { p.mlPrecoBase = p.mlPreco; mudou = true; }
-      /* RECUPERAÇÃO 25/09 (achado real: KIT5LAB8 já estava DENTRO de uma promoção "Doca auto" no
-         momento em que o fix acima entrou no ar - como st.temPromocaoAtiva nunca vira false pra
-         esse produto até a campanha atual acabar (08/10), mlPrecoBase nunca seria capturado pelo
-         caminho normal, e ficaria preso usando mlPreco (já descontado) até lá. Só nesse caso
-         (promoção ativa E mlPrecoBase nunca visto) tenta recuperar o preço real por 2 vias: 1)
-         mlOriginalPrice, se vier maior que o preço efetivo atual (sinal de que reflete o preço
-         cheio de verdade nesse produto específico); 2) senão, reverte a conta pelo desconto JÁ
-         CONFIGURADO pro produto (mlPreco / (1 - desconto%) - funciona quando a promoção ativa foi
-         criada com o desconto atualmente configurado, sem ter compostado mais de 1 vez ainda). */
-      if (st.temPromocaoAtiva && typeof p.mlPrecoBase !== 'number') {
-        let recuperado = (typeof p.mlOriginalPrice === 'number' && typeof p.mlPreco === 'number' && p.mlOriginalPrice > p.mlPreco) ? p.mlOriginalPrice : null;
-        if (recuperado == null && typeof p.mlPreco === 'number' && p.descontoPromocao > 0 && p.descontoPromocao < 100) {
-          recuperado = Math.round((p.mlPreco / (1 - p.descontoPromocao / 100)) * 100) / 100;
-        }
-        if (recuperado != null) { p.mlPrecoBase = recuperado; mudou = true; }
+      /* REVERTIDO 25/09 (achado real: Alicatinho e outros produtos com promoção contínua ficaram
+         com mlPrecoBase = R$76 quando o preço real deles SEMPRE foi R$38 - a "recuperação por
+         desconto configurado" (mlPreco / (1 - desconto%)) tentada aqui era uma SUPOSIÇÃO errada:
+         assumia que todo produto com promoção ativa está necessariamente vendendo com desconto
+         aplicado agora, mas vários desses produtos rodam a MESMA promoção continuamente há tempo e
+         o "preço atual" (mlPreco) já É o preço real deles, sem nenhum desconto por cima pra
+         reverter. Essa suposição inflou o preço-base de vários produtos que nunca tiveram esse
+         valor mais alto. Removida por completo - só resta a via seguindo abaixo (mlOriginalPrice,
+         mais confiável por vir direto do Mercado Livre, mesmo que às vezes vazio). Sem
+         mlOriginalPrice disponível pra um produto que nunca ficou sem promoção (ex.: KIT5LAB8),
+         fica sem correção automática por enquanto - mlPrecoBase só recupera de verdade quando esse
+         produto finalmente passar por um período sem promoção nenhuma (comportamento mais
+         conservador: não inventa número, só usa dado real confirmado). */
+      if (st.temPromocaoAtiva && typeof p.mlPrecoBase !== 'number' &&
+          typeof p.mlOriginalPrice === 'number' && typeof p.mlPreco === 'number' && p.mlOriginalPrice > p.mlPreco) {
+        p.mlPrecoBase = p.mlOriginalPrice; mudou = true;
+      }
+      /* LIMPEZA 25/09 (única vez): desfaz o estrago da suposição errada acima - qualquer
+         mlPrecoBase que hoje bate EXATAMENTE com a fórmula "mlPreco / (1 - desconto%)" mas NÃO bate
+         com mlOriginalPrice é, com toda probabilidade, um valor inventado pela versão anterior
+         desse código (rodou só nesta janela, 25/09) - limpa de volta pra null, deixando cair no
+         fallback (mlPreco) até esse produto conseguir uma captura de verdade. */
+      if (typeof p.mlPrecoBase === 'number' && p.descontoPromocao > 0 && p.descontoPromocao < 100 &&
+          !(typeof p.mlOriginalPrice === 'number' && Math.abs(p.mlPrecoBase - p.mlOriginalPrice) < 0.01)) {
+        const formulaSuspeita = Math.round((p.mlPreco / (1 - p.descontoPromocao / 100)) * 100) / 100;
+        if (Math.abs(p.mlPrecoBase - formulaSuspeita) < 0.01) { p.mlPrecoBase = undefined; mudou = true; }
       }
       const precoBase = typeof p.mlPrecoBase === 'number' ? p.mlPrecoBase : p.mlPreco;
       /* CORRIGIDO 18/09 (Felipe: "porque os produtos novos não entrou em todas as campanhas
