@@ -5436,7 +5436,10 @@ async function criarCampanhaDoDoca(accessToken, produtosAlvo, inicioStr, fimStr,
     }
     const itensCriados = [];
     for (const p of produtosAlvo) {
-      const preco = precoComDescontoServidor(p.mlPreco, p.descontoPromocao);
+      // CORRIGIDO 25/09: mesmo fix do loop principal (mlPrecoBase, não mlPreco cru) - ver comentário
+      // em rodarAutomacaoPromocoes, senão renova a campanha em cima do preço já descontado.
+      const precoBase = typeof p.mlPrecoBase === 'number' ? p.mlPrecoBase : p.mlPreco;
+      const preco = precoComDescontoServidor(precoBase, p.descontoPromocao);
       try {
         const rItem = await fetch(`https://api.mercadolibre.com/seller-promotions/items/${p.mlItemId}?app_version=v2`, {
           method: 'POST',
@@ -5515,6 +5518,22 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
          CONFIÁVEL (promocaoAtivaAgora) direto no produto - o doca.html passa a usar esse campo em
          vez do mlOriginalPrice pra decidir quem está "sem promoção". */
       if (p.promocaoAtivaAgora !== st.temPromocaoAtiva) { p.promocaoAtivaAgora = st.temPromocaoAtiva; mudou = true; }
+      /* CORRIGIDO 25/09 (Felipe, achado real: KIT5LAB8/TorvShop - preço R$111,43, campanha "Doca
+         auto" ativa deixou o preço efetivo em R$78, e a rodada SEGUINTE calculou 30% em cima
+         desses R$78 (achando R$54,60) em vez de em cima dos R$111,43 reais - "remontando promoção"
+         em cima de si mesma). Causa: p.mlPreco vem do /sync comum (item.price da API pública), que
+         reflete o preço EFETIVO agora - já COM desconto quando alguma promoção (inclusive uma
+         "Doca auto" antiga) está rodando. mlOriginalPrice não serve de substituto (comentário 12/09
+         acima - não confiável pra SELLER_CAMPAIGN/DEAL). Correção: guarda mlPrecoBase = mlPreco só
+         quando SEM NENHUMA promoção ativa/pendente (st.temPromocaoAtiva===false - momento em que
+         mlPreco com certeza é o preço real, sem desconto nenhum embutido) - com promoção ativa,
+         mlPrecoBase fica CONGELADO no último valor confiável, em vez de ser atualizado com o preço
+         já descontado. Todo cálculo de desconto (abaixo e em criarCampanhaDoDoca) passa a usar
+         mlPrecoBase (cai pra mlPreco só se essa base nunca foi capturada ainda, ex: produto visto
+         pela 1ª vez já com alguma promoção rodando - imperfeito mas nunca pior que o comportamento
+         de antes, e se autocorrige assim que a promoção atual terminar). */
+      if (!st.temPromocaoAtiva && p.mlPrecoBase !== p.mlPreco) { p.mlPrecoBase = p.mlPreco; mudou = true; }
+      const precoBase = typeof p.mlPrecoBase === 'number' ? p.mlPrecoBase : p.mlPreco;
       /* CORRIGIDO 18/09 (Felipe: "porque os produtos novos não entrou em todas as campanhas
          possíveis só em uma?"): antes, assim que o produto entrava em QUALQUER campanha (ou já
          tinha 1 ativa), a rodada toda pulava ele (`continue` aqui embaixo) e o loop de candidatas
@@ -5528,7 +5547,7 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
       const candidatas = (st.candidatas || []).filter(c => TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR.includes(c.type) && (c.id || c.promotion_id));
       let entrouEmAlgo = false;
       for (const cand of candidatas) {
-        const preco = precoCandidatoServidor(p.mlPreco, p.descontoPromocao, cand);
+        const preco = precoCandidatoServidor(precoBase, p.descontoPromocao, cand);
         if (preco == null) continue;
         const idCampanha = cand.id || cand.promotion_id;
         try {

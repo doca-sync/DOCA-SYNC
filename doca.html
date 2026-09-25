@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v474</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v475</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12637,10 +12637,18 @@ function produtosPromocaoTodos(loja){
    GUARDA 11/09: produto de R$19 nunca calcula preço com desconto, mesmo que tenha algum
    descontoPromocao salvo de antes - trava de segurança pro "produtos sem promoção configurada não
    aplicar promoção" (e pro piso de R$19 nunca ser furado). */
+/* CORRIGIDO 25/09 (Felipe, achado real: KIT5LAB8/TorvShop mostrando "preço atual" R$78 quando o
+   preço real é R$111,43 - a campanha ativa já tinha descontado o preço que o /sync pega, e a tela
+   calculava mais um desconto em cima disso): usa mlPrecoBase (preço real, congelado pelo server só
+   quando NÃO tem promoção ativa - ver rodarAutomacaoPromocoes) em vez de mlPreco cru sempre que
+   disponível, senão a própria tela ficava mostrando a mesma conta "remontada" que o bug gerava no
+   Mercado Livre. */
+function precoBaseProduto(p){ return typeof p.mlPrecoBase==='number'?p.mlPrecoBase:p.mlPreco; }
 function precoComDesconto(p){
   if(precoEhFixo19(p)) return null;
-  if(!(typeof p.mlPreco==='number')||!(p.descontoPromocao>0)) return null;
-  return Math.round(p.mlPreco*(1-p.descontoPromocao/100)*100)/100;
+  const base=precoBaseProduto(p);
+  if(!(typeof base==='number')||!(p.descontoPromocao>0)) return null;
+  return Math.round(base*(1-p.descontoPromocao/100)*100)/100;
 }
 /* MUDOU 11/09 (Felipe testou a automação, deu certo, e pediu: "acredito que vc pode remover essa
    tela e os botões / a única coisa que precisava era um alerta caso algum sku esteja sem
@@ -12674,10 +12682,12 @@ function renderPromocoes(){
           const statusTxt=pausado
             ?`<span class="badge" title="Anúncio pausado no Mercado Livre — a automação só cria promoção de verdade em anúncio ativo. O % já fica configurado, pronto pra quando ele reativar.">⏸ pausado</span>`
             :(ativa?'<span class="badge okv">✓ ativa</span>':'<span class="badge pend">pendente</span>');
+          const precoBase=precoBaseProduto(p);
+          const precoEfetivoDiferente=typeof p.mlPreco==='number'&&typeof precoBase==='number'&&Math.abs(p.mlPreco-precoBase)>=0.005;
           return `<tr${fixo19?' style="opacity:.55"':''}>
             <td class="mono">${esc(p.sku||p.codigo||'')}</td>
             <td>${statusTxt}</td>
-            <td class="num">${fmtMoney(p.mlPreco)}</td>
+            <td class="num">${fmtMoney(precoBase)}${precoEfetivoDiferente?`<div class="hint" style="margin:2px 0 0" title="Preço efetivo agora, já com alguma promoção ativa aplicada - o desconto configurado usa o preço real (${fmtMoney(precoBase)}), não este">vendendo por ${fmtMoney(p.mlPreco)}</div>`:''}</td>
             <td class="num">${fixo19?'<span class="muted">—</span>':(travado
               ?`<span class="mono">${p.descontoPromocao}%</span> <button class="btn sm" data-destravardesconto="${p.id}" title="Destravar pra editar só este produto">🔒</button>`
               :`<input type="number" min="0" max="80" step="1" style="width:60px;text-align:right" value="${p.descontoPromocao!=null?p.descontoPromocao:''}" data-descontopromo="${p.id}" placeholder="%">`)}</td>
