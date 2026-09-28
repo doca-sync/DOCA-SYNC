@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v475</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v477</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -671,6 +671,25 @@ let nuvemGravando=false, nuvemGravarDeNovo=false;
 /* ---------- helpers ---------- */
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtMoney(v){ return 'R$ '+(Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+/* NOVO 28/09 (Felipe: "da pra colocar algo no doca pra saber se ja foi atualizado?" - depois do
+   caso do EFFERVESCENT com Aptas Full desatualizado sem nenhum aviso na tela): mostra há quanto
+   tempo um horário (ISO) aconteceu, em texto curto tipo "agora mesmo"/"há 12 min"/"há 3h"/"há 2
+   dias" - usado pra avisar quando foi a ÚLTIMA vez que o Mercado Livre realmente confirmou os
+   dados de um produto (mlAtualizadoEm, que só muda quando o /sync roda de verdade - não é hora
+   que o Felipe abriu a tela, é hora que o backend bateu na API do Mercado Livre). */
+function fmtHaQuanto(iso){
+  if(!iso) return null;
+  const d=new Date(iso);
+  if(isNaN(d.getTime())) return null;
+  const seg=Math.max(0,Math.floor((Date.now()-d.getTime())/1000));
+  if(seg<60) return 'agora mesmo';
+  const min=Math.floor(seg/60);
+  if(min<60) return `há ${min} min`;
+  const h=Math.floor(min/60);
+  if(h<24) return `há ${h}h`;
+  const dias=Math.floor(h/24);
+  return `há ${dias} dia${dias===1?'':'s'}`;
+}
 /* barra de progresso reutilizável - real (feito/total, em %) ou indeterminada (quando ainda
    não dá pra saber o total). Usada em qualquer tela com carregamento demorado. */
 function barraProgresso(feito,total,label){
@@ -5242,8 +5261,24 @@ function renderProdutos(){
     const ma=mediaVendasDiaria(a)||0, mb=mediaVendasDiaria(b)||0;
     return mb-ma||a.loja.localeCompare(b.loja)||a.sku.localeCompare(b.sku);
   });
+  /* NOVO 28/09 (Felipe: "da pra colocar algo no doca pra saber se ja foi atualizado?"): linha de
+     status logo abaixo do título, calculada a partir de mlAtualizadoEm real (hora que o backend
+     de fato bateu na API do Mercado Livre pra esses produtos filtrados) - não é a hora que a tela
+     abriu, nem confiança cega. Prioridade: (1) se alguma loja relevante está sincronizando agora
+     (automático ao abrir OU pelo botão), mostra isso primeiro; (2) senão, mostra a mais ANTIGA
+     das últimas atualizações entre os produtos filtrados (o "elo mais fraco" - se um produto
+     ainda não sincronizou há muito tempo, é isso que importa saber, não a média). */
+  const lojasRelevantes=filtro.loja==='todas'?STORES:[filtro.loja];
+  const sincronizandoAgora=lojasRelevantes.some(l=>mlSincronizandoAgora[l]);
+  const atualizacoesFiltradas=filtrados.map(p=>p.mlAtualizadoEm).filter(Boolean).sort();
+  const maisAntiga=atualizacoesFiltradas[0]||null;
   el.innerHTML=`
     <h1 class="page-title">Produtos</h1>
+    ${sincronizandoAgora
+      ?`<p class="hint" style="margin:-4px 0 10px">🔄 Sincronizando com o Mercado Livre agora...</p>`
+      :maisAntiga
+        ?`<p class="hint" style="margin:-4px 0 10px" title="${esc(new Date(maisAntiga).toLocaleString('pt-BR'))}">🕐 Estoque/preço confirmado com o Mercado Livre: ${fmtHaQuanto(maisAntiga)}${filtrados.length>1?' (produto mais atrasado desta lista)':''}</p>`
+        :''}
     ${STORES.some(l=>mlUltimoErroAuto[l])?`<div class="card">
       <b style="font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;color:#e66">⚠ Sincronização automática com o Mercado Livre falhou</b>
       <p class="hint" style="margin:4px 0 0">Produto novo cadastrado no Mercado Livre pode não estar aparecendo aqui ainda. Clique em "🔄 Atualizar (Mercado Livre)" abaixo pra tentar de novo.</p>
@@ -7208,6 +7243,10 @@ function marcarDespesaPaga(id,pago){
    pelo par loja+faturaKey (a "key" que o próprio ML usa pra identificar o período de cobrança) */
 let financasUltimoErroAuto={}; // loja -> mensagem do último erro da tentativa AUTOMÁTICA de puxar a fatura (não persistido — só pra visibilidade nesta sessão, sem precisar abrir o console do navegador)
 let mlUltimoErroAuto={}; // loja -> mensagem do último erro da sincronização AUTOMÁTICA de produtos do Mercado Livre ao abrir o Doca (mesma ideia acima) - pedido do Felipe 19/08: produto novo cadastrado no ML não estava aparecendo, e a sincronização automática falhava sem avisar nada na tela (só no console)
+// NOVO 28/09 (Felipe: "da pra colocar algo no doca pra saber se ja foi atualizado?"): loja -> true
+// enquanto a sincronização de produtos (automática OU pelo botão Atualizar) está rodando pra ela -
+// mostra "🔄 sincronizando..." na aba Produtos em vez de deixar a pessoa imaginando se já rodou.
+let mlSincronizandoAgora={};
 function sleep(ms){ return new Promise(res=>setTimeout(res,ms)); }
 /* calcula dataPagamento/semVencimentoReal/vencimentoEstimado pra um período de fatura ML (seja o
    "principal" ou um dos "outros") - fatorado pra puxarFaturaMl não repetir a mesma lógica 2x.
@@ -12833,7 +12872,23 @@ tentarReconectar().then(()=>{
   }
   await Promise.allSettled(promessasFatura);
   renderFinancas();
+  /* CORRIGIDO 28/09 (Felipe: "Aptas Full" mostrando 26 quando o Mercado Livre já estava em 20,
+     mesmo depois de abrir o Doca - achado real: o backend gratuito (Render) tinha "dormido" por
+     inatividade e a primeira chamada de cada loja acorda ele, o que pode levar dezenas de
+     segundos. Antes, o loop fazia TUDO de 1 loja (produtos + reclamações + mensagens + Mercado
+     Pago + Ads + imposto) antes de passar pra próxima - então se a loja fosse a 2ª/3ª/4ª da lista
+     (STORES=[TorvStore, Dor Block, Orbix Brasil, TorvShop]), o estoque/preço dela só atualizava
+     na tela DEPOIS de toda a sequência lenta da(s) loja(s) anterior(es) terminar - podia levar
+     minutos, e se o Felipe olhasse a aba Produtos nesse meio tempo via número desatualizado sem
+     nenhum aviso. Agora sincroniza os PRODUTOS (o que aparece em Comprar/Coletar/Aptas Full/etc)
+     de TODAS as lojas primeiro, numa passada só - e só depois roda o resto (reclamações,
+     mensagens, Mercado Pago, Ads, imposto), que é mais lento e não trava o que aparece na aba
+     Produtos. Reduz bastante a janela de número desatualizado, mas não elimina 100% o problema de
+     raiz: enquanto o Render for gratuito, ele SEMPRE vai dormir depois de ficar um tempo sem uso -
+     a solução definitiva pra isso é um "ping" externo periódico (ex: cron-job.org de graça, batendo
+     em /health a cada 10 minutos) ou um plano pago do Render que não dorme. */
   for(const loja of STORES){
+    mlSincronizandoAgora[loja]=true; renderProdutos();
     try{
       const resultado=await mlSincronizarLoja(loja);
       aplicarSincronizacaoAutomatica(resultado);
@@ -12841,8 +12896,11 @@ tentarReconectar().then(()=>{
     }catch(e){
       console.error(`Sincronização automática com o Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
       mlUltimoErroAuto[loja]=e.message;
-      renderProdutos();
+    }finally{
+      mlSincronizandoAgora[loja]=false; renderProdutos();
     }
+  }
+  for(const loja of STORES){
     try{
       await carregarReclamacoes(loja);
       await carregarMensagens(loja);
