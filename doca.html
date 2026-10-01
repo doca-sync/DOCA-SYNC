@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v477</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v478</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -612,7 +612,12 @@ const OWNERSHIP_LOJA={
   'Orbix Brasil':{felipe:100/3,thiago:100/3,paulo:100/3},
   'TorvShop':{felipe:50,thiago:50}
 };
-const PAPEL_CAIXA_LOJA={'TorvStore':'distribui','Dor Block':'distribui','Orbix Brasil':'distribui','TorvShop':'reserva'};
+// MUDOU 01/10 (Felipe: "retire por favor a questão de reinvestimento da torvshop, por enquanto
+// vamos considerar retiradas pra ela"): TorvShop deixa de ser 'reserva' (acumula/reinveste, sem
+// retirada de sócio) e passa a ser 'distribui' igual as outras 3 lojas - 100% da margem líquida
+// do mês dela também vira base de retirada pros sócios. "Por enquanto" = Felipe pode pedir pra
+// voltar a ser 'reserva' depois, é só trocar essa linha de volta.
+const PAPEL_CAIXA_LOJA={'TorvStore':'distribui','Dor Block':'distribui','Orbix Brasil':'distribui','TorvShop':'distribui'};
 const GRUPOS_CAIXA=[['TorvStore','Dor Block','TorvShop'],['Orbix Brasil']];
 const NOME_SOCIO={felipe:'Felipe',thiago:'Thiago',paulo:'Paulo'};
 function sociosDaLoja(loja){ return Object.keys(OWNERSHIP_LOJA[loja]||{felipe:50,thiago:50}); }
