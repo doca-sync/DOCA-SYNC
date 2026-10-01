@@ -210,10 +210,10 @@ app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOSt
    APIKEY estao certas no Render e que o enviarWhatsapp() esta' funcionando ponta a ponta -
    nao mexe em nenhum dado de produto/concorrencia. Definida mais abaixo (perto de enviarWhatsapp). */
 app.get('/debug/whatsapp/testar', async (_req, res) => {
-  const configurado = !!(process.env.WHATSAPP_CALLMEBOT_TELEFONE && process.env.WHATSAPP_CALLMEBOT_APIKEY);
-  if (!configurado) return res.status(200).json({ ok: false, erro: 'WHATSAPP_CALLMEBOT_TELEFONE e/ou WHATSAPP_CALLMEBOT_APIKEY nao configurados no Render.' });
+  const destinatarios = destinatariosWhatsapp();
+  if (!destinatarios.length) return res.status(200).json({ ok: false, erro: 'Nenhum WHATSAPP_CALLMEBOT_TELEFONE(_N)/APIKEY(_N) configurado no Render.' });
   await enviarWhatsapp('✅ Teste do Doca: se você recebeu esta mensagem, o alerta de concorrente novo no catálogo está funcionando.');
-  res.json({ ok: true, msg: 'Mensagem de teste enviada - confira seu WhatsApp nos próximos segundos.' });
+  res.json({ ok: true, msg: `Mensagem de teste enviada pra ${destinatarios.length} destinatário(s) - confira o WhatsApp deles nos próximos segundos.`, telefones: destinatarios.map(d => d.telefone) });
 });
 app.post('/ml/webhook', async (req, res) => {
   res.sendStatus(200); // responde rapido - o ML cancela o webhook se demorar pra responder
@@ -5098,30 +5098,51 @@ Escreva uma resposta curta (1 a 3 frases), educada, direta e profissional, em po
    de catálogo do Felipe (price_to_win deixa de ser "winning" e vira "losing"/"sharing_first" -
    ver concorrenciaLabel no doca.html). Usa o CallMeBot (api.callmebot.com) - serviço gratuito de
    terceiros que manda mensagem de WhatsApp via link, sem precisar de conta de WhatsApp Business
-   nem aprovação de template. Configuração ÚNICA que o próprio Felipe precisa fazer (não dá pra
-   automatizar isso, é uma confirmação de opt-in de verdade do WhatsApp dele):
-     1. Salvar o contato +34 644 59 71 20 (CallMeBot) na agenda do celular.
-     2. Mandar "I allow callmebot to send me messages" pra esse contato pelo WhatsApp.
-     3. O bot responde com uma API Key (um número). Guardar esse número.
-     4. No Render, criar 2 variáveis de ambiente: WHATSAPP_CALLMEBOT_TELEFONE (o número do
-        Felipe, com código do país, ex: 5511999999999) e WHATSAPP_CALLMEBOT_APIKEY (a API Key
-        recebida no passo 3).
-   Sem essas 2 variáveis configuradas, enviarWhatsapp() simplesmente não faz nada (log avisando) -
-   não quebra o /sync nem trava a sincronização normal. */
+   nem aprovação de template. Cada NÚMERO que quiser receber precisa fazer o próprio opt-in (não
+   dá pra automatizar - é uma confirmação de verdade do WhatsApp da pessoa):
+     1. Pegar o número oficial atual do bot direto em callmebot.com/blog/free-api-whatsapp-messages
+        (não confiar em número repassado por terceiros - já aconteceu de vir errado).
+     2. Mandar, do PRÓPRIO WhatsApp de quem vai receber o alerta, a mensagem
+        "I allow callmebot to send me messages" pra esse contato.
+     3. O bot responde com uma API Key (um número) - só vale pra aquele número de telefone.
+   NOVO 01/10 (2ª volta, Felipe: "como incluir outro telefone pra receber tambem"): suporta
+   quantos destinatários quiser, cada um com seu PRÓPRIO telefone+apikey (não dá pra 2 pessoas
+   compartilharem a mesma apikey, cada opt-in gera uma única pra aquele número). No Render, criar
+   as variáveis em pares numerados a partir de 2 (o 1º destinatário não leva número, é só
+   WHATSAPP_CALLMEBOT_TELEFONE/APIKEY mesmo mantendo compatibilidade com o que já estava
+   configurado):
+     WHATSAPP_CALLMEBOT_TELEFONE   / WHATSAPP_CALLMEBOT_APIKEY    (1º destinatário)
+     WHATSAPP_CALLMEBOT_TELEFONE_2 / WHATSAPP_CALLMEBOT_APIKEY_2  (2º destinatário)
+     WHATSAPP_CALLMEBOT_TELEFONE_3 / WHATSAPP_CALLMEBOT_APIKEY_3  (3º destinatário, e assim por diante)
+   Sem nenhum par configurado, enviarWhatsapp() simplesmente não faz nada (log avisando) - não
+   quebra o /sync nem trava a sincronização normal. */
+function destinatariosWhatsapp() {
+  const lista = [];
+  if (process.env.WHATSAPP_CALLMEBOT_TELEFONE && process.env.WHATSAPP_CALLMEBOT_APIKEY) {
+    lista.push({ telefone: process.env.WHATSAPP_CALLMEBOT_TELEFONE, apikey: process.env.WHATSAPP_CALLMEBOT_APIKEY });
+  }
+  for (let i = 2; i <= 10; i++) {
+    const telefone = process.env[`WHATSAPP_CALLMEBOT_TELEFONE_${i}`];
+    const apikey = process.env[`WHATSAPP_CALLMEBOT_APIKEY_${i}`];
+    if (telefone && apikey) lista.push({ telefone, apikey });
+  }
+  return lista;
+}
 async function enviarWhatsapp(mensagem) {
-  const telefone = process.env.WHATSAPP_CALLMEBOT_TELEFONE;
-  const apikey = process.env.WHATSAPP_CALLMEBOT_APIKEY;
-  if (!telefone || !apikey) {
-    console.log('[whatsapp] WHATSAPP_CALLMEBOT_TELEFONE/APIKEY nao configurados - alerta nao enviado:', mensagem);
+  const destinatarios = destinatariosWhatsapp();
+  if (!destinatarios.length) {
+    console.log('[whatsapp] nenhum WHATSAPP_CALLMEBOT_TELEFONE/APIKEY configurado - alerta nao enviado:', mensagem);
     return;
   }
-  try {
-    const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(telefone)}&text=${encodeURIComponent(mensagem)}&apikey=${encodeURIComponent(apikey)}`;
-    const r = await fetch(url);
-    if (!r.ok) console.error('[whatsapp] Falha ao enviar alerta (status ' + r.status + '):', await r.text().catch(() => ''));
-  } catch (e) {
-    console.error('[whatsapp] Falha ao enviar alerta:', e.message);
-  }
+  await Promise.allSettled(destinatarios.map(async ({ telefone, apikey }) => {
+    try {
+      const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(telefone)}&text=${encodeURIComponent(mensagem)}&apikey=${encodeURIComponent(apikey)}`;
+      const r = await fetch(url);
+      if (!r.ok) console.error(`[whatsapp] Falha ao enviar alerta pra ${telefone} (status ${r.status}):`, await r.text().catch(() => ''));
+    } catch (e) {
+      console.error(`[whatsapp] Falha ao enviar alerta pra ${telefone}:`, e.message);
+    }
+  }));
 }
 /* 'winning' (ou sem nenhum registro ainda) = ninguem disputando o anuncio de catalogo; 'losing'/
    'sharing_first' = tem concorrente disputando. So conta como "entrou agora" quando ANTES não
