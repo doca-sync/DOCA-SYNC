@@ -204,6 +204,17 @@ async function tokenValido(loja) {
   return dados.access_token;
 }
 app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOString() }));
+/* NOVO 01/10 (Felipe: "como podemos fazer pra testar se esta funcionando" - alerta de WhatsApp de
+   concorrente novo no catálogo): manda uma mensagem de teste na hora, sem precisar esperar um
+   concorrente de verdade aparecer. So' confirma que as variaveis WHATSAPP_CALLMEBOT_TELEFONE/
+   APIKEY estao certas no Render e que o enviarWhatsapp() esta' funcionando ponta a ponta -
+   nao mexe em nenhum dado de produto/concorrencia. Definida mais abaixo (perto de enviarWhatsapp). */
+app.get('/debug/whatsapp/testar', async (_req, res) => {
+  const configurado = !!(process.env.WHATSAPP_CALLMEBOT_TELEFONE && process.env.WHATSAPP_CALLMEBOT_APIKEY);
+  if (!configurado) return res.status(200).json({ ok: false, erro: 'WHATSAPP_CALLMEBOT_TELEFONE e/ou WHATSAPP_CALLMEBOT_APIKEY nao configurados no Render.' });
+  await enviarWhatsapp('✅ Teste do Doca: se você recebeu esta mensagem, o alerta de concorrente novo no catálogo está funcionando.');
+  res.json({ ok: true, msg: 'Mensagem de teste enviada - confira seu WhatsApp nos próximos segundos.' });
+});
 app.post('/ml/webhook', async (req, res) => {
   res.sendStatus(200); // responde rapido - o ML cancela o webhook se demorar pra responder
   try {
