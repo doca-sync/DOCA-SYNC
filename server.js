@@ -5082,6 +5082,46 @@ Escreva uma resposta curta (1 a 3 frases), educada, direta e profissional, em po
   if (!textoResposta) throw new Error('A IA nao devolveu texto de sugestao.');
   return textoResposta;
 }
+/* NOVO 01/10 (Felipe: "como fazer pra caso alguem entre nos meus catalogos eu receber uma
+   mensagem no whatzap?"): alerta por WhatsApp quando um concorrente passa a disputar um anúncio
+   de catálogo do Felipe (price_to_win deixa de ser "winning" e vira "losing"/"sharing_first" -
+   ver concorrenciaLabel no doca.html). Usa o CallMeBot (api.callmebot.com) - serviço gratuito de
+   terceiros que manda mensagem de WhatsApp via link, sem precisar de conta de WhatsApp Business
+   nem aprovação de template. Configuração ÚNICA que o próprio Felipe precisa fazer (não dá pra
+   automatizar isso, é uma confirmação de opt-in de verdade do WhatsApp dele):
+     1. Salvar o contato +34 644 59 71 20 (CallMeBot) na agenda do celular.
+     2. Mandar "I allow callmebot to send me messages" pra esse contato pelo WhatsApp.
+     3. O bot responde com uma API Key (um número). Guardar esse número.
+     4. No Render, criar 2 variáveis de ambiente: WHATSAPP_CALLMEBOT_TELEFONE (o número do
+        Felipe, com código do país, ex: 5511999999999) e WHATSAPP_CALLMEBOT_APIKEY (a API Key
+        recebida no passo 3).
+   Sem essas 2 variáveis configuradas, enviarWhatsapp() simplesmente não faz nada (log avisando) -
+   não quebra o /sync nem trava a sincronização normal. */
+async function enviarWhatsapp(mensagem) {
+  const telefone = process.env.WHATSAPP_CALLMEBOT_TELEFONE;
+  const apikey = process.env.WHATSAPP_CALLMEBOT_APIKEY;
+  if (!telefone || !apikey) {
+    console.log('[whatsapp] WHATSAPP_CALLMEBOT_TELEFONE/APIKEY nao configurados - alerta nao enviado:', mensagem);
+    return;
+  }
+  try {
+    const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(telefone)}&text=${encodeURIComponent(mensagem)}&apikey=${encodeURIComponent(apikey)}`;
+    const r = await fetch(url);
+    if (!r.ok) console.error('[whatsapp] Falha ao enviar alerta (status ' + r.status + '):', await r.text().catch(() => ''));
+  } catch (e) {
+    console.error('[whatsapp] Falha ao enviar alerta:', e.message);
+  }
+}
+/* 'winning' (ou sem nenhum registro ainda) = ninguem disputando o anuncio de catalogo; 'losing'/
+   'sharing_first' = tem concorrente disputando. So conta como "entrou agora" quando ANTES não
+   tinha ninguém e AGORA passou a ter - evita ficar mandando mensagem de novo a cada sincronização
+   enquanto o mesmo concorrente continua lá (isso já fica visível no card "entrou no meu catálogo"
+   do doca.html, que guarda o histórico completo dia a dia). */
+function concorrenciaEntrouAgora(statusAntes, statusDepois) {
+  const antesTinha = statusAntes === 'losing' || statusAntes === 'sharing_first';
+  const depoisTem = statusDepois === 'losing' || statusDepois === 'sharing_first';
+  return !antesTinha && depoisTem;
+}
 app.post('/sugestao/resposta', async (req, res) => {
   try {
     const { tipo, texto, titulo } = req.body || {};
@@ -5144,10 +5184,30 @@ const loja = req.query.loja || req.body?.loja;
     } catch (e) {
       console.error('Falha ao processar reclamacoes automaticamente (seguindo sem essa etapa):', e.message);
     }
+    /* NOVO 01/10 (alerta de WhatsApp quando entra concorrente - ver enviarWhatsapp acima): le o
+       status de concorrencia ANTES desta sincronizacao, pra comparar com o novo depois de
+       chamar a API e so' avisar quando realmente MUDOU de "sem concorrente" pra "com
+       concorrente" (nao fica mandando mensagem de novo a cada sync enquanto o mesmo concorrente
+       continuar la). 1 query so' pra loja inteira, fora do loop, pra nao multiplicar chamada ao
+       banco por item. */
+    const statusConcorrenciaAntes = new Map(
+      (await pool.query('select ml_item_id, concorrencia_status from ml_produtos where loja = $1', [loja])).rows
+        .map(r => [r.ml_item_id, r.concorrencia_status])
+    );
+    const novosConcorrentes = [];
     for (const it of itens) {
       let concorrencia = null;
       if (it.catalog_listing === true) {
         concorrencia = await buscarConcorrenciaCatalogo(accessToken, it.id);
+        const statusNovo = concorrencia ? concorrencia.status : null;
+        if (concorrenciaEntrouAgora(statusConcorrenciaAntes.get(it.id), statusNovo)) {
+          novosConcorrentes.push({
+            titulo: it.title || it.id,
+            sku: extrairSku(it),
+            precoConcorrente: concorrencia.precoConcorrente,
+            precoMeu: it.price ?? null
+          });
+        }
       }
       let transferenciaFull = null;
       if (it.inventory_id) {
@@ -5193,6 +5253,17 @@ const loja = req.query.loja || req.body?.loja;
           (typeof it.original_price === 'number' && it.original_price > 0) ? it.original_price : null
         ]
       );
+    }
+    /* manda 1 mensagem SÓ, consolidando todos os anúncios que ganharam concorrente nesta
+       sincronização desta loja (em vez de 1 mensagem por produto - evita enchente de WhatsApp se
+       vários mudarem ao mesmo tempo). Dispara sem "await" de propósito: não faz sentido segurar
+       a resposta do /sync (que o Felipe/navegador está esperando) por causa de um alerta que é
+       só "nice to have"; enviarWhatsapp já nunca lança erro (ver função). */
+    if (novosConcorrentes.length) {
+      const linhas = novosConcorrentes.map(c =>
+        `• ${c.sku || c.titulo}${typeof c.precoConcorrente === 'number' ? ` — concorrente: R$ ${c.precoConcorrente.toFixed(2)}` : ''}${typeof c.precoMeu === 'number' ? ` (você: R$ ${c.precoMeu.toFixed(2)})` : ''}`
+      ).join('\n');
+      enviarWhatsapp(`⚠ Doca - ${loja}\nEntrou concorrente em ${novosConcorrentes.length} anúncio(s) de catálogo:\n${linhas}`);
     }
     /* achado com dado real do Felipe 23/08: um anuncio CANCELADO no Mercado Livre some da
        listagem /users/{id}/items/search (buscarItensDoVendedor) - o loop acima so' faz UPSERT
