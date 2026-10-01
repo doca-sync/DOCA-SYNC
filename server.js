@@ -209,6 +209,24 @@ app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOSt
    concorrente de verdade aparecer. So' confirma que as variaveis WHATSAPP_CALLMEBOT_TELEFONE/
    APIKEY estao certas no Render e que o enviarWhatsapp() esta' funcionando ponta a ponta -
    nao mexe em nenhum dado de produto/concorrencia. Definida mais abaixo (perto de enviarWhatsapp). */
+/* NOVO 01/10: forca a checagem leve de concorrencia (ver checarConcorrenciaTodasAsLojas, definida
+   mais abaixo) na hora, sem esperar os 20 minutos do agendamento automatico - util pra testar se a
+   deteccao + o alerta de WhatsApp estao funcionando de ponta a ponta com um caso real. Sem "loja"
+   na query, roda nas 4; com "loja", roda so' nela. */
+app.post('/debug/concorrencia/checar', async (req, res) => {
+  const loja = req.query.loja || req.body?.loja;
+  try {
+    if (loja) {
+      if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+      await checarConcorrenciaLoja(loja);
+    } else {
+      await checarConcorrenciaTodasAsLojas('manual (/debug/concorrencia/checar)');
+    }
+    res.json({ ok: true, msg: 'Checagem concluída - se algum anúncio de catálogo ganhou concorrente novo, o alerta de WhatsApp já foi enviado.' });
+  } catch (e) {
+    res.status(200).json({ ok: false, erro: e.message });
+  }
+});
 app.get('/debug/whatsapp/testar', async (_req, res) => {
   const destinatarios = destinatariosWhatsapp();
   if (!destinatarios.length) return res.status(200).json({ ok: false, erro: 'Nenhum WHATSAPP_CALLMEBOT_TELEFONE(_N)/APIKEY(_N) configurado no Render.' });
@@ -5292,10 +5310,7 @@ const loja = req.query.loja || req.body?.loja;
        a resposta do /sync (que o Felipe/navegador está esperando) por causa de um alerta que é
        só "nice to have"; enviarWhatsapp já nunca lança erro (ver função). */
     if (novosConcorrentes.length) {
-      const linhas = novosConcorrentes.map(c =>
-        `• ${c.sku || c.titulo}${typeof c.precoConcorrente === 'number' ? ` — concorrente: R$ ${c.precoConcorrente.toFixed(2)}` : ''}${typeof c.precoMeu === 'number' ? ` (você: R$ ${c.precoMeu.toFixed(2)})` : ''}`
-      ).join('\n');
-      enviarWhatsapp(`⚠ Doca - ${loja}\nEntrou concorrente em ${novosConcorrentes.length} anúncio(s) de catálogo:\n${linhas}`);
+      enviarWhatsapp(formatarAlertaConcorrentes(loja, novosConcorrentes));
     }
     /* achado com dado real do Felipe 23/08: um anuncio CANCELADO no Mercado Livre some da
        listagem /users/{id}/items/search (buscarItensDoVendedor) - o loop acima so' faz UPSERT
@@ -6028,6 +6043,62 @@ app.get('/loading-video.mp4', (req, res) => {
    dentro do mesmo minuto/horario se o setInterval disparar mais de uma vez por coincidencia -
    rodar de novo por acidente nao quebra nada (mesma logica idempotente do forcar-atualizacao), so'
    seria chamada de API desperdicada. */
+/* NOVO 01/10 (Felipe: "da pra ser a cada 20 minutos essa checagem?" - alerta de concorrente novo
+   no catálogo): antes, a checagem de concorrência só rodava dentro do /sync completo (que só
+   acontece quando alguém abre o Doca, clica em Atualizar, ou nos horários pesados 7:30/12:30) -
+   se ninguém abrisse o Doca entre 12:30 e 7:30 do dia seguinte, um concorrente que entrasse nesse
+   meio tempo só seria avisado várias horas depois. Esta checagem é SEPARADA e bem mais leve que o
+   /sync completo: só busca a lista de anúncios (buscarItensDoVendedor) e, pros de catálogo, o
+   price_to_win (buscarConcorrenciaCatalogo) - não mexe em vendas/perguntas/Full/reclamações, então
+   não compete por tempo com o /sync de verdade nem gasta tanta chamada de API. Atualiza
+   concorrencia_status/concorrencia_preco no banco (pra aba Promoções/Produtos já refletir sem
+   esperar o próximo /sync completo) e manda o mesmo alerta de WhatsApp quando detecta "entrou
+   agora" (ver concorrenciaEntrouAgora). */
+function formatarAlertaConcorrentes(loja, novosConcorrentes) {
+  const linhas = novosConcorrentes.map(c =>
+    `• ${c.sku || c.titulo}${typeof c.precoConcorrente === 'number' ? ` — concorrente: R$ ${c.precoConcorrente.toFixed(2)}` : ''}${typeof c.precoMeu === 'number' ? ` (você: R$ ${c.precoMeu.toFixed(2)})` : ''}`
+  ).join('\n');
+  return `⚠ Doca - ${loja}\nEntrou concorrente em ${novosConcorrentes.length} anúncio(s) de catálogo:\n${linhas}`;
+}
+async function checarConcorrenciaLoja(loja) {
+  const accessToken = await tokenValido(loja);
+  const conta = await pegarConta(loja);
+  const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
+  const catalogoItens = itens.filter(it => it.catalog_listing === true);
+  if (!catalogoItens.length) return;
+  const statusAntes = new Map(
+    (await pool.query('select ml_item_id, concorrencia_status from ml_produtos where loja = $1', [loja])).rows
+      .map(r => [r.ml_item_id, r.concorrencia_status])
+  );
+  const novosConcorrentes = [];
+  for (const it of catalogoItens) {
+    const concorrencia = await buscarConcorrenciaCatalogo(accessToken, it.id);
+    const statusNovo = concorrencia ? concorrencia.status : null;
+    // so' atualiza se o item ja existe (veio de um /sync completo antes) - essa checagem leve nao
+    // cadastra SKU novo sozinha, isso continua sendo papel do /sync de verdade.
+    await pool.query(
+      'update ml_produtos set concorrencia_status = $1, concorrencia_preco = $2 where loja = $3 and ml_item_id = $4',
+      [statusNovo, concorrencia ? concorrencia.precoConcorrente : null, loja, it.id]
+    );
+    if (concorrenciaEntrouAgora(statusAntes.get(it.id), statusNovo)) {
+      novosConcorrentes.push({ titulo: it.title || it.id, sku: extrairSku(it), precoConcorrente: concorrencia.precoConcorrente, precoMeu: it.price ?? null });
+    }
+  }
+  if (novosConcorrentes.length) {
+    await enviarWhatsapp(formatarAlertaConcorrentes(loja, novosConcorrentes));
+  }
+}
+async function checarConcorrenciaTodasAsLojas(motivo) {
+  for (const loja of LOJAS_VALIDAS) {
+    try {
+      await checarConcorrenciaLoja(loja);
+      console.log(`[concorrencia-agendado] ${motivo} - ok:`, loja);
+    } catch (e) {
+      console.error(`[concorrencia-agendado] ${motivo} - falhou:`, loja, e.message);
+    }
+  }
+}
+let ultimaChecagemConcorrencia = 0;
 let ultimoSlotRodado = null;
 async function pedirAtualizacaoMpTodasAsLojas(motivo) {
   for (const loja of LOJAS_VALIDAS) {
@@ -6179,6 +6250,14 @@ async function atualizarVisitasTodasAsLojas(motivo) {
   }
 }
 setInterval(async () => {
+  /* checagem leve de concorrência a cada 20 minutos (ver checarConcorrenciaTodasAsLojas acima) -
+     roda ANTES do "if" de 7:30/12:30 abaixo, porque é independente dele: usa o mesmo heartbeat de
+     1 minuto que já existia, só com seu próprio controle de tempo (ultimaChecagemConcorrencia) em
+     vez de depender de bater um horário exato - assim funciona o dia inteiro, não só 2x por dia. */
+  if (Date.now() - ultimaChecagemConcorrencia >= 20 * 60 * 1000) {
+    ultimaChecagemConcorrencia = Date.now();
+    checarConcorrenciaTodasAsLojas('a cada 20min');
+  }
   const agora = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
   }).formatToParts(new Date()).reduce((o, p) => (o[p.type] = p.value, o), {});
