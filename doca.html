@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v478</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v479</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12857,26 +12857,67 @@ tentarReconectar().then(()=>{
    plano; se uma loja falhar (não autorizada, servidor dormindo, sem internet etc.) segue
    pras próximas sem travar o resto do app — cada loja fica só com os dados de quando
    funcionou por último. */
+/* NOVO 06/10 (Felipe: "acho que o doca não está atualizando sozinho - abri várias vezes hoje, tinha
+   pergunta pra responder e estoque novo no Full e não apareceu; só atualizou quando apertei
+   Atualizar manualmente"). Dois furos reais:
+   (1) a fatura do ML (com retry em 429, pode demorar minutos) era AGUARDADA (await) antes de
+       começar a sincronizar os PRODUTOS - então perguntas/estoque do Full ficavam esperando a
+       fatura terminar, e se a pessoa olhava antes disso via dado velho. Agora a fatura roda em
+       paralelo, em segundo plano, sem segurar nada;
+   (2) a sincronização só rodava UMA vez, ao abrir a página - se a aba ficasse aberta o dia todo
+       (ou voltasse de outra aba/janela), nunca mais atualizava sozinha. Agora também roda de novo
+       a cada 10 minutos enquanto a aba está visível, e ao voltar pra aba depois de 5+ minutos
+       longe (ver sincronizarProdutosPeriodico abaixo). */
+let sincProdutosRodando=false, ultimaSincProdutos=0;
+async function sincronizarProdutosTodasAsLojas(){
+  if(sincProdutosRodando||!backendUrl()) return;
+  sincProdutosRodando=true;
+  try{
+    for(const loja of STORES){
+      mlSincronizandoAgora[loja]=true; renderProdutos();
+      try{
+        const resultado=await mlSincronizarLoja(loja);
+        aplicarSincronizacaoAutomatica(resultado);
+        delete mlUltimoErroAuto[loja];
+      }catch(e){
+        console.error(`Sincronização automática com o Mercado Livre falhou (loja ${loja}):`,e.message);
+        mlUltimoErroAuto[loja]=e.message;
+      }finally{
+        mlSincronizandoAgora[loja]=false; renderProdutos();
+      }
+    }
+  }finally{
+    sincProdutosRodando=false;
+    ultimaSincProdutos=Date.now();
+  }
+}
+function sincronizarProdutosPeriodico(){
+  if(document.hidden) return;
+  if(Date.now()-ultimaSincProdutos<9*60*1000) return;
+  sincronizarProdutosTodasAsLojas();
+}
+setInterval(sincronizarProdutosPeriodico,60*1000);
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&Date.now()-ultimaSincProdutos>=5*60*1000) sincronizarProdutosTodasAsLojas();
+});
 (async function sincronizarMlAoAbrir(){
   if(!backendUrl()) return;
-  /* fatura do Mercado Livre primeiro (uma chamada rápida por loja) — antes ela ficava no fim de
-     uma fila sequencial (produtos → Mercado Pago → Ads → fatura → imposto, loja por loja), então
-     se qualquer passo mais lento travasse ou o backend gratuito estivesse "dormindo", a fatura só
-     aparecia depois de clicar manualmente em "🔄" na aba Finanças. Disparar as 4 lojas exatamente
-     ao mesmo tempo esbarrava no limite de chamadas por segundo do Mercado Livre (429), então agora
-     começa uma loja a cada 500ms (ainda bem mais rápido que a fila antiga) e cada uma tenta de
-     novo sozinha se cair num 429 (ver puxarFaturaMlComRetry). */
-  const promessasFatura=[];
-  for(let i=0;i<STORES.length;i++){
-    const loja=STORES[i];
-    promessasFatura.push(puxarFaturaMlComRetry(loja).catch(e=>{
-      console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
-      financasUltimoErroAuto[loja]=e.message;
-    }));
-    if(i<STORES.length-1) await sleep(500);
-  }
-  await Promise.allSettled(promessasFatura);
-  renderFinancas();
+  /* fatura do Mercado Livre — roda EM PARALELO (não bloqueia mais os produtos, ver comentário
+     acima). Começa uma loja a cada 500ms pra não esbarrar no limite de chamadas por segundo do
+     Mercado Livre (429), e cada uma tenta de novo sozinha se cair num 429 (puxarFaturaMlComRetry). */
+  (async()=>{
+    const promessasFatura=[];
+    for(let i=0;i<STORES.length;i++){
+      const loja=STORES[i];
+      promessasFatura.push(puxarFaturaMlComRetry(loja).catch(e=>{
+        console.error(`Sincronização automática da fatura do Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
+        financasUltimoErroAuto[loja]=e.message;
+      }));
+      if(i<STORES.length-1) await sleep(500);
+    }
+    await Promise.allSettled(promessasFatura);
+    renderFinancas();
+  })();
   /* CORRIGIDO 28/09 (Felipe: "Aptas Full" mostrando 26 quando o Mercado Livre já estava em 20,
      mesmo depois de abrir o Doca - achado real: o backend gratuito (Render) tinha "dormido" por
      inatividade e a primeira chamada de cada loja acorda ele, o que pode levar dezenas de
@@ -12892,19 +12933,7 @@ tentarReconectar().then(()=>{
      raiz: enquanto o Render for gratuito, ele SEMPRE vai dormir depois de ficar um tempo sem uso -
      a solução definitiva pra isso é um "ping" externo periódico (ex: cron-job.org de graça, batendo
      em /health a cada 10 minutos) ou um plano pago do Render que não dorme. */
-  for(const loja of STORES){
-    mlSincronizandoAgora[loja]=true; renderProdutos();
-    try{
-      const resultado=await mlSincronizarLoja(loja);
-      aplicarSincronizacaoAutomatica(resultado);
-      delete mlUltimoErroAuto[loja];
-    }catch(e){
-      console.error(`Sincronização automática com o Mercado Livre falhou ao abrir o Doca (loja ${loja}):`,e.message);
-      mlUltimoErroAuto[loja]=e.message;
-    }finally{
-      mlSincronizandoAgora[loja]=false; renderProdutos();
-    }
-  }
+  await sincronizarProdutosTodasAsLojas();
   for(const loja of STORES){
     try{
       await carregarReclamacoes(loja);
