@@ -12147,7 +12147,7 @@ function renderPrevisao(){
      escolha (23/08). Só que ela também segurava o render pedido pela PRÓPRIA escolha da pessoa, e
      a tela só virava no clique seguinte. Tira o foco do select antes de gravar: o dropdown já
      fechou nesse ponto, então a proteção não é mais necessária, e a tela troca na hora. */
-  document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; e.target.blur(); persist(); renderFull(); };
+  document.getElementById('fLoja').onchange=e=>{ fullCfg().loja=e.target.value; e.target.blur(); persist(); renderPrevisao(); };
   document.getElementById('fEnvio').onclick=()=>abrirSeletorData(c.envio,(iso)=>{
     snapshot('mudança da data da previsão');
     /* MUDOU DE NOVO 18/09 (Felipe: "estou selecionando outra data e ainda fica preso ao número

@@ -213,6 +213,57 @@ app.get('/health', (_req, res) => res.json({ ok: true, agora: new Date().toISOSt
    mais abaixo) na hora, sem esperar os 20 minutos do agendamento automatico - util pra testar se a
    deteccao + o alerta de WhatsApp estao funcionando de ponta a ponta com um caso real. Sem "loja"
    na query, roda nas 4; com "loja", roda so' nela. */
+/* NOVO 08/10 (Felipe: alguém "vinculou" no anúncio do EFVSUMMER e nem o Doca nem o WhatsApp
+   avisaram): mostra o JSON CRU que o Mercado Livre devolve pra esse anúncio (status, catalog_product_id,
+   catalog_listing) e o price_to_win cru - pra ver se o ML realmente enxerga o concorrente (e em qual
+   status) ou se o anúncio (ex: pausado) simplesmente não entra nessa checagem. */
+app.get('/debug/concorrencia/raw', async (req, res) => {
+  try {
+    const { loja, sku } = req.query;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: 'loja invalida' });
+    const r0 = await pool.query('select ml_item_id, titulo, status, concorrencia_status, concorrencia_preco, atualizado_em from ml_produtos where loja = $1 and lower(sku) = lower($2)', [loja, sku || '']);
+    if (!r0.rows.length) return res.status(404).json({ ok: false, erro: 'sku nao encontrado' });
+    const accessToken = await tokenValido(loja);
+    const saida = [];
+    for (const row of r0.rows) {
+      const hdr = { headers: { Authorization: `Bearer ${accessToken}` } };
+      const item = await (await fetch(`https://api.mercadolibre.com/items/${row.ml_item_id}`, hdr)).json();
+      const ptwResp = await fetch(`https://api.mercadolibre.com/items/${row.ml_item_id}/price_to_win?siteId=MLB&version=v2`, hdr);
+      const ptw = await ptwResp.json();
+      saida.push({
+        banco: row,
+        item_ml: { status: item.status, sub_status: item.sub_status, catalog_listing: item.catalog_listing, catalog_product_id: item.catalog_product_id, price: item.price, available_quantity: item.available_quantity },
+        price_to_win: { http_status: ptwResp.status, corpo: ptw }
+      });
+    }
+    res.json({ ok: true, itens: saida });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+/* NOVO 08/10 (Felipe: "da pra fazer um teste pra mandar uma mensagem dos que ja tem vinculado?"):
+   manda 1 mensagem de WhatsApp por loja listando os anúncios de catálogo que JÁ têm preço de
+   concorrente registrado hoje (os mesmos do card "ganhando" do Doca) - é só um TESTE do formato e
+   da entrega, não mexe em nada no banco. Sem "loja" na query, olha as 4 lojas. */
+app.get('/debug/concorrencia/enviar-existentes', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    const lojas = loja ? [loja] : LOJAS_VALIDAS;
+    if (lojas.some(l => !LOJAS_VALIDAS.includes(l))) return res.status(400).json({ ok: false, erro: 'loja invalida' });
+    if (!destinatariosWhatsapp().length) return res.json({ ok: false, erro: 'Nenhum WHATSAPP_CALLMEBOT_TELEFONE(_N)/APIKEY(_N) configurado no Render.' });
+    const resumo = [];
+    for (const l of lojas) {
+      const r = await pool.query(
+        `select sku, titulo, preco, concorrencia_preco from ml_produtos
+          where loja = $1 and catalog_listing = true and status = 'active' and concorrencia_preco is not null
+            and abs(concorrencia_preco - coalesce(preco, 0)) > 0.005
+          order by vendas_30d desc nulls last`, [l]);
+      if (!r.rows.length) { resumo.push({ loja: l, anuncios: 0 }); continue; }
+      const lista = r.rows.map(x => ({ sku: x.sku, titulo: x.titulo, precoConcorrente: Number(x.concorrencia_preco), precoMeu: x.preco === null ? null : Number(x.preco) }));
+      await enviarWhatsapp('🧪 TESTE (anúncios que já têm concorrente hoje)\n' + formatarAlertaConcorrentes(l, lista));
+      resumo.push({ loja: l, anuncios: lista.length });
+    }
+    res.json({ ok: true, msg: 'Mensagens de teste enviadas - confira o WhatsApp.', resumo });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
 app.post('/debug/concorrencia/checar', async (req, res) => {
   const loja = req.query.loja || req.body?.loja;
   try {
@@ -230,8 +281,8 @@ app.post('/debug/concorrencia/checar', async (req, res) => {
 app.get('/debug/whatsapp/testar', async (_req, res) => {
   const destinatarios = destinatariosWhatsapp();
   if (!destinatarios.length) return res.status(200).json({ ok: false, erro: 'Nenhum WHATSAPP_CALLMEBOT_TELEFONE(_N)/APIKEY(_N) configurado no Render.' });
-  await enviarWhatsapp('✅ Teste do Doca: se você recebeu esta mensagem, o alerta de concorrente novo no catálogo está funcionando.');
-  res.json({ ok: true, msg: `Mensagem de teste enviada pra ${destinatarios.length} destinatário(s) - confira o WhatsApp deles nos próximos segundos.`, telefones: destinatarios.map(d => d.telefone) });
+  const resultados = await enviarWhatsappDetalhado('✅ Teste do Doca: se você recebeu esta mensagem, o alerta de concorrente novo no catálogo está funcionando.', destinatarios);
+  res.json({ ok: true, msg: 'Veja o campo "resultados" abaixo - "Message queued" = o CallMeBot aceitou (deveria chegar); qualquer outro texto (ex: "API Key is invalid") explica por que não chegou nesse número.', resultados });
 });
 app.post('/ml/webhook', async (req, res) => {
   res.sendStatus(200); // responde rapido - o ML cancela o webhook se demorar pra responder
@@ -5152,13 +5203,25 @@ async function enviarWhatsapp(mensagem) {
     console.log('[whatsapp] nenhum WHATSAPP_CALLMEBOT_TELEFONE/APIKEY configurado - alerta nao enviado:', mensagem);
     return;
   }
-  await Promise.allSettled(destinatarios.map(async ({ telefone, apikey }) => {
+  await enviarWhatsappDetalhado(mensagem, destinatarios);
+}
+/* NOVO 01/10 (Felipe: 2º número não recebeu o teste, mesmo o servidor dizendo "ok" - o CallMeBot
+   só confirma que ACEITOU o pedido ("Message queued"), não que o WhatsApp realmente entregou. Pra
+   diagnosticar isso de verdade precisa ver o TEXTO completo que o CallMeBot devolveu pra cada
+   número - pode vir algo tipo "API Key is invalid"/"not allowed" mesmo com HTTP 200. Esta versão
+   devolve esse detalhe por número (usada pelo /debug/whatsapp/testar); o enviarWhatsapp() comum
+   (usado nos alertas de verdade) so' usa o resumo, pra nao poluir o log em produção. */
+async function enviarWhatsappDetalhado(mensagem, destinatarios) {
+  return Promise.all(destinatarios.map(async ({ telefone, apikey }) => {
     try {
       const url = `https://api.callmebot.com/whatsapp.php?phone=${encodeURIComponent(telefone)}&text=${encodeURIComponent(mensagem)}&apikey=${encodeURIComponent(apikey)}`;
       const r = await fetch(url);
-      if (!r.ok) console.error(`[whatsapp] Falha ao enviar alerta pra ${telefone} (status ${r.status}):`, await r.text().catch(() => ''));
+      const corpo = await r.text().catch(() => '(sem corpo)');
+      if (!r.ok) console.error(`[whatsapp] Falha ao enviar alerta pra ${telefone} (status ${r.status}):`, corpo);
+      return { telefone, http_status: r.status, resposta_callmebot: corpo };
     } catch (e) {
       console.error(`[whatsapp] Falha ao enviar alerta pra ${telefone}:`, e.message);
+      return { telefone, erro: e.message };
     }
   }));
 }
@@ -5167,10 +5230,20 @@ async function enviarWhatsapp(mensagem) {
    tinha ninguém e AGORA passou a ter - evita ficar mandando mensagem de novo a cada sincronização
    enquanto o mesmo concorrente continua lá (isso já fica visível no card "entrou no meu catálogo"
    do doca.html, que guarda o histórico completo dia a dia). */
-function concorrenciaEntrouAgora(statusAntes, statusDepois) {
+/* CORRIGIDO 08/10 (Felipe: alguém vinculou no anúncio do EFVSUMMER - o card do Doca mostrou "menor
+   deles R$184,90" mas o WhatsApp não avisou): o status do anúncio continuou "winning" (você segue
+   com a compra), então a regra só de losing/sharing_first nunca disparava. Agora também conta como
+   "entrou agora" quando ANTES não havia preço de concorrente nenhum registrado e AGORA aparece um
+   preço diferente do seu (precoAntes/precoDepois/meuPreco opcionais - sem eles, vale só a regra de
+   status de antes). */
+function concorrenciaEntrouAgora(statusAntes, statusDepois, precoAntes, precoDepois, meuPreco) {
   const antesTinha = statusAntes === 'losing' || statusAntes === 'sharing_first';
   const depoisTem = statusDepois === 'losing' || statusDepois === 'sharing_first';
-  return !antesTinha && depoisTem;
+  if (!antesTinha && depoisTem) return true;
+  const semPrecoAntes = precoAntes === null || precoAntes === undefined;
+  const precoNovo = precoDepois !== null && precoDepois !== undefined && Number.isFinite(Number(precoDepois)) ? Number(precoDepois) : null;
+  const diferenteDoMeu = precoNovo !== null && (meuPreco === null || meuPreco === undefined || Math.abs(precoNovo - Number(meuPreco)) > 0.005);
+  return semPrecoAntes && diferenteDoMeu;
 }
 app.post('/sugestao/resposta', async (req, res) => {
   try {
@@ -5240,17 +5313,17 @@ const loja = req.query.loja || req.body?.loja;
        concorrente" (nao fica mandando mensagem de novo a cada sync enquanto o mesmo concorrente
        continuar la). 1 query so' pra loja inteira, fora do loop, pra nao multiplicar chamada ao
        banco por item. */
-    const statusConcorrenciaAntes = new Map(
-      (await pool.query('select ml_item_id, concorrencia_status from ml_produtos where loja = $1', [loja])).rows
-        .map(r => [r.ml_item_id, r.concorrencia_status])
-    );
+    const statusConcorrenciaAntes = new Map();
+    const precoConcorrenciaAntes = new Map();
+    (await pool.query('select ml_item_id, concorrencia_status, concorrencia_preco from ml_produtos where loja = $1', [loja])).rows
+      .forEach(r => { statusConcorrenciaAntes.set(r.ml_item_id, r.concorrencia_status); precoConcorrenciaAntes.set(r.ml_item_id, r.concorrencia_preco); });
     const novosConcorrentes = [];
     for (const it of itens) {
       let concorrencia = null;
       if (it.catalog_listing === true) {
         concorrencia = await buscarConcorrenciaCatalogo(accessToken, it.id);
         const statusNovo = concorrencia ? concorrencia.status : null;
-        if (concorrenciaEntrouAgora(statusConcorrenciaAntes.get(it.id), statusNovo)) {
+        if (statusConcorrenciaAntes.has(it.id) && concorrenciaEntrouAgora(statusConcorrenciaAntes.get(it.id), statusNovo, precoConcorrenciaAntes.get(it.id), concorrencia ? concorrencia.precoConcorrente : null, it.price)) {
           novosConcorrentes.push({
             titulo: it.title || it.id,
             sku: extrairSku(it),
@@ -6066,10 +6139,10 @@ async function checarConcorrenciaLoja(loja) {
   const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
   const catalogoItens = itens.filter(it => it.catalog_listing === true);
   if (!catalogoItens.length) return;
-  const statusAntes = new Map(
-    (await pool.query('select ml_item_id, concorrencia_status from ml_produtos where loja = $1', [loja])).rows
-      .map(r => [r.ml_item_id, r.concorrencia_status])
-  );
+  const statusAntes = new Map();
+  const precoAntes = new Map();
+  (await pool.query('select ml_item_id, concorrencia_status, concorrencia_preco from ml_produtos where loja = $1', [loja])).rows
+    .forEach(r => { statusAntes.set(r.ml_item_id, r.concorrencia_status); precoAntes.set(r.ml_item_id, r.concorrencia_preco); });
   const novosConcorrentes = [];
   for (const it of catalogoItens) {
     const concorrencia = await buscarConcorrenciaCatalogo(accessToken, it.id);
@@ -6080,7 +6153,9 @@ async function checarConcorrenciaLoja(loja) {
       'update ml_produtos set concorrencia_status = $1, concorrencia_preco = $2 where loja = $3 and ml_item_id = $4',
       [statusNovo, concorrencia ? concorrencia.precoConcorrente : null, loja, it.id]
     );
-    if (concorrenciaEntrouAgora(statusAntes.get(it.id), statusNovo)) {
+    // statusAntes.has(): anúncio ainda sem linha no banco (novo, nunca passou por /sync completo) não
+    // tem "antes" pra comparar - sem isso daria falso alerta de "entrou concorrente" num anúncio novo.
+    if (statusAntes.has(it.id) && concorrenciaEntrouAgora(statusAntes.get(it.id), statusNovo, precoAntes.get(it.id), concorrencia ? concorrencia.precoConcorrente : null, it.price)) {
       novosConcorrentes.push({ titulo: it.title || it.id, sku: extrairSku(it), precoConcorrente: concorrencia.precoConcorrente, precoMeu: it.price ?? null });
     }
   }
