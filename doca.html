@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v479</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v480</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4070,7 +4070,7 @@ function produtosPausadosOuPerdendo(){
   // dele pra saber que sumiu de vez). Mesmo critério já usado no alerta de ruptura (linha ~7814).
   // exclui tambem p.repoPausada (produto que o Felipe ja marcou pra sair de linha pelo botao 🔕) -
   // mesmo criterio do alerta de ruptura, reaproveitado aqui a pedido dele (21/08)
-  return state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&!p.repoPausada&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'));
+  return state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&!p.repoPausada&&(p.mlStatus==='paused'||p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='competing'||p.mlConcorrenciaStatus==='sharing_first'));
 }
 /* CARD "RANKING DE MAIS VENDIDOS" na Visão Geral (pedido do Felipe 02/09) - quem ganhou e quem
    perdeu posição desde a leitura anterior, quem está no top 10, e os candidatos ao selo. O
@@ -4129,7 +4129,7 @@ function cardRankingMaisVendidos(){
 function cardConcorrenciaCatalogo(){
   const ps=state.produtos.filter(p=>p.mlItemId&&!p.mlAusente);
   const comConcorrente=ps.filter(p=>typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0);
-  const perdendo=ps.filter(p=>p.mlConcorrenciaStatus==='losing'&&!(typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0));
+  const perdendo=ps.filter(p=>(p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='competing')&&!(typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0));
   const sozinho=ps.filter(p=>p.mlOutrosVendedores===0).length;
   const novos=ps.filter(p=>{ const e=entrouConcorrente(p); return e&&e.entrou; });
   if(!comConcorrente.length&&!perdendo.length&&!sozinho) return '';
@@ -4144,7 +4144,7 @@ function cardConcorrenciaCatalogo(){
     const e=entrouConcorrente(p);
     if(e&&e.entrou) return '<span class="pend">🚨 entrou agora</span>';
     if(e&&e.saiu) return '<span class="okv">✅ recuperou</span>';
-    if(p.mlConcorrenciaStatus==='losing') return '<span class="pend">perdendo</span>';
+    if(p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='competing') return '<span class="pend">perdendo</span>';
     if(p.mlConcorrenciaStatus==='sharing_first') return '<span>empatado</span>';
     return '<span class="okv">ganhando</span>';
   };
@@ -4796,7 +4796,7 @@ function statusMlLabel(s){
 /* só mostra algo quando tem concorrência real na página do catálogo (empatando ou perdendo) —
    "ganhando"/"listado" não indicam a presença de outro vendedor de forma confiável, então ficam mudos */
 function concorrenciaLabel(s){
-  if(s==='losing') return 'Perdendo no catálogo';
+  if(s==='losing'||s==='competing') return 'Perdendo no catálogo';
   if(s==='sharing_first') return 'Empatando no catálogo';
   return null;
 }
@@ -4821,7 +4821,7 @@ function entrouConcorrente(p){
   const h=Array.isArray(p&&p.mlConcHist)?p.mlConcHist:[];
   if(h.length<2) return null;
   const atual=h[h.length-1], ant=h[h.length-2];
-  const disputado=s=>s==='losing'||s==='sharing_first';
+  const disputado=s=>s==='losing'||s==='sharing_first'||s==='competing';
   if(!disputado(ant.st)&&disputado(atual.st)) return {entrou:true,de:ant.st,para:atual.st,desde:ant.data,preco:atual.preco};
   if(disputado(ant.st)&&!disputado(atual.st)) return {saiu:true,de:ant.st,para:atual.st,desde:ant.data};
   if(ant.st==='sharing_first'&&atual.st==='losing') return {piorou:true,de:ant.st,para:atual.st,desde:ant.data,preco:atual.preco};

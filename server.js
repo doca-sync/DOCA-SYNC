@@ -254,7 +254,7 @@ app.get('/debug/concorrencia/enviar-existentes', async (req, res) => {
       const r = await pool.query(
         `select sku, titulo, preco, concorrencia_preco from ml_produtos
           where loja = $1 and catalog_listing = true and status = 'active'
-            and concorrencia_status in ('losing', 'sharing_first')
+            and concorrencia_status in ('losing', 'sharing_first', 'competing')
           order by vendas_30d desc nulls last`, [l]);
       if (!r.rows.length) { resumo.push({ loja: l, anuncios: 0 }); continue; }
       const lista = r.rows.map(x => ({ sku: x.sku, titulo: x.titulo, precoConcorrente: Number(x.concorrencia_preco), precoMeu: x.preco === null ? null : Number(x.preco) }));
@@ -5237,8 +5237,11 @@ async function enviarWhatsappDetalhado(mensagem, destinatarios) {
    preço diferente do seu (precoAntes/precoDepois/meuPreco opcionais - sem eles, vale só a regra de
    status de antes). */
 function concorrenciaEntrouAgora(statusAntes, statusDepois, precoAntes, precoDepois, meuPreco) {
-  const antesTinha = statusAntes === 'losing' || statusAntes === 'sharing_first';
-  const depoisTem = statusDepois === 'losing' || statusDepois === 'sharing_first';
+  /* CORRIGIDO 08/10 (achado real no EFVSUMMER via /debug/concorrencia/raw): o ML devolve
+     status "competing" (= "Perdendo" no painel dele: tem outro vendedor com preço melhor) - o
+     código só conhecia losing/sharing_first e nunca alertava esse caso. */
+  const antesTinha = statusAntes === 'losing' || statusAntes === 'sharing_first' || statusAntes === 'competing';
+  const depoisTem = statusDepois === 'losing' || statusDepois === 'sharing_first' || statusDepois === 'competing';
   /* DESFEITO 08/10 (2ª volta): a regra "apareceu preço de concorrente" gerava alerta falso - o
      winner.price que o ML devolve é o preço de QUEM GANHA, e quando é o próprio Felipe ganhando
      com promoção (R$38 -> R$19) vira "concorrente R$19" em dezenas de anúncios. Só vale o status
