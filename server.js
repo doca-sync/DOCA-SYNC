@@ -253,8 +253,8 @@ app.get('/debug/concorrencia/enviar-existentes', async (req, res) => {
     for (const l of lojas) {
       const r = await pool.query(
         `select sku, titulo, preco, concorrencia_preco from ml_produtos
-          where loja = $1 and catalog_listing = true and status = 'active' and concorrencia_preco is not null
-            and abs(concorrencia_preco - coalesce(preco, 0)) > 0.005
+          where loja = $1 and catalog_listing = true and status = 'active'
+            and concorrencia_status in ('losing', 'sharing_first')
           order by vendas_30d desc nulls last`, [l]);
       if (!r.rows.length) { resumo.push({ loja: l, anuncios: 0 }); continue; }
       const lista = r.rows.map(x => ({ sku: x.sku, titulo: x.titulo, precoConcorrente: Number(x.concorrencia_preco), precoMeu: x.preco === null ? null : Number(x.preco) }));
@@ -5239,11 +5239,12 @@ async function enviarWhatsappDetalhado(mensagem, destinatarios) {
 function concorrenciaEntrouAgora(statusAntes, statusDepois, precoAntes, precoDepois, meuPreco) {
   const antesTinha = statusAntes === 'losing' || statusAntes === 'sharing_first';
   const depoisTem = statusDepois === 'losing' || statusDepois === 'sharing_first';
-  if (!antesTinha && depoisTem) return true;
-  const semPrecoAntes = precoAntes === null || precoAntes === undefined;
-  const precoNovo = precoDepois !== null && precoDepois !== undefined && Number.isFinite(Number(precoDepois)) ? Number(precoDepois) : null;
-  const diferenteDoMeu = precoNovo !== null && (meuPreco === null || meuPreco === undefined || Math.abs(precoNovo - Number(meuPreco)) > 0.005);
-  return semPrecoAntes && diferenteDoMeu;
+  /* DESFEITO 08/10 (2ª volta): a regra "apareceu preço de concorrente" gerava alerta falso - o
+     winner.price que o ML devolve é o preço de QUEM GANHA, e quando é o próprio Felipe ganhando
+     com promoção (R$38 -> R$19) vira "concorrente R$19" em dezenas de anúncios. Só vale o status
+     oficial do ML (losing/sharing_first), igual ao painel dele ("Perdendo"). Os parâmetros de preço
+     continuam na assinatura só pra não quebrar quem chama, mas não são mais usados. */
+  return !antesTinha && depoisTem;
 }
 app.post('/sugestao/resposta', async (req, res) => {
   try {
@@ -6128,10 +6129,13 @@ app.get('/loading-video.mp4', (req, res) => {
    esperar o próximo /sync completo) e manda o mesmo alerta de WhatsApp quando detecta "entrou
    agora" (ver concorrenciaEntrouAgora). */
 function formatarAlertaConcorrentes(loja, novosConcorrentes) {
-  const linhas = novosConcorrentes.map(c =>
+  // CallMeBot corta mensagens longas (a de teste de 40 anúncios veio truncada) - mostra no máximo 10.
+  const MAX = 10;
+  const linhas = novosConcorrentes.slice(0, MAX).map(c =>
     `• ${c.sku || c.titulo}${typeof c.precoConcorrente === 'number' ? ` — concorrente: R$ ${c.precoConcorrente.toFixed(2)}` : ''}${typeof c.precoMeu === 'number' ? ` (você: R$ ${c.precoMeu.toFixed(2)})` : ''}`
-  ).join('\n');
-  return `⚠ Doca - ${loja}\nEntrou concorrente em ${novosConcorrentes.length} anúncio(s) de catálogo:\n${linhas}`;
+  );
+  if (novosConcorrentes.length > MAX) linhas.push(`… e mais ${novosConcorrentes.length - MAX}`);
+  return `⚠ Doca - ${loja}\nEntrou concorrente em ${novosConcorrentes.length} anúncio(s) de catálogo:\n${linhas.join('\n')}`;
 }
 async function checarConcorrenciaLoja(loja) {
   const accessToken = await tokenValido(loja);
