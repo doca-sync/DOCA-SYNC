@@ -264,6 +264,27 @@ app.get('/debug/concorrencia/enviar-existentes', async (req, res) => {
     res.json({ ok: true, msg: 'Mensagens de teste enviadas - confira o WhatsApp.', resumo });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
 });
+/* TESTE do alerta de vendedor novo: tira 1 vendedor da "foto" guardada de um anúncio e roda a
+   checagem da loja - na leitura seguinte esse vendedor aparece como "novo" e o WhatsApp dispara.
+   Uso: /debug/concorrencia/simular-novo-vendedor?loja=Dor%20Block&sku=efvsummer (precisa já ter
+   passado por 1 checagem antes, pra existir a foto). Não altera nada no Mercado Livre. */
+app.get('/debug/concorrencia/simular-novo-vendedor', async (req, res) => {
+  try {
+    const { loja, sku } = req.query;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: 'loja invalida' });
+    await garantirTabelaVendedoresCatalogo();
+    const p = await pool.query('select ml_item_id from ml_produtos where loja = $1 and lower(sku) = lower($2)', [loja, sku || '']);
+    if (!p.rows.length) return res.status(404).json({ ok: false, erro: 'sku nao encontrado' });
+    const id = p.rows[0].ml_item_id;
+    const f = await pool.query('select vendedores from ml_catalogo_vendedores where loja = $1 and ml_item_id = $2', [loja, id]);
+    if (!f.rows.length) return res.json({ ok: false, erro: 'Ainda sem foto de vendedores desse anuncio - rode /debug/concorrencia/checar?loja=... (POST) uma vez antes.' });
+    const lista = Array.isArray(f.rows[0].vendedores) ? f.rows[0].vendedores : [];
+    if (!lista.length) return res.json({ ok: false, erro: 'Esse anuncio nao tem outros vendedores na foto - nada pra remover.' });
+    await pool.query('update ml_catalogo_vendedores set vendedores = $3::jsonb where loja = $1 and ml_item_id = $2', [loja, id, JSON.stringify(lista.slice(1))]);
+    await checarConcorrenciaLoja(loja);
+    res.json({ ok: true, msg: 'Simulação feita - o WhatsApp deve ter recebido "Vendedor novo" pra esse anúncio.' });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
 app.post('/debug/concorrencia/checar', async (req, res) => {
   const loja = req.query.loja || req.body?.loja;
   try {
@@ -6140,12 +6161,76 @@ function formatarAlertaConcorrentes(loja, novosConcorrentes) {
   if (novosConcorrentes.length > MAX) linhas.push(`… e mais ${novosConcorrentes.length - MAX}`);
   return `⚠ Doca - ${loja}\nEntrou concorrente em ${novosConcorrentes.length} anúncio(s) de catálogo:\n${linhas.join('\n')}`;
 }
+/* NOVO 08/10 (Felipe: "preciso que avise quando um vendedor novo entrar, independente se tiver
+   ganhando, perdendo ou empatando"): o status do price_to_win só muda quando o novo vendedor
+   te ameaça. Pra pegar QUALQUER entrada, guarda a lista de vendedores que ofertam cada produto de
+   catálogo (/products/{id}/items - o mesmo que o Doca já usa pro "N vend." do painel de concorrência)
+   e compara a cada checagem: vendedor com ID que não estava antes = vendedor novo. A 1ª vez que um
+   anúncio é lido só grava a "foto" inicial (sem alertar, senão avisaria de todo mundo que já estava
+   lá). Se a API devolver lista vazia (nem a sua própria oferta), trata como falha e não mexe na foto. */
+let tabelaVendedoresCatalogoPronta = false;
+async function garantirTabelaVendedoresCatalogo() {
+  if (tabelaVendedoresCatalogoPronta) return;
+  await pool.query(`create table if not exists ml_catalogo_vendedores (
+    loja text not null, ml_item_id text not null, vendedores jsonb not null default '[]'::jsonb,
+    atualizado_em timestamptz not null default now(), primary key (loja, ml_item_id))`);
+  tabelaVendedoresCatalogoPronta = true;
+}
+async function buscarOfertasCatalogo(accessToken, productId) {
+  try {
+    const r = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(productId)}/items?limit=50`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const res = (j && Array.isArray(j.results)) ? j.results : [];
+    if (!res.length) return null;
+    return res.map(o => ({
+      vendedor: o.seller_id ? String(o.seller_id) : null,
+      preco: (typeof o.price === 'number') ? o.price : ((o.price && typeof o.price.amount === 'number') ? o.price.amount : null)
+    }));
+  } catch (e) { return null; }
+}
+function formatarAlertaNovosVendedores(loja, lista) {
+  const MAX = 10;
+  const linhas = lista.slice(0, MAX).map(c =>
+    `• ${c.sku || c.titulo} — ${c.qtd} vendedor(es) novo(s)${typeof c.menorPreco === 'number' ? `, menor preço R$ ${c.menorPreco.toFixed(2)}` : ''}${typeof c.precoMeu === 'number' ? ` (você: R$ ${c.precoMeu.toFixed(2)})` : ''}`);
+  if (lista.length > MAX) linhas.push(`… e mais ${lista.length - MAX}`);
+  return `👀 Doca - ${loja}\nVendedor novo em ${lista.length} anúncio(s) de catálogo:\n${linhas.join('\n')}`;
+}
 async function checarConcorrenciaLoja(loja) {
   const accessToken = await tokenValido(loja);
   const conta = await pegarConta(loja);
   const itens = await buscarItensDoVendedor(loja, accessToken, conta.ml_user_id);
   const catalogoItens = itens.filter(it => it.catalog_listing === true);
   if (!catalogoItens.length) return;
+  await garantirTabelaVendedoresCatalogo();
+  const fotoAntes = new Map();
+  (await pool.query('select ml_item_id, vendedores from ml_catalogo_vendedores where loja = $1', [loja])).rows
+    .forEach(r => fotoAntes.set(r.ml_item_id, Array.isArray(r.vendedores) ? r.vendedores.map(String) : []));
+  const cacheOfertas = new Map();
+  const novosVendedores = [];
+  for (const it of catalogoItens) {
+    if (!it.catalog_product_id) continue;
+    if (!cacheOfertas.has(it.catalog_product_id)) cacheOfertas.set(it.catalog_product_id, await buscarOfertasCatalogo(accessToken, it.catalog_product_id));
+    const ofertas = cacheOfertas.get(it.catalog_product_id);
+    if (!ofertas) continue; // falha/lista vazia: não mexe na foto
+    const meuId = String(it.seller_id || conta.ml_user_id);
+    const outros = ofertas.filter(o => o.vendedor && o.vendedor !== meuId);
+    const idsAgora = [...new Set(outros.map(o => o.vendedor))];
+    const antes = fotoAntes.get(it.id);
+    if (antes) {
+      const novos = idsAgora.filter(id => !antes.includes(id));
+      if (novos.length) {
+        const precos = outros.filter(o => novos.includes(o.vendedor)).map(o => o.preco).filter(v => typeof v === 'number' && v > 0);
+        novosVendedores.push({ titulo: it.title || it.id, sku: extrairSku(it), qtd: novos.length, menorPreco: precos.length ? Math.min(...precos) : null, precoMeu: it.price ?? null });
+      }
+    }
+    await pool.query(
+      `insert into ml_catalogo_vendedores (loja, ml_item_id, vendedores, atualizado_em) values ($1, $2, $3::jsonb, now())
+       on conflict (loja, ml_item_id) do update set vendedores = excluded.vendedores, atualizado_em = now()`,
+      [loja, it.id, JSON.stringify(idsAgora)]
+    );
+  }
+  if (novosVendedores.length) await enviarWhatsapp(formatarAlertaNovosVendedores(loja, novosVendedores));
   const statusAntes = new Map();
   const precoAntes = new Map();
   (await pool.query('select ml_item_id, concorrencia_status, concorrencia_preco from ml_produtos where loja = $1', [loja])).rows
