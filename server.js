@@ -264,6 +264,42 @@ app.get('/debug/concorrencia/enviar-existentes', async (req, res) => {
     res.json({ ok: true, msg: 'Mensagens de teste enviadas - confira o WhatsApp.', resumo });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
 });
+/* CONFERÊNCIA do alerta de vendedor novo (Felipe, 09/10: recebeu "alicatinho - 1 vendedor novo" às
+   2h48 da manhã e quis saber se era verdade): lista TODAS as ofertas do produto de catálogo do SKU
+   com vendedor, preço, link e a DATA DE CRIAÇÃO de cada anúncio (multiget /items) - se algum anúncio
+   foi criado perto do horário do alerta, o vendedor é novo de verdade. Também mostra o total que o
+   ML informa (paging.total) e quantas ofertas vieram: se total > 50, a lista vem cortada e a ordem
+   pode mudar entre consultas (possível falso "novo" - ver comentário em buscarOfertasCatalogo). */
+app.get('/debug/concorrencia/vendedores', async (req, res) => {
+  try {
+    const { loja, sku } = req.query;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: 'loja invalida' });
+    const p = await pool.query('select ml_item_id from ml_produtos where loja = $1 and lower(sku) = lower($2)', [loja, sku || '']);
+    if (!p.rows.length) return res.status(404).json({ ok: false, erro: 'sku nao encontrado' });
+    const accessToken = await tokenValido(loja);
+    const hdr = { headers: { Authorization: `Bearer ${accessToken}` } };
+    const item = await (await fetch(`https://api.mercadolibre.com/items/${p.rows[0].ml_item_id}`, hdr)).json();
+    const pid = item.catalog_product_id;
+    if (!pid) return res.json({ ok: false, erro: 'anuncio sem catalog_product_id' });
+    const rp = await fetch(`https://api.mercadolibre.com/products/${pid}/items?limit=50`, hdr);
+    const jp = await rp.json();
+    const ofertas = Array.isArray(jp.results) ? jp.results : [];
+    const ids = ofertas.map(o => o.item_id || o.id).filter(Boolean);
+    const datas = {};
+    for (let i = 0; i < ids.length; i += 20) {
+      const lote = ids.slice(i, i + 20);
+      const r = await fetch(`https://api.mercadolibre.com/items?ids=${lote.join(',')}&attributes=id,seller_id,date_created,start_time,price,permalink,status`, hdr);
+      const j = await r.json();
+      if (Array.isArray(j)) j.forEach(e => { if (e && e.body) datas[e.body.id] = e.body; });
+    }
+    const foto = await pool.query('select vendedores, atualizado_em from ml_catalogo_vendedores where loja = $1 and ml_item_id = $2', [loja, p.rows[0].ml_item_id]);
+    const lista = ofertas.map(o => {
+      const id = o.item_id || o.id; const d = datas[id] || {};
+      return { item_id: id, seller_id: o.seller_id, preco: (typeof o.price === 'number') ? o.price : (o.price && o.price.amount) || d.price, criado_em: d.date_created || null, inicio: d.start_time || null, status: d.status || null, link: d.permalink || null };
+    }).sort((a, b) => String(b.criado_em).localeCompare(String(a.criado_em)));
+    res.json({ ok: true, catalog_product_id: pid, http_status: rp.status, paging: jp.paging || null, total_ofertas_recebidas: ofertas.length, foto_guardada: foto.rows[0] || null, ofertas_mais_recentes_primeiro: lista });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
 /* TESTE do alerta de vendedor novo: tira 1 vendedor da "foto" guardada de um anúncio e roda a
    checagem da loja - na leitura seguinte esse vendedor aparece como "novo" e o WhatsApp dispara.
    Uso: /debug/concorrencia/simular-novo-vendedor?loja=Dor%20Block&sku=efvsummer (precisa já ter
