@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v480</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v482</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -12702,18 +12702,51 @@ function precoComDesconto(p){
    virou só a configuração do desconto % por produto (isso continua manual de propósito - é a regra
    que o Felipe define 1x, o Doca só repete) e o aviso de campanha ativa. O alerta de "produto
    configurado sem promoção ativa" mora na Visão Geral (cardPromocoesPendentes). */
+/* NOVO 14/10 (Felipe: "crie um botão em Promoções pra fazer manual também - quando tiver anúncio
+   novo sem promoção, entrar apertando o botão"): roda a MESMA automação que o servidor já roda
+   sozinho 2x/dia (rodarAutomacaoPromocoes), na hora. Antes salva o estado na nuvem (o servidor lê
+   os descontos % de lá) e depois recarrega, porque a automação grava o resultado no estado da nuvem. */
+let promocaoRodandoManual=false;
+async function rodarPromocoesAgora(loja){
+  if(promocaoRodandoManual) return;
+  promocaoRodandoManual=true; renderPromocoes();
+  try{
+    if(alteracaoLocal){ await salvarNaNuvem(); }
+    toast('Entrando nas campanhas'+(loja?' ('+loja+')':' de todas as lojas')+'… pode levar alguns minutos.');
+    const r=await nuvemFetch('/promocao/rodar-automacao',{method:'POST',body:JSON.stringify(loja?{loja,forcar:true}:{forcar:true})});
+    let j; try{ j=await r.json(); }catch(e){ throw new Error('Resposta inesperada do servidor (status '+r.status+').'); }
+    if(!r.ok||!j.ok) throw new Error(j.erro||('Falha (status '+r.status+').'));
+    await carregarDaNuvem(true);
+    const por=(j.resumo&&j.resumo.porLoja)||{};
+    const linhas=Object.keys(por).map(l=>{
+      const x=por[l]||{};
+      const n=(x.entrados||[]).length, e=(x.erros||[]).length;
+      return l+': '+n+' entrou(aram)'+(x.criada?' · campanha nova criada':'')+(e?' · '+e+' erro(s)':'');
+    });
+    toast(linhas.length?('✓ '+linhas.join(' | ')):'✓ Nada novo pra entrar agora.');
+  }catch(e){
+    toast('⚠ Não consegui rodar as promoções: '+e.message);
+  }finally{
+    promocaoRodandoManual=false; renderPromocoes();
+  }
+}
 function renderPromocoes(){
   const el=document.getElementById('tab-promocoes'); if(!el) return;
   const hojeStr=hoje();
   el.innerHTML=`
     <h1 class="page-title">Promoções</h1>
+    <div style="margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn primary" id="btnPromoTodas" ${promocaoRodandoManual?'disabled':''} title="Roda agora a mesma automação que roda sozinha 2x por dia: anúncios ativos com desconto configurado e sem promoção entram numa campanha">${promocaoRodandoManual?'⏳ Rodando…':'🏷️ Entrar em campanha agora (todas as lojas)'}</button>
+      <span class="hint" style="margin:0">Use quando criar anúncio novo e quiser que ele entre na promoção sem esperar a rodada automática.</span>
+    </div>
     ${STORES.map(loja=>{
       const todos=produtosPromocaoTodos(loja);
       const acionaveis=produtosSemPromocao(loja).filter(p=>!precoEhFixo19(p));
       const historico=state.promocoes.historico[loja]||[];
       const ativos=historico.filter(c=>c.fim>=hojeStr).sort((a,b)=>b.criadoEm-a.criadoEm);
       return `<div class="card-vg" style="margin-bottom:18px">
-        <h3>${esc(loja)} · Configuração de desconto <span class="badge ${acionaveis.length?'pend':'okv'}">${acionaveis.length} sem promoção ativa</span></h3>
+        <h3>${esc(loja)} · Configuração de desconto <span class="badge ${acionaveis.length?'pend':'okv'}">${acionaveis.length} sem promoção ativa</span>
+          <button class="btn sm" style="margin-left:10px" data-promoloja="${esc(loja)}" ${promocaoRodandoManual?'disabled':''} title="Entrar em campanha só nesta loja">🏷️ Entrar agora</button></h3>
         ${ativos.length?`<div class="aviso ok" style="margin-bottom:12px">✓ ${ativos.map(a=>`Campanha ativa: <b>${esc(a.nome)}</b> até ${fmtData(a.fim)} (${a.itens.length} produto(s))`).join('<br>')}</div>`:''}
         ${todos.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr>
           <th>SKU</th><th>Promoção</th><th class="num">Preço atual</th><th class="num">Desconto %</th><th class="num">Preço da promoção</th>
@@ -12741,6 +12774,8 @@ function renderPromocoes(){
       </div>`;
     }).join('')}
   `;
+  const bPT=document.getElementById('btnPromoTodas'); if(bPT) bPT.onclick=()=>rodarPromocoesAgora(null);
+  el.querySelectorAll('[data-promoloja]').forEach(b=>{ b.onclick=()=>rodarPromocoesAgora(b.dataset.promoloja); });
   el.querySelectorAll('[data-descontopromo]').forEach(inp=>{
     inp.onchange=e=>{
       const p=prodById(e.target.dataset.descontopromo); if(!p) return;
@@ -12893,12 +12928,15 @@ async function sincronizarProdutosTodasAsLojas(){
 }
 function sincronizarProdutosPeriodico(){
   if(document.hidden) return;
-  if(Date.now()-ultimaSincProdutos<9*60*1000) return;
+  /* 13/10: era 9min (sync completo a cada 10min) - o /sync completo busca 30 dias de pedidos das 4
+     lojas e, repetido a cada 10min, suspeita de estourar o limite de chamadas do ML e travar o Resumo
+     Financeiro (ficava em "Buscando..." sem fim). Agora 29min (sync a cada 30min). */
+  if(Date.now()-ultimaSincProdutos<29*60*1000) return;
   sincronizarProdutosTodasAsLojas();
 }
 setInterval(sincronizarProdutosPeriodico,60*1000);
 document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden&&Date.now()-ultimaSincProdutos>=5*60*1000) sincronizarProdutosTodasAsLojas();
+  if(!document.hidden&&Date.now()-ultimaSincProdutos>=15*60*1000) sincronizarProdutosTodasAsLojas();
 });
 (async function sincronizarMlAoAbrir(){
   if(!backendUrl()) return;
