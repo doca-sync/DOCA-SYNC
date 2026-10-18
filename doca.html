@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v482</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v483</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -9128,10 +9128,23 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
 /* CMV = soma de (custo cadastrado do produto × quantidade vendida no período), casando pelo
    mlItemId salvo em cada produto. Item vendido sem produto vinculado (ou sem custo cadastrado)
    entra em "semCusto" pra avisar que o CMV está subestimado, em vez de fingir que é zero. */
+/* NOVO 18/10 (Felipe: ranking mostrando "MLB... (sem SKU vinculado)" mesmo com SKU no ML): o
+   ranking casava SÓ pelo mlItemId salvo no produto. Anúncio vendido no período que depois foi
+   republicado/trocado de código, fechado ou ainda não sincronizado não bate por código. Como o
+   Doca cadastra o produto novo usando o TÍTULO do anúncio como "Código" (ver importarProdutoAutomatico),
+   o título que o servidor já devolve em cada item vendido serve de segunda chance - na mesma loja. */
+function produtoDoItemVendido(it,loja){
+  let p=state.produtos.find(x=>x.mlItemId===it.itemId);
+  if(p) return p;
+  const lj=loja||financasResumoLoja;
+  const tit=String(it.titulo||'').trim().toLowerCase();
+  if(tit) p=state.produtos.find(x=>x.loja===lj&&String(x.codigo||'').trim().toLowerCase()===tit);
+  return p||null;
+}
 function calcularCmvResumo(resumo){
   let cmv=0,unidSemCusto=0;
   (resumo.itensVendidos||[]).forEach(it=>{
-    const p=state.produtos.find(x=>x.mlItemId===it.itemId);
+    const p=produtoDoItemVendido(it);
     if(p&&p.custo>0) cmv+=p.custo*it.qtd; else unidSemCusto+=it.qtd;
   });
   return {cmv,unidSemCusto};
@@ -9347,8 +9360,8 @@ function renderResumoFinanceiroResultado(resumo,loja){
       <h3 style="margin-top:0">🏆 Ranking de produtos vendidos no período</h3>
       ${itensOrdenados.length?`<div class="table-wrap"><table class="tbl-produtos"><thead><tr><th style="width:40px">#</th><th>Produto</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">M. Contribuição</th><th class="num">Ads</th><th class="num">M. Líquida</th><th></th></tr></thead><tbody>
         ${itensOrdenados.map((it,i)=>{
-          const p=state.produtos.find(x=>x.mlItemId===it.itemId);
-          const nome=p&&p.sku?esc(p.sku):`<span class="muted">${esc(it.itemId)} (sem SKU vinculado)</span>`;
+          const p=produtoDoItemVendido(it,loja);
+          const nome=p&&p.sku?esc(p.sku):`<span class="muted" title="${esc(it.itemId)} — este anúncio não está ligado a nenhum produto do Doca (provavelmente foi republicado, fechado ou ainda não sincronizou)">${esc(it.titulo||it.itemId)} (sem SKU vinculado)</span>`;
           const custoUnit=p&&p.custo?p.custo:0;
           const custoProdutoItem=custoUnit*it.qtd;
           const impostoItem=it.valor*((aliquota||0)/100);
