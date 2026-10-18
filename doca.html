@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v483</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v484</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -5107,17 +5107,46 @@ function importarProdutoAutomatico(item,loja){
    o que não bater com nada é cadastrado sozinho no Doca (ver importarProdutoAutomatico) — não
    precisa importar manualmente cada anúncio novo. Usado tanto pelo modal quanto pela
    sincronização automática ao abrir o Doca. */
+/* CORRIGIDO 18/10 (Felipe: 9PM e Mandarin Sky "sem SKU vinculado" / sumindo): o mesmo SKU pode ter
+   VÁRIOS anúncios no ML (o ativo + anúncios antigos já fechados, ex.: republicado). A sincronização
+   passava por todos, e cada um que não batia com o mlItemId salvo caía em importarProdutoAutomatico,
+   que reaproveita o produto pelo SKU e SOBRESCREVE o mlItemId - o último da lista ganhava, muitas
+   vezes um anúncio FECHADO. Resultado: produto marcado como ausente/fechado e vendas do anúncio
+   ativo sem SKU no ranking. Agora: (1) anúncio fechado que tem "irmão" vivo com o mesmo SKU é
+   ignorado no vínculo; (2) todos os códigos irmãos ficam guardados em p.mlIdsIrmaos, pra o ranking
+   financeiro reconhecer vendas de qualquer anúncio antigo do mesmo SKU. */
+function itensOrdenadosParaVinculo(itens){
+  return (itens||[]).slice().sort((a,b)=>((a.status==='closed')?1:0)-((b.status==='closed')?1:0));
+}
+function skusComAnuncioVivo(itens){
+  return new Set((itens||[]).filter(i=>i.status!=='closed'&&i.sku).map(i=>String(i.sku).toLowerCase()));
+}
+function registrarAnunciosIrmaos(loja,itens){
+  let mudou=false;
+  (itens||[]).forEach(item=>{
+    if(!item.sku) return;
+    const sk=String(item.sku).toLowerCase();
+    const p=state.produtos.find(x=>x.loja===loja&&(x.sku||'').toLowerCase()===sk);
+    if(!p||p.mlItemId===item.ml_item_id) return;
+    if(!Array.isArray(p.mlIdsIrmaos)) p.mlIdsIrmaos=[];
+    if(!p.mlIdsIrmaos.includes(item.ml_item_id)){ p.mlIdsIrmaos.push(item.ml_item_id); mudou=true; }
+  });
+  return mudou;
+}
 function aplicarSincronizacaoAutomatica(resultado){
   const produtosDaLoja=state.produtos.filter(p=>p.loja===resultado.loja);
   let vinculados=0,importados=0;
-  resultado.produtos.forEach(item=>{
+  const skusVivos=skusComAnuncioVivo(resultado.produtos);
+  itensOrdenadosParaVinculo(resultado.produtos).forEach(item=>{
+    if(item.status==='closed'&&item.sku&&skusVivos.has(String(item.sku).toLowerCase())) return; // anúncio antigo fechado: o vivo do mesmo SKU manda
     let p=produtosDaLoja.find(x=>x.mlItemId===item.ml_item_id);
     if(!p&&item.sku) p=produtosDaLoja.find(x=>!x.mlItemId&&x.sku&&x.sku.toLowerCase()===item.sku.toLowerCase());
     if(p){ aplicarItemSincronizado(p,item,resultado.loja); vinculados++; }
     else { p=importarProdutoAutomatico(item,resultado.loja); produtosDaLoja.push(p); importados++; }
   });
   const mudouAusentes=marcarAusentesNoML(resultado.loja,resultado.produtos);
-  if(vinculados>0||importados>0||mudouAusentes) persist();
+  const mudouIrmaos=registrarAnunciosIrmaos(resultado.loja,resultado.produtos);
+  if(vinculados>0||importados>0||mudouAusentes||mudouIrmaos) persist();
   return {vinculados,importados};
 }
 /* REMOVIDO 11/09 (Felipe: "vamos esquecer isso de virar full sozinho, muito complicado e não vai
@@ -5140,7 +5169,9 @@ function abrirSincronizacaoML(){
     if(resultado){
       const produtosDaLoja=state.produtos.filter(p=>p.loja===resultado.loja);
       let mudouAlgo=false;
-      linhasHtml=resultado.produtos.map(item=>{
+      const skusVivosModal=skusComAnuncioVivo(resultado.produtos);
+      linhasHtml=itensOrdenadosParaVinculo(resultado.produtos).map(item=>{
+        if(item.status==='closed'&&item.sku&&skusVivosModal.has(String(item.sku).toLowerCase())) return ''; // anúncio antigo fechado: o vivo do mesmo SKU manda
         let p=produtosDaLoja.find(x=>x.mlItemId===item.ml_item_id);
         if(!p&&item.sku) p=produtosDaLoja.find(x=>!x.mlItemId&&x.sku&&x.sku.toLowerCase()===item.sku.toLowerCase());
         let importadoAgora=false;
@@ -5156,6 +5187,7 @@ function abrirSincronizacaoML(){
         </tr>`;
       }).join('');
       if(marcarAusentesNoML(resultado.loja,resultado.produtos)) mudouAlgo=true;
+      if(registrarAnunciosIrmaos(resultado.loja,resultado.produtos)) mudouAlgo=true;
       if(mudouAlgo) persist();
     }
     body.innerHTML=`<h3>🔄 Sincronizar com o Mercado Livre</h3>
@@ -9135,6 +9167,8 @@ function imprimirRelatorioFechamentoTodasLojas(resultados){
    o título que o servidor já devolve em cada item vendido serve de segunda chance - na mesma loja. */
 function produtoDoItemVendido(it,loja){
   let p=state.produtos.find(x=>x.mlItemId===it.itemId);
+  if(p) return p;
+  p=state.produtos.find(x=>Array.isArray(x.mlIdsIrmaos)&&x.mlIdsIrmaos.includes(it.itemId)); // anúncio antigo do mesmo SKU
   if(p) return p;
   const lj=loja||financasResumoLoja;
   const tit=String(it.titulo||'').trim().toLowerCase();
