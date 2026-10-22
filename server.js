@@ -5665,6 +5665,31 @@ function precoCandidatoServidor(mlPreco, descontoPromocao, cand) {
   return configurado;
 }
 const TIPOS_CANDIDATO_SUPORTADOS_SERVIDOR = ['DEAL', 'SELLER_CAMPAIGN']; // mesma lista do doca.html - ver comentario la'
+/* NOVO 21/10 (Felipe: KIT5LAB8, preço real R$111,43 com 30% = R$78; a automação entrou na campanha
+   11.11 com R$54,60 = 30% EM CIMA dos R$78). Causa: a "LIMPEZA 25/09" abaixo apagava o mlPrecoBase
+   sempre que ele batia com mlPreco/(1-desconto) - mas isso é EXATAMENTE o que acontece quando a base
+   está CERTA e a promoção vigente já aplica o desconto configurado (111,43 × 0,7 = 78). Resultado:
+   base apagada -> caía em mlPreco (78) -> desconto de novo. Agora a base vem direto do Mercado Livre:
+   API de preços do item (/items/{id}/prices), entrada type "standard" = preço cheio do anúncio, sem
+   nenhuma promoção. Só aceita se for >= preço efetivo atual (base nunca pode ser menor que o preço
+   já com desconto). Devolve null se a API falhar/mudar de formato - aí vale a lógica antiga. */
+async function buscarPrecoPadraoItem(accessToken, itemId, precoEfetivo) {
+  try {
+    const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/prices`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const lista = Array.isArray(j && j.prices) ? j.prices : [];
+    const padroes = lista.filter(x => x && x.type === 'standard' && typeof x.amount === 'number' && x.amount > 0);
+    if (!padroes.length) return null;
+    // se houver restrição de canal, prefere a do marketplace; senão a primeira
+    const doMarketplace = padroes.find(x => x.conditions && Array.isArray(x.conditions.context_restrictions) && x.conditions.context_restrictions.includes('channel_marketplace'));
+    const amount = Math.round((doMarketplace || padroes[0]).amount * 100) / 100;
+    if (typeof precoEfetivo === 'number' && amount < precoEfetivo - 0.01) return null;
+    return amount;
+  } catch (e) {
+    return null;
+  }
+}
 /* extraido de dentro de rodarAutomacaoPromocoes (24/09) pra poder criar 2 campanhas na mesma rodada:
    uma pra comecar HOJE (produto sem promocao nenhuma agora) e outra pra comecar AMANHA (renovacao
    antecipada de uma campanha "Doca auto" que termina hoje - ver comentario em rodarAutomacaoPromocoes).
@@ -5802,9 +5827,21 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
          fórmula suspeita "mlPreco / (1 - desconto%)" - não faz mais exceção quando bate com
          mlOriginalPrice também, porque esse campo se provou igualmente contaminado nos produtos
          reais testados (Alicatinho e outros, ver acima). */
-      if (typeof p.mlPrecoBase === 'number' && typeof p.mlPreco === 'number' && p.descontoPromocao > 0 && p.descontoPromocao < 100) {
+      /* 21/10: preço cheio direto do ML (ver buscarPrecoPadraoItem). Quando vem, é a verdade - grava
+         como base e a LIMPEZA abaixo NÃO roda (ela apagava a base CERTA, causando desconto em cima de
+         desconto). Só roda a limpeza antiga se a API de preços não respondeu pra esse item. */
+      const stdPreco = await buscarPrecoPadraoItem(accessToken, p.mlItemId, p.mlPreco);
+      if (stdPreco != null && p.mlPrecoBase !== stdPreco) { p.mlPrecoBase = stdPreco; mudou = true; }
+      if (stdPreco == null && typeof p.mlPrecoBase === 'number' && typeof p.mlPreco === 'number' && p.descontoPromocao > 0 && p.descontoPromocao < 100) {
         const formulaSuspeita = Math.round((p.mlPreco / (1 - p.descontoPromocao / 100)) * 100) / 100;
         if (Math.abs(p.mlPrecoBase - formulaSuspeita) < 0.01) { p.mlPrecoBase = undefined; mudou = true; }
+      }
+      /* 21/10: sem base confiável E com promoção rodando agora, mlPreco já vem DESCONTADO - calcular em
+         cima dele é o bug do KIT5LAB8. Melhor pular o produto nesta rodada (e avisar) do que aplicar
+         desconto em cima de desconto. Sem promoção ativa, a base = mlPreco (linha acima) e segue normal. */
+      if (typeof p.mlPrecoBase !== 'number' && st.temPromocaoAtiva) {
+        erros.push({ sku: p.sku || p.codigo, erro: 'Preço cheio desconhecido (produto já em promoção e a API de preços não respondeu) - pulado pra não aplicar desconto em cima de desconto.' });
+        continue;
       }
       const precoBase = typeof p.mlPrecoBase === 'number' ? p.mlPrecoBase : p.mlPreco;
       /* CORRIGIDO 18/09 (Felipe: "porque os produtos novos não entrou em todas as campanhas
@@ -5901,6 +5938,45 @@ app.post('/promocao/rodar-automacao', exigirLogin, async (req, res) => {
     console.error('Erro no /promocao/rodar-automacao:', e);
     res.status(500).json({ ok: false, erro: e.message });
   }
+});
+/* Link pra rodar a automacao de promocoes na hora (abre no navegador; pede usuario/senha do Doca).
+   /promocao/rodar-agora            -> todas as lojas
+   /promocao/rodar-agora?loja=Dor+Block -> so uma loja
+   Roda em segundo plano (pode demorar varios minutos); o resultado sai nos logs e no historico da automacao do Doca. */
+/* Teste: mostra o que o ML devolve de preço cheio de um anúncio (usado pra conferir a base do desconto).
+   /debug/promocao/preco?loja=Dor+Block&sku=KIT5LAB8   (sku ou item=MLB...) */
+app.get('/debug/promocao/preco', async (req, res) => {
+  try {
+    const { loja, sku, item } = req.query;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: 'loja invalida' });
+    let itemId = item || null;
+    if (!itemId) {
+      const r0 = await pool.query('select ml_item_id, preco, status from ml_produtos where loja = $1 and lower(sku) = lower($2) order by (status = \'closed\'), atualizado_em desc limit 1', [loja, sku || '']);
+      if (!r0.rows.length) return res.status(404).json({ ok: false, erro: 'sku nao encontrado' });
+      itemId = r0.rows[0].ml_item_id;
+    }
+    const accessToken = await tokenValido(loja);
+    const r = await fetch(`https://api.mercadolibre.com/items/${itemId}/prices`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const corpo = await r.json();
+    const std = await buscarPrecoPadraoItem(accessToken, itemId, null);
+    res.json({ ok: true, itemId, http_status: r.status, precoCheioDetectado: std, corpo });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
+let promocaoRodandoAgora = false;
+app.get('/promocao/rodar-agora', exigirLogin, (req, res) => {
+  const loja = req.query.loja || null;
+  if (loja && !LOJAS_VALIDAS.includes(loja)) {
+    return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  }
+  if (promocaoRodandoAgora) {
+    return res.json({ ok: true, aviso: 'Ja tem uma rodada rodando agora. Aguarde terminar.' });
+  }
+  promocaoRodandoAgora = true;
+  rodarAutomacaoPromocoes('manual (link)', { loja, forcar: true })
+    .then(r => console.log('[promo-automatica] manual (link) terminou:', JSON.stringify(r && r.resumo)))
+    .catch(e => console.error('[promo-automatica] manual (link) erro:', e.message))
+    .finally(() => { promocaoRodandoAgora = false; });
+  res.json({ ok: true, iniciado: true, loja: loja || 'todas', mensagem: 'Automacao de promocoes iniciada em segundo plano. Leva alguns minutos; depois atualize o Doca (aba Promocoes).' });
 });
 app.post('/promocao/entrar-campanha', exigirLogin, async (req, res) => {
   const { loja, itens } = req.body || {};
@@ -6246,6 +6322,9 @@ async function checarConcorrenciaLoja(loja) {
   const novosVendedores = [];
   for (const it of catalogoItens) {
     if (!it.catalog_product_id) continue;
+    // 13/10: pausa curta entre anúncios (a checagem a cada 20min fazia ~2 chamadas por anúncio em rajada,
+    // suspeita de ajudar a estourar o limite do ML e travar o Resumo Financeiro) - espalha as chamadas.
+    await sleep(250);
     if (!cacheOfertas.has(it.catalog_product_id)) cacheOfertas.set(it.catalog_product_id, await buscarOfertasCatalogo(accessToken, it.catalog_product_id));
     const ofertas = cacheOfertas.get(it.catalog_product_id);
     if (!ofertas) continue; // falha/lista vazia: não mexe na foto
@@ -6263,7 +6342,11 @@ async function checarConcorrenciaLoja(loja) {
     await pool.query(
       `insert into ml_catalogo_vendedores (loja, ml_item_id, vendedores, atualizado_em) values ($1, $2, $3::jsonb, now())
        on conflict (loja, ml_item_id) do update set vendedores = excluded.vendedores, atualizado_em = now()`,
-      [loja, it.id, JSON.stringify(idsAgora)]
+      /* 09/10: a "foto" NUNCA esquece um vendedor já visto (união com o que já tinha) - senão um
+         vendedor que pausa/fica sem estoque e volta seria alertado como "novo" toda vez que
+         reaparecesse na lista (suspeita do alerta das 2h48 no alicatinho/TorvShop). Só avisa quem
+         nunca tinha aparecido nesse anúncio. */
+      [loja, it.id, JSON.stringify([...new Set([...(antes || []), ...idsAgora])])]
     );
   }
   if (novosVendedores.length) await enviarWhatsapp(formatarAlertaNovosVendedores(loja, novosVendedores));
@@ -6295,6 +6378,7 @@ async function checarConcorrenciaTodasAsLojas(motivo) {
   for (const loja of LOJAS_VALIDAS) {
     try {
       await checarConcorrenciaLoja(loja);
+      await sleep(3000); // respiro entre lojas (13/10)
       console.log(`[concorrencia-agendado] ${motivo} - ok:`, loja);
     } catch (e) {
       console.error(`[concorrencia-agendado] ${motivo} - falhou:`, loja, e.message);
