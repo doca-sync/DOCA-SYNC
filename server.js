@@ -3375,12 +3375,19 @@ async function buscarPedidosNoIntervalo(accessToken, sellerId, deIso, ateIso, lo
     if (offset >= 950) {
       log.avisos.push(`intervalo ${deIso}..${ateIso} tem ${total} pedidos, perto do teto de 1000 - dividindo`);
       const meio = new Date((new Date(deIso).getTime() + new Date(ateIso).getTime()) / 2).toISOString();
-      const [a, b] = await Promise.all([
-        buscarPedidosNoIntervalo(accessToken, sellerId, deIso, meio, log, campoData),
-        buscarPedidosNoIntervalo(accessToken, sellerId, meio, ateIso, log, campoData)
-      ]);
+      /* CORRIGIDO 03/11 (Felipe: fechamento do mês muito mais lento que o normal; Render registrou
+         "Instance failed: exited with status 134" em 30/10 durante consulta pesada). Antes as duas
+         metades rodavam EM PARALELO (Promise.all) e cada uma podia se dividir de novo - em mês com
+         milhares de pedidos isso vira dezenas de requisições simultâneas ao Mercado Livre (429 +
+         muita memória de uma vez, na instância gratuita). Agora uma metade por vez. A remoção de
+         repetidos também deixa de ser O(n²) (usava a.some(...) pra cada pedido de b). */
+      const a = await buscarPedidosNoIntervalo(accessToken, sellerId, deIso, meio, log, campoData);
+      const b = await buscarPedidosNoIntervalo(accessToken, sellerId, meio, ateIso, log, campoData);
       const vistos = new Set(pedidos.map(p => p.id));
-      return pedidos.concat(a.filter(p => !vistos.has(p.id)), b.filter(p => !vistos.has(p.id) && !a.some(x => x.id === p.id)));
+      const resultado = pedidos.slice();
+      for (const p of a) { if (!vistos.has(p.id)) { vistos.add(p.id); resultado.push(p); } }
+      for (const p of b) { if (!vistos.has(p.id)) { vistos.add(p.id); resultado.push(p); } }
+      return resultado;
     }
   }
   return pedidos;
