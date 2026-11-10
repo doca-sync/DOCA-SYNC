@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v484</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v485</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4126,8 +4126,11 @@ function cardRankingMaisVendidos(){
     </div>
   </div>`;
 }
+/* 10/11 (Felipe, depois da atualização dos Termos do ML): o monitoramento de outros vendedores do
+   catálogo fica só nestas lojas - mesma lista do servidor (LOJAS_ALERTA_VENDEDOR_NOVO). */
+const LOJAS_CONCORRENCIA_CATALOGO=['Dor Block','TorvShop'];
 function cardConcorrenciaCatalogo(){
-  const ps=state.produtos.filter(p=>p.mlItemId&&!p.mlAusente);
+  const ps=state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&LOJAS_CONCORRENCIA_CATALOGO.includes(p.loja));
   const comConcorrente=ps.filter(p=>typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0);
   const perdendo=ps.filter(p=>(p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='competing')&&!(typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0));
   const sozinho=ps.filter(p=>p.mlOutrosVendedores===0).length;
@@ -4152,7 +4155,7 @@ function cardConcorrenciaCatalogo(){
     <h3>⚔ Concorrência no catálogo${novos.length?` <span class="badge pend">${novos.length} novo(s)</span>`:''}</h3>
     <p class="sub">Outros vendedores ofertando os mesmos produtos de catálogo que você — inclusive onde você está ganhando a compra${sozinho?` · <b>${sozinho}</b> anúncio(s) sem nenhum concorrente hoje`:''}.</p>
     <div class="vg-cols">
-      ${STORES.map(loja=>{
+      ${LOJAS_CONCORRENCIA_CATALOGO.map(loja=>{
         const lista=comConcorrente.filter(p=>p.loja===loja).sort((a,b)=>b.mlOutrosVendedores-a.mlOutrosVendedores);
         const outros=perdendo.filter(p=>p.loja===loja);
         return vgColunaLoja(loja,lista.length+outros.length,

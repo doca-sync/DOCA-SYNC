@@ -1762,7 +1762,12 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     const INICIO_OFERTAS = Date.now();
     const ORCAMENTO_OFERTAS_MS = 12000;
     let ofertasInterrompidas = false;
-    const produtosCat = [...new Set(Object.values(extras).map(e => e.produtoCatalogo).filter(Boolean))];
+    /* 10/11: só consulta as ofertas dos outros vendedores (/products/{id}/items) nas lojas com o
+       monitoramento de catálogo ligado (LOJAS_ALERTA_VENDEDOR_NOVO). TorvStore e Orbix Brasil não
+       consultam mais - o card "Concorrência no catálogo" também só mostra as lojas ligadas. */
+    const produtosCat = LOJAS_ALERTA_VENDEDOR_NOVO.includes(loja)
+      ? [...new Set(Object.values(extras).map(e => e.produtoCatalogo).filter(Boolean))]
+      : [];
     for (const pid of produtosCat) {
       if (Date.now() - INICIO_OFERTAS > ORCAMENTO_OFERTAS_MS) { ofertasInterrompidas = true; break; }
       try {
