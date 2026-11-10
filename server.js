@@ -6287,6 +6287,20 @@ function formatarAlertaConcorrentes(loja, novosConcorrentes) {
    e compara a cada checagem: vendedor com ID que não estava antes = vendedor novo. A 1ª vez que um
    anúncio é lido só grava a "foto" inicial (sem alertar, senão avisaria de todo mundo que já estava
    lá). Se a API devolver lista vazia (nem a sua própria oferta), trata como falha e não mexe na foto. */
+/* 10/11 (Felipe, depois da atualização dos Termos do ML de 15/10 - cláusulas 10 e 12 sobre extração
+   de dados e bases próprias): (1) o alerta de "vendedor novo" fica só nas lojas abaixo - TorvStore e
+   Orbix Brasil não monitoram mais outros vendedores; (2) em vez de guardar o ID dos outros vendedores,
+   guarda só uma IMPRESSÃO DIGITAL (hash) deles - dá pra saber "apareceu alguém que nunca tinha
+   aparecido", mas não dá pra recuperar quem é; (3) checagem a cada 60 min (era 20). */
+const LOJAS_ALERTA_VENDEDOR_NOVO = ['Dor Block', 'TorvShop'];
+const INTERVALO_CHECAGEM_CONCORRENCIA_MS = 60 * 60 * 1000;
+function impressaoVendedor(loja, id) {
+  return 'h:' + crypto.createHash('sha256').update(`doca:${loja}:${String(id)}`).digest('hex').slice(0, 16);
+}
+// converte o que já estava guardado (IDs crus de antes de 10/11) pra impressão digital, sem gerar falso "vendedor novo"
+function normalizarFotoVendedores(loja, lista) {
+  return (Array.isArray(lista) ? lista : []).map(String).map(v => v.startsWith('h:') ? v : impressaoVendedor(loja, v));
+}
 let tabelaVendedoresCatalogoPronta = false;
 async function garantirTabelaVendedoresCatalogo() {
   if (tabelaVendedoresCatalogoPronta) return;
@@ -6322,9 +6336,15 @@ async function checarConcorrenciaLoja(loja) {
   const catalogoItens = itens.filter(it => it.catalog_listing === true);
   if (!catalogoItens.length) return;
   await garantirTabelaVendedoresCatalogo();
+  const monitorarVendedores = LOJAS_ALERTA_VENDEDOR_NOVO.includes(loja);
+  if (!monitorarVendedores) {
+    // loja sem o alerta de vendedor novo: apaga o que tinha guardado e não consulta mais as ofertas de ninguém
+    await pool.query('delete from ml_catalogo_vendedores where loja = $1', [loja]);
+  }
+  if (monitorarVendedores) {
   const fotoAntes = new Map();
   (await pool.query('select ml_item_id, vendedores from ml_catalogo_vendedores where loja = $1', [loja])).rows
-    .forEach(r => fotoAntes.set(r.ml_item_id, Array.isArray(r.vendedores) ? r.vendedores.map(String) : []));
+    .forEach(r => fotoAntes.set(r.ml_item_id, normalizarFotoVendedores(loja, r.vendedores)));
   const cacheOfertas = new Map();
   const novosVendedores = [];
   for (const it of catalogoItens) {
@@ -6337,12 +6357,12 @@ async function checarConcorrenciaLoja(loja) {
     if (!ofertas) continue; // falha/lista vazia: não mexe na foto
     const meuId = String(it.seller_id || conta.ml_user_id);
     const outros = ofertas.filter(o => o.vendedor && o.vendedor !== meuId);
-    const idsAgora = [...new Set(outros.map(o => o.vendedor))];
+    const idsAgora = [...new Set(outros.map(o => impressaoVendedor(loja, o.vendedor)))]; // só impressão digital, nunca o ID
     const antes = fotoAntes.get(it.id);
     if (antes) {
       const novos = idsAgora.filter(id => !antes.includes(id));
       if (novos.length) {
-        const precos = outros.filter(o => novos.includes(o.vendedor)).map(o => o.preco).filter(v => typeof v === 'number' && v > 0);
+        const precos = outros.filter(o => novos.includes(impressaoVendedor(loja, o.vendedor))).map(o => o.preco).filter(v => typeof v === 'number' && v > 0);
         novosVendedores.push({ titulo: it.title || it.id, sku: extrairSku(it), qtd: novos.length, menorPreco: precos.length ? Math.min(...precos) : null, precoMeu: it.price ?? null });
       }
     }
@@ -6357,6 +6377,7 @@ async function checarConcorrenciaLoja(loja) {
     );
   }
   if (novosVendedores.length) await enviarWhatsapp(formatarAlertaNovosVendedores(loja, novosVendedores));
+  } // fim de if (monitorarVendedores)
   const statusAntes = new Map();
   const precoAntes = new Map();
   (await pool.query('select ml_item_id, concorrencia_status, concorrencia_preco from ml_produtos where loja = $1', [loja])).rows
@@ -6548,9 +6569,9 @@ setInterval(async () => {
      roda ANTES do "if" de 7:30/12:30 abaixo, porque é independente dele: usa o mesmo heartbeat de
      1 minuto que já existia, só com seu próprio controle de tempo (ultimaChecagemConcorrencia) em
      vez de depender de bater um horário exato - assim funciona o dia inteiro, não só 2x por dia. */
-  if (Date.now() - ultimaChecagemConcorrencia >= 20 * 60 * 1000) {
+  if (Date.now() - ultimaChecagemConcorrencia >= INTERVALO_CHECAGEM_CONCORRENCIA_MS) { // 60 min desde 10/11 (era 20)
     ultimaChecagemConcorrencia = Date.now();
-    checarConcorrenciaTodasAsLojas('a cada 20min');
+    checarConcorrenciaTodasAsLojas('a cada 60min');
   }
   const agora = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false
