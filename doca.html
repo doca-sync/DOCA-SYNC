@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v485</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v486</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -13116,6 +13116,10 @@ function tarefaConcluidaNoPeriodo(t){
 }
 function tarefasDeHojePendentes(){
   const h=hoje();
+  /* tarefa "órfã" (lista já excluída) não aparece em nenhuma lista, então não dá pra excluir pela
+     tela - ficava voltando no alerta pra sempre. Descarta aqui. */
+  { const ids=new Set((state.listas||[]).map(l=>l.id));
+    if(ids.size&&(state.tarefas||[]).some(t=>!ids.has(t.listaId))) state.tarefas=state.tarefas.filter(t=>ids.has(t.listaId)); }
   const hhmm=new Date().toTimeString().slice(0,5);
   const porData=(state.tarefas||[]).filter(t=>{
     const d=dataEfetivaTarefa(t);                  // periódica: ocorrência deste período, não a data de criação
@@ -13146,9 +13150,19 @@ function mostrarAlertaTarefasDoDia(aoFechar){
   body.innerHTML=`<h3>⏰ ${lista.length} tarefa${lista.length>1?'s':''} pra hoje</h3>
     <p class="hint" style="margin:0 0 12px">Ainda não concluída${lista.length>1?'s':''}:</p>
     <div class="table-wrap"><table class="tbl-produtos"><tbody>
-      ${lista.map(t=>`<tr><td>${esc(t.titulo)}${t.hora?` <span class="muted" style="font-size:11px">(${esc(t.hora)})</span>`:''}</td></tr>`).join('')}
+      ${lista.map(t=>`<tr><td>${esc(t.titulo)||'<i class="muted">(sem título)</i>'}${t.hora?` <span class="muted" style="font-size:11px">(${esc(t.hora)})</span>`:''}</td><td style="width:40px;text-align:right"><button class="btn sm" data-alertaexcluir="${t.id}" title="Excluir esta tarefa de vez">✕</button></td></tr>`).join('')}
     </tbody></table></div>
     <div class="modal-actions"><button class="btn gold" id="btnFecharAlertaTarefasDoDia">Ok, entendi</button></div>`;
+  body.querySelectorAll('[data-alertaexcluir]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.alertaexcluir;
+    snapshot('exclusão de tarefa pelo alerta');
+    state.tarefas=state.tarefas.filter(x=>x.id!==id);
+    persist();
+    toast('Tarefa excluída.');
+    closeModal();
+    mostrarAlertaTarefasDoDia(aoFechar);
+    if(typeof renderTarefas==='function'){ try{ renderTarefas(); }catch(e){} }
+  });
   document.getElementById('btnFecharAlertaTarefasDoDia').onclick=()=>{ closeModal(); if(aoFechar) aoFechar(); };
 }
 /* despesas vencendo ou vencidas e ainda não pagas (pedido do Felipe 23/08, "igual gestão ativa") -
