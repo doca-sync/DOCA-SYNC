@@ -1494,6 +1494,67 @@ app.get('/debug/vendas', async (req, res) => {
     res.status(500).json({ ok: false, erro: e.message });
   }
 });
+/* NOVO 20/11: resumo de vendas agregado por anuncio (pra lista de reposicao). /debug/pedidos devolve cada
+   pedido e o JSON fica enorme (as ferramentas cortam em ~70k caracteres, entao some venda). Aqui o servidor
+   soma tudo e devolve so' o total por anuncio. Roda em segundo plano (varios dias demoram): 1a chamada
+   devolve "processando"; repita o mesmo link ate' vir "pronto".
+   /debug/vendas-resumo?loja=Dor+Block&dias=10            -> so' perfume (exclui decant)
+   /debug/vendas-resumo?loja=TorvShop&dias=10&decant=1    -> so' decants
+   /debug/vendas-resumo?loja=Dor+Block&dias=10&todos=1    -> todos os produtos
+   &novo=1 forca recalcular. Janela: dias civis fechados (fuso Brasilia), igual ao /sync. */
+const cacheResumoVendas = new Map();
+app.get('/debug/vendas-resumo', async (req, res) => {
+  const loja = req.query.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  const dias = Math.min(31, Math.max(1, parseInt(req.query.dias || '10', 10)));
+  const modo = req.query.todos ? 'todos' : (req.query.decant ? 'decant' : 'perfume');
+  const chave = `${loja}|${dias}|${modo}|${diaBR(new Date().toISOString())}`;
+  const atual = cacheResumoVendas.get(chave);
+  if (atual && !req.query.novo) {
+    if (atual.estado === 'pronto') return res.json(atual.resultado);
+    if (atual.estado === 'erro') return res.json({ ok: false, erro: atual.erro });
+    return res.json({ ok: true, estado: 'processando', progresso: atual.progresso, aviso: 'Repita este mesmo link em ~1 minuto.' });
+  }
+  const job = { estado: 'processando', progresso: '0/' + dias };
+  cacheResumoVendas.set(chave, job);
+  (async () => {
+    try {
+      const accessToken = await tokenValido(loja);
+      const conta = await pegarConta(loja);
+      const fim = inicioDoDiaBR(Date.now());
+      const itens = new Map();
+      let pedidosTotal = 0, pedidosExcluidos = 0;
+      const ehDecant = t => /decan/i.test(t);
+      const ehPerfume = t => /(edp|eau de parfum|parfum|perfume|extrait|edt|eau de toilette)/i.test(t);
+      for (let d = dias; d >= 1; d--) {
+        const de = new Date(fim - d * 864e5).toISOString();
+        const ate = new Date(fim - (d - 1) * 864e5).toISOString();
+        const diaStr = diaBR(de);
+        const log = { avisos: [] };
+        const pedidos = await buscarPedidosNoIntervalo(accessToken, conta.ml_user_id, de, ate, log, 'order.date_closed');
+        for (const p of pedidos) {
+          pedidosTotal++;
+          if (p.status === 'cancelled' || p.status === 'invalid') { pedidosExcluidos++; continue; }
+          for (const oi of (p.order_items || [])) {
+            const id = oi.item && oi.item.id; const titulo = (oi.item && oi.item.title) || '';
+            if (!id) continue;
+            if (modo === 'perfume' && (ehDecant(titulo) || !ehPerfume(titulo))) continue;
+            if (modo === 'decant' && !ehDecant(titulo)) continue;
+            let it = itens.get(id);
+            if (!it) { it = { item_id: id, titulo, sku: (oi.item && oi.item.seller_sku) || null, total: 0, porDia: {} }; itens.set(id, it); }
+            it.total += oi.quantity || 0;
+            it.porDia[diaStr] = (it.porDia[diaStr] || 0) + (oi.quantity || 0);
+          }
+        }
+        job.progresso = (dias - d + 1) + '/' + dias;
+      }
+      const lista = [...itens.values()].sort((a, b) => b.total - a.total);
+      job.resultado = { ok: true, estado: 'pronto', loja, modo, dias, janela: { de: new Date(fim - dias * 864e5).toISOString(), ate: new Date(fim).toISOString() }, pedidos_analisados: pedidosTotal, pedidos_cancelados_ignorados: pedidosExcluidos, anuncios: lista.length, unidades: lista.reduce((s, x) => s + x.total, 0), itens: lista };
+      job.estado = 'pronto';
+    } catch (e) { job.estado = 'erro'; job.erro = e.message; }
+  })();
+  res.json({ ok: true, estado: 'processando', aviso: 'Iniciado em segundo plano. Repita este mesmo link em ~1 minuto.' });
+});
 /* ---- Mercado Pago: saldo / reconciliacao financeira (v16) ----
    Diferente do Mercado Livre, aqui NAO precisa de OAuth com redirect/callback: cada loja usa
    direto o Access Token de PRODUCAO da propria conta Mercado Pago, guardado como variavel de
