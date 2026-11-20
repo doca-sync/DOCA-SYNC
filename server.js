@@ -5746,7 +5746,13 @@ async function criarCampanhaDoDoca(accessToken, produtosAlvo, inicioStr, fimStr,
         erros.push({ sku: p.sku || p.codigo, erro: e.message });
       }
     }
-    if (!itensCriados.length) return null;
+    if (!itensCriados.length) {
+      // nenhum item entrou: não deixa campanha vazia pendurada no Mercado Livre
+      try {
+        await fetch(`https://api.mercadolibre.com/seller-promotions/promotions/${campanha.id}?promotion_type=SELLER_CAMPAIGN&app_version=v2`, { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } });
+      } catch (eDel) { /* melhor esforço */ }
+      return null;
+    }
     return { id: campanha.id, nome: campanha.name || nomeUnico, tipo: 'SELLER_CAMPAIGN', inicio: inicioStr, fim: fimStr, criadoEm: Date.now(), itens: itensCriados };
   } catch (e) {
     erros.push({ sku: '(campanha nova)', erro: e.message });
@@ -5892,7 +5898,15 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
           erros.push({ sku: p.sku || p.codigo, erro: e.message });
         }
       }
-      if (!entrouEmAlgo && !st.temPromocaoAtiva) precisamCampanhaNova.push(p);
+      /* 20/11 (Felipe: "porque está criando esse monte de promoção? é pra criar SOMENTE no dia anterior
+         que a promoção for acabar"): a 7:30 e a 12:30 de TODO dia criava uma campanha "Doca auto"
+         nova com início hoje. Agora só cria campanha nova quando o produto NÃO está coberto: nenhuma
+         promoção ativa no ML, nenhuma campanha Doca vigente hoje no histórico (mesmo que o ML demore
+         a mostrar como ativa) e sem tentativa que falhou hoje. A renovação normal continua só no
+         último dia da campanha (bloco terminaHoje abaixo). */
+      const cobertoPeloHistorico = historicoLoja.some(c => c.tipo === 'SELLER_CAMPAIGN' && c.inicio <= hojeStr && c.fim >= hojeStr && Array.isArray(c.itens) && c.itens.some(it => it.ml_item_id === p.mlItemId));
+      const falhouHoje = p.promoFalhaDia === hojeStr;
+      if (!entrouEmAlgo && !st.temPromocaoAtiva && !cobertoPeloHistorico && !falhouHoje) precisamCampanhaNova.push(p);
       /* NOVO 24/09 (Felipe: "hoje é o último dia da campanha, o certo já não era criar hoje pra
          deixar programado pra entrar às 00:00 de amanhã? sempre criar a nova no último dia da
          campanha corrente"): antes, uma campanha "Doca auto" só era renovada DEPOIS de expirar de
@@ -5910,6 +5924,9 @@ async function rodarAutomacaoPromocoes(motivo, opts) {
     }
     const criada = await criarCampanhaDoDoca(accessToken, precisamCampanhaNova, hojeStr, new Date(Date.now() + 13 * 864e5).toISOString().slice(0, 10), erros, true);
     if (criada) { historicoLoja.push(criada); dados.promocoes.historico[loja] = historicoLoja; mudou = true; }
+    // quem foi tentado e NÃO entrou: não tenta de novo hoje (evita criar campanha a cada rodada)
+    { const entraram = new Set(criada ? criada.itens.map(i => i.ml_item_id) : []);
+      for (const p of precisamCampanhaNova) if (!entraram.has(p.mlItemId)) { p.promoFalhaDia = hojeStr; mudou = true; } }
     const criadaAmanha = await criarCampanhaDoDoca(accessToken, precisaRenovarAmanha, amanhaStr, new Date(Date.parse(amanhaStr) + 13 * 864e5).toISOString().slice(0, 10), erros, false);
     if (criadaAmanha) { historicoLoja.push(criadaAmanha); dados.promocoes.historico[loja] = historicoLoja; mudou = true; }
     if (entrados.length || criada || criadaAmanha || erros.length) {
