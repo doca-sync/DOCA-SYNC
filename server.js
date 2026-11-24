@@ -4599,6 +4599,35 @@ app.get('/debug/fatura-ml/resumo', async (req, res) => {
     res.json({ ok: true, loja, key, periodo, resumo });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* sonda 24/11: o /summary da fatura 2026-11-01 da Dor Block deu 404, e o /details só traz as cobranças (não os
+   "pagamentos"). Testa, uma por vez (com pausa por causa do limite de 5/min), alguns endereços possíveis de
+   pagamentos e devolve status + começo da resposta de cada um. Ex: /debug/fatura-ml/sonda?loja=Dor+Block&key=2026-11-01 */
+app.get('/debug/fatura-ml/sonda', async (req, res) => {
+  try {
+    const loja = req.query.loja, key = req.query.key;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: 'loja invalida' });
+    if (!key) return res.status(400).json({ ok: false, erro: 'Informe key (ex: 2026-11-01).' });
+    const accessToken = await tokenValido(loja);
+    const base = 'https://api.mercadolibre.com/billing/integration';
+    const urls = [
+      `${base}/periods/key/${key}/summary?group=ML&document_type=BILL`,
+      `${base}/periods/key/${key}/group/ML/summary?document_type=BILL`,
+      `${base}/periods/key/${key}/group/ML/payments?document_type=BILL`,
+      `${base}/periods/key/${key}/group/ML/payment/details?document_type=BILL`,
+      `${base}/periods/key/${key}/payments?group=ML&document_type=BILL`
+    ];
+    const out = [];
+    for (const u of urls) {
+      try {
+        const r = await fetch(u, { headers: { Authorization: `Bearer ${accessToken}` } });
+        const t = await r.text();
+        out.push({ url: u.replace(base, ''), status: r.status, inicio: t.slice(0, 1800) });
+      } catch (e) { out.push({ url: u.replace(base, ''), erro: e.message }); }
+      await sleep(13000);
+    }
+    res.json({ ok: true, loja, key, resultados: out });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
+});
 /* detalhamento sob demanda de uma fatura JÁ CONHECIDA (qualquer mês, não só a mais recente) -
    pedido do Felipe 23/08: o botão "Detalhar" só funcionava na fatura mais atual porque
    buscarFaturaMl só traz o período mais recente (limit=1); aqui o frontend manda a key que já
