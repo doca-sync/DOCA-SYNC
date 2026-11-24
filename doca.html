@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v486</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v488</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -7241,7 +7241,7 @@ function editarDespesa(id,{descricao,valor,dataPagamento,loja,recorrente}){
      vez: uma vez editado manualmente aqui, essa despesa de fatura ML nunca mais tem o campo
      "valor" tocado pela sincronização automática (ver checagem "!d.valorEditadoManual" em
      puxarFaturaMl) - só editando de novo aqui muda de novo. */
-  if(d.origem==='ml_fatura') d.valorEditadoManual=true;
+  if(d.origem==='ml_fatura'){ d.valorEditadoManual=true; d.extraMaximo=Number(valor); }
   persist();
   return {ok:true};
 }
@@ -7312,7 +7312,10 @@ async function puxarFaturaMl(loja){
      período fechado não muda mais de valor, então não precisa gastar mais uma tentativa nesse
      endpoint que anda batendo 429 com frequência (achado real: Dor Block travando mesmo depois de
      várias tentativas) - sobra mais chance pra fatura que realmente ainda falta buscar. */
-  const chavesComItens=despesasArr().filter(x=>x.origem==='ml_fatura'&&x.loja===loja&&Array.isArray(x.itens)&&x.itens.length).map(x=>x.faturaKey).join(',');
+  /* 24/11: fatura ainda em aberto cujo detalhamento NÃO tem a linha "vencida" é rebuscada (a cobrança por
+     atraso pode ter entrado depois de guardarmos os itens). Só pula a busca quando já tem a linha
+     "vencida" ou quando a fatura já está quitada. */
+  const chavesComItens=despesasArr().filter(x=>x.origem==='ml_fatura'&&x.loja===loja&&Array.isArray(x.itens)&&x.itens.length&&(x.pago||x.itens.some(it=>(it.label||'').toLowerCase().includes('vencida')))).map(x=>x.faturaKey).join(',');
   const r=await fetch(`${base}/financas/fatura-ml?loja=${encodeURIComponent(loja)}&chavesComItens=${encodeURIComponent(chavesComItens)}`);
   let j; try{ j=await r.json(); }catch(e){ throw new Error('O backend respondeu algo inesperado (status '+r.status+').'); }
   if(!r.ok||!j.ok) throw new Error(j.erro||('Falha ao buscar a fatura do Mercado Livre (status '+r.status+').'));
@@ -7386,6 +7389,7 @@ async function puxarFaturaMl(loja){
       }
     });
   }
+  despesasArr().filter(x=>x.origem==='ml_fatura'&&x.loja===loja).forEach(registrarExtraMaximoFatura);
   delete financasUltimoErroAuto[loja];
   persist();
   return f;
@@ -9223,12 +9227,26 @@ function despesasPeriodoLoja(loja,de,ate){
    sozinho o caso mais comum de fatura ainda em aberto). */
 function extraFaturaMlDespesa(d){
   const pendente=Number(d.valor)||0;
-  let cobradoPorAtraso=0;
+  let cobradoPorAtraso=0, temVencida=false;
   if(Array.isArray(d.itens)&&d.itens.length){
     const item=d.itens.find(it=>(it.label||'').toLowerCase().includes('vencida'));
-    if(item) cobradoPorAtraso=Math.abs(Number(item.valor)||0);
+    if(item){ cobradoPorAtraso=Math.abs(Number(item.valor)||0); temVencida=cobradoPorAtraso>0; }
   }
-  return pendente+cobradoPorAtraso;
+  /* 24/11 (Felipe, exemplo Dor Block novembro): custo da fatura = o que já foi cobrado por atraso
+     (R$11.119,39, "fatura vencida") + o que ainda falta pagar (R$5.613,24, saldo insuficiente pra
+     quitar tudo) = R$16.732,63. Os dois fazem parte da MESMA fatura. */
+  /* 24/11 (Felipe: "pagou a fatura e deixou de considerar o valor dela como custo, só considera o
+     valor atual - tem que considerar o valor cheio do mês, mesmo que já tenha sido pago"): o
+     "pendente" cai à medida que o ML debita/quitam a fatura, e o custo do mês caía junto. Guarda o
+     MAIOR valor já visto (extraMaximo) e usa ele como piso - pagar não reduz mais o custo. Edição
+     manual redefine o piso (ver editarDespesa). */
+  return Math.max(pendente+cobradoPorAtraso,Number(d.extraMaximo)||0);
+}
+/* grava o piso do custo da fatura (maior valor já visto) - chamado a cada vez que a fatura é puxada */
+function registrarExtraMaximoFatura(d){
+  if(!d||d.origem!=='ml_fatura') return;
+  const v=extraFaturaMlDespesa(d);
+  if(v>(Number(d.extraMaximo)||0)) d.extraMaximo=v;
 }
 function faturaMlPeriodoLoja(loja,de,ate){
   /* CORRIGIDO 24/09 (5a vez): removido o rateio por dia pra fatura "grudada" (período cobrindo mais
