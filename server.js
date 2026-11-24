@@ -4484,6 +4484,37 @@ async function buscarItensFaturaPorKey(loja, key, pular) {
         itensAviso = `Detalhamento indisponível: /summary respondeu ${eResumo.http_status || '?'}, /details respondeu ${eDetalhes.http_status || '?'} (${eDetalhes.message})`;
       }
     }
+    /* NOVO 24/11 (achado com a sonda, Dor Block 2026-11-01): o /summary dá 404 e o /details só traz as
+       COBRANÇAS. Os pagamentos ficam em /group/ML/payment/details - o débito "Débito automático por fatura
+       vencida" (payment_type "collections_forced") é o valor cobrado por atraso (R$11.119,39 na Dor Block),
+       que o Doca precisa somar ao pendente pra achar o custo cheio da fatura. Entra nos itens com label
+       contendo "vencida" (é o que extraFaturaMlDespesa procura no doca.html). */
+    try {
+      let forcado = 0, offsetP = 0, totalP = null;
+      do {
+        let jP = null;
+        for (let tentativa = 0; tentativa < 4; tentativa++) {
+          try {
+            jP = await fetchMLDebug(`https://api.mercadolibre.com/billing/integration/periods/key/${key}/group/ML/payment/details?document_type=BILL&limit=150&offset=${offsetP}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+            break;
+          } catch (e) {
+            if (e.http_status === 429 && tentativa < 3) { await sleep(5000 * (tentativa + 1)); continue; }
+            throw e;
+          }
+        }
+        const linhasP = (jP && jP.results) || [];
+        totalP = jP && typeof jP.total === 'number' ? jP.total : linhasP.length;
+        linhasP.forEach(r => {
+          const pi = r.payment_info || {};
+          const ehForcado = pi.payment_type === 'collections_forced' || /vencida/i.test(pi.payment_type_description || '');
+          if (ehForcado && /processed|approved/i.test(pi.payment_status || 'processed')) forcado += Number(pi.amount_in_this_period != null ? pi.amount_in_this_period : pi.payment_amount) || 0;
+        });
+        offsetP += 150;
+      } while (totalP != null && offsetP < totalP && offsetP < 1500);
+      if (forcado > 0) itens.push({ label: 'Pagamentos cobrados automaticamente devido à fatura vencida', valor: -Math.round(forcado * 100) / 100 });
+    } catch (ePag) {
+      itensAviso = (itensAviso ? itensAviso + ' | ' : '') + `Pagamentos por atraso indisponíveis (${ePag.http_status || ePag.message})`;
+    }
   }
   return { itens, itensAviso };
 }
