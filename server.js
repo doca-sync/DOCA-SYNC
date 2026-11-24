@@ -4578,6 +4578,27 @@ app.get('/debug/fatura-ml/periodos', async (req, res) => {
     res.json({ ok: true, loja, bruto: j });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
 });
+/* debug 24/11: resposta CRUA do /summary de uma fatura (inclui tudo que o ML manda, não só charges/bonuses) -
+   serve pra achar onde estão "Pagamento cobrado na operação" e "Pagamentos cobrados ... fatura vencida".
+   Sem "key" usa o período mais recente com dívida. Ex: /debug/fatura-ml/resumo?loja=Dor+Block */
+app.get('/debug/fatura-ml/resumo', async (req, res) => {
+  try {
+    const loja = req.query.loja;
+    if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+    const accessToken = await tokenValido(loja);
+    let key = req.query.key;
+    let periodo = null;
+    if (!key) {
+      const j = await fetchMLDebug('https://api.mercadolibre.com/billing/integration/monthly/periods?group=ML&document_type=BILL&limit=3', { headers: { Authorization: `Bearer ${accessToken}` } });
+      const ps = j.results || [];
+      periodo = ps.find(x => x.period_status === 'CLOSED' && typeof x.unpaid_amount === 'number' && x.unpaid_amount > 0) || ps[0];
+      key = periodo && periodo.key;
+    }
+    if (!key) return res.json({ ok: false, erro: 'Sem key de fatura.' });
+    const resumo = await fetchMLDebug(`https://api.mercadolibre.com/billing/integration/periods/key/${key}/summary?group=ML&document_type=BILL`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    res.json({ ok: true, loja, key, periodo, resumo });
+  } catch (e) { res.status(200).json({ ok: false, erro: e.message, http_status: e.http_status, corpo: e.corpo }); }
+});
 /* detalhamento sob demanda de uma fatura JÁ CONHECIDA (qualquer mês, não só a mais recente) -
    pedido do Felipe 23/08: o botão "Detalhar" só funcionava na fatura mais atual porque
    buscarFaturaMl só traz o período mais recente (limit=1); aqui o frontend manda a key que já
