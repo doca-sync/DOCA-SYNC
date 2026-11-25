@@ -1823,6 +1823,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     const INICIO_OFERTAS = Date.now();
     const ORCAMENTO_OFERTAS_MS = 12000;
     let ofertasInterrompidas = false;
+    let ofertasBloqueadas = null;
     /* 10/11: só consulta as ofertas dos outros vendedores (/products/{id}/items) nas lojas com o
        monitoramento de catálogo ligado (LOJAS_ALERTA_VENDEDOR_NOVO). TorvStore e Orbix Brasil não
        consultam mais - o card "Concorrência no catálogo" também só mostra as lojas ligadas. */
@@ -1834,6 +1835,15 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
       try {
         const rp = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(pid)}/items?limit=50`, { headers: cab });
         const jp = await rp.json();
+        /* 25/11: o ML passou a responder 403 nesta consulta (lista de ofertas do catálogo). Antes isso virava
+           "lista vazia" = "0 concorrentes" e o card mostrava "106 anúncios sem concorrente" - FALSO. Agora, se a
+           resposta não for OK, deixa SEM leitura (null) em vez de zero. */
+        if (!rp.ok) {
+          ofertasBloqueadas = rp.status;
+          if (diagnosticoOfertas.length < 2) diagnosticoOfertas.push({ produtoCatalogo: pid, status: rp.status, corpo: jp });
+          if (rp.status === 403 || rp.status === 401) break;
+          continue;
+        }
         const res = (jp && Array.isArray(jp.results)) ? jp.results : [];
         ofertasPorProduto[pid] = res.map(o => ({
           itemId: o.item_id || o.id || null,
@@ -1894,7 +1904,7 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         tags: ex.tags || [], tipoAnuncio: ex.tipoAnuncio || null, status: ex.status || null, logistica: ex.logistica || null };
     });
     res.set('Cache-Control', 'no-store');
-    res.json({ ok: true, loja, categorias: categorias.length, ofertasInterrompidas, diagnostico, diagnosticoOfertas, itens });
+    res.json({ ok: true, loja, categorias: categorias.length, ofertasInterrompidas, ofertasBloqueadas, diagnostico, diagnosticoOfertas, itens });
   } catch (e) {
     res.status(500).json({ ok: false, erro: e.message });
   }

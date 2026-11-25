@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v488</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v490</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4135,6 +4135,15 @@ function cardConcorrenciaCatalogo(){
   const perdendo=ps.filter(p=>(p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='competing')&&!(typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0));
   const sozinho=ps.filter(p=>p.mlOutrosVendedores===0).length;
   const novos=ps.filter(p=>{ const e=entrouConcorrente(p); return e&&e.entrou; });
+  /* 25/11: o Mercado Livre passou a negar (403) a lista de ofertas do catálogo. Sem nenhum número lido, o
+     card antes dizia "0 concorrentes" por engano; agora avisa que está SEM LEITURA. */
+  const semLeitura=ps.length>0&&!ps.some(p=>typeof p.mlOutrosVendedores==='number');
+  if(semLeitura&&!perdendo.length){
+    return `<div class="card-vg">
+      <h3>⚔ Concorrência no catálogo</h3>
+      <p class="sub">⚠ Sem leitura: o Mercado Livre não está liberando a lista de outros vendedores do catálogo (erro 403). "Nenhum concorrente" aqui NÃO significa que não há — o alerta de vendedor novo no WhatsApp também não consegue checar enquanto isso durar. O aviso de "perdendo a compra" continua funcionando.</p>
+    </div>`;
+  }
   if(!comConcorrente.length&&!perdendo.length&&!sozinho) return '';
   const precos=p=>{
     const partes=[];
@@ -9226,6 +9235,9 @@ function despesasPeriodoLoja(loja,de,ate){
    detalhamento tiver sido buscado com sucesso; se não, fica só o unpaid_amount mesmo, que já cobre
    sozinho o caso mais comum de fatura ainda em aberto). */
 function extraFaturaMlDespesa(d){
+  /* 24/11: valor digitado na mão em Despesas (Editar) é o custo cheio da fatura - vale exatamente ele,
+     sem somar "vencida" nem piso por cima (senão contaria em dobro). */
+  if(d.valorEditadoManual) return Number(d.valor)||0;
   const pendente=Number(d.valor)||0;
   let cobradoPorAtraso=0, temVencida=false;
   if(Array.isArray(d.itens)&&d.itens.length){
