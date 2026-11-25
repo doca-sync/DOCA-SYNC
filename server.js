@@ -321,6 +321,16 @@ app.get('/debug/concorrencia/simular-novo-vendedor', async (req, res) => {
     res.json({ ok: true, msg: 'Simulação feita - o WhatsApp deve ter recebido "Vendedor novo" pra esse anúncio.' });
   } catch (e) { res.status(200).json({ ok: false, erro: e.message }); }
 });
+/* 25/11: mesma checagem, mas abrível direto no navegador (GET) e em segundo plano. Uma loja por vez:
+   /debug/concorrencia/checar-agora?loja=Dor+Block   (leva 1-3 min; o resultado aparece no card do Doca depois) */
+app.get('/debug/concorrencia/checar-agora', (req, res) => {
+  const loja = req.query.loja;
+  if (!LOJAS_VALIDAS.includes(loja)) return res.status(400).json({ ok: false, erro: `Parametro "loja" invalido. Use um de: ${LOJAS_VALIDAS.join(', ')}` });
+  checarConcorrenciaLoja(loja)
+    .then(() => console.log('[concorrencia] checar-agora ok:', loja, 'status ultima leitura de ofertas:', statusUltimaLeituraOfertas))
+    .catch(e => console.error('[concorrencia] checar-agora falhou:', loja, e.message));
+  res.json({ ok: true, msg: 'Checagem iniciada em segundo plano (1-3 min). Depois atualize o Doca.' });
+});
 app.post('/debug/concorrencia/checar', async (req, res) => {
   const loja = req.query.loja || req.body?.loja;
   try {
@@ -1827,9 +1837,18 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
     /* 10/11: só consulta as ofertas dos outros vendedores (/products/{id}/items) nas lojas com o
        monitoramento de catálogo ligado (LOJAS_ALERTA_VENDEDOR_NOVO). TorvStore e Orbix Brasil não
        consultam mais - o card "Concorrência no catálogo" também só mostra as lojas ligadas. */
-    const produtosCat = LOJAS_ALERTA_VENDEDOR_NOVO.includes(loja)
-      ? [...new Set(Object.values(extras).map(e => e.produtoCatalogo).filter(Boolean))]
-      : [];
+    /* 25/11 (Felipe: "uma chamada por vez, não em massa"): esta rota NÃO consulta mais as ofertas dos outros
+       vendedores em rajada (o ML começou a devolver 403). A contagem vem da checagem de 60 min
+       (checarConcorrenciaLoja), que faz uma chamada por vez com pausa e grava em ml_catalogo_vendedores. */
+    const produtosCat = [];
+    const leituraCat = {};
+    if (LOJAS_ALERTA_VENDEDOR_NOVO.includes(loja)) {
+      try {
+        await garantirTabelaVendedoresCatalogo();
+        const rc = await pool.query("select ml_item_id, outros_agora, menor_preco from ml_catalogo_vendedores where loja = $1 and outros_agora is not null and atualizado_em > now() - interval '6 hours'", [loja]);
+        rc.rows.forEach(rw => { leituraCat[rw.ml_item_id] = rw; });
+      } catch (eLeitura) { /* sem leitura: fica null */ }
+    }
     for (const pid of produtosCat) {
       if (Date.now() - INICIO_OFERTAS > ORCAMENTO_OFERTAS_MS) { ofertasInterrompidas = true; break; }
       try {
@@ -1898,6 +1917,8 @@ app.get('/ml/ranking-categoria', exigirLogin, async (req, res) => {
         const precos = outros.map(o => o.preco).filter(v => typeof v === 'number' && v > 0);
         if (precos.length) menorPrecoConcorrente = Math.min(...precos);
       }
+      const lc = leituraCat[x.ml_item_id];
+      if (lc) { outrosVendedores = lc.outros_agora; menorPrecoConcorrente = lc.menor_preco != null ? Number(lc.menor_preco) : null; }
       return { itemId: x.ml_item_id, sku: x.sku, categoriaId: x.categoria_id, posicao, total, casouPor,
         catalogo: !!ex.catalogo, produtoCatalogo: ex.produtoCatalogo || null, produtoDoVendedor: ex.produtoDoVendedor || null,
         outrosVendedores, menorPrecoConcorrente, meuPreco: ex.preco || null,
@@ -6481,12 +6502,20 @@ async function garantirTabelaVendedoresCatalogo() {
   await pool.query(`create table if not exists ml_catalogo_vendedores (
     loja text not null, ml_item_id text not null, vendedores jsonb not null default '[]'::jsonb,
     atualizado_em timestamptz not null default now(), primary key (loja, ml_item_id))`);
+  // 25/11: leitura "de agora" (quantos outros vendedores ofertam + menor preço deles), gravada pela checagem de 60 min
+  // (uma chamada por vez) - o card do Doca lê daqui em vez de fazer dezenas de chamadas em rajada no /ml/ranking-categoria.
+  await pool.query('alter table ml_catalogo_vendedores add column if not exists outros_agora integer');
+  await pool.query('alter table ml_catalogo_vendedores add column if not exists menor_preco numeric');
   tabelaVendedoresCatalogoPronta = true;
 }
+let statusUltimaLeituraOfertas = null;
 async function buscarOfertasCatalogo(accessToken, productId) {
   try {
-    const r = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(productId)}/items?limit=50`, { headers: { Authorization: `Bearer ${accessToken}` } });
-    if (!r.ok) return null;
+    let r = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(productId)}/items?limit=50`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    // 25/11: 403/429 = limite do ML por rajada - espera e tenta 1x de novo, uma chamada por vez
+    if (r.status === 403 || r.status === 429) { await sleep(3000); r = await fetch(`https://api.mercadolibre.com/products/${encodeURIComponent(productId)}/items?limit=50`, { headers: { Authorization: `Bearer ${accessToken}` } }); }
+    if (!r.ok) { statusUltimaLeituraOfertas = r.status; return null; }
+    statusUltimaLeituraOfertas = 200;
     const j = await r.json();
     const res = (j && Array.isArray(j.results)) ? j.results : [];
     if (!res.length) return null;
@@ -6525,7 +6554,7 @@ async function checarConcorrenciaLoja(loja) {
     if (!it.catalog_product_id) continue;
     // 13/10: pausa curta entre anúncios (a checagem a cada 20min fazia ~2 chamadas por anúncio em rajada,
     // suspeita de ajudar a estourar o limite do ML e travar o Resumo Financeiro) - espalha as chamadas.
-    await sleep(250);
+    await sleep(600);
     if (!cacheOfertas.has(it.catalog_product_id)) cacheOfertas.set(it.catalog_product_id, await buscarOfertasCatalogo(accessToken, it.catalog_product_id));
     const ofertas = cacheOfertas.get(it.catalog_product_id);
     if (!ofertas) continue; // falha/lista vazia: não mexe na foto
@@ -6540,14 +6569,15 @@ async function checarConcorrenciaLoja(loja) {
         novosVendedores.push({ titulo: it.title || it.id, sku: extrairSku(it), qtd: novos.length, menorPreco: precos.length ? Math.min(...precos) : null, precoMeu: it.price ?? null });
       }
     }
+    const precosOutros = outros.map(o => o.preco).filter(v => typeof v === 'number' && v > 0);
     await pool.query(
-      `insert into ml_catalogo_vendedores (loja, ml_item_id, vendedores, atualizado_em) values ($1, $2, $3::jsonb, now())
-       on conflict (loja, ml_item_id) do update set vendedores = excluded.vendedores, atualizado_em = now()`,
+      `insert into ml_catalogo_vendedores (loja, ml_item_id, vendedores, atualizado_em, outros_agora, menor_preco) values ($1, $2, $3::jsonb, now(), $4, $5)
+       on conflict (loja, ml_item_id) do update set vendedores = excluded.vendedores, atualizado_em = now(), outros_agora = excluded.outros_agora, menor_preco = excluded.menor_preco`,
       /* 09/10: a "foto" NUNCA esquece um vendedor já visto (união com o que já tinha) - senão um
          vendedor que pausa/fica sem estoque e volta seria alertado como "novo" toda vez que
          reaparecesse na lista (suspeita do alerta das 2h48 no alicatinho/TorvShop). Só avisa quem
          nunca tinha aparecido nesse anúncio. */
-      [loja, it.id, JSON.stringify([...new Set([...(antes || []), ...idsAgora])])]
+      [loja, it.id, JSON.stringify([...new Set([...(antes || []), ...idsAgora])]), outros.length, precosOutros.length ? Math.min(...precosOutros) : null]
     );
   }
   if (novosVendedores.length) await enviarWhatsapp(formatarAlertaNovosVendedores(loja, novosVendedores));
