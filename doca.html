@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v490</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v491</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -4131,20 +4131,16 @@ function cardRankingMaisVendidos(){
 const LOJAS_CONCORRENCIA_CATALOGO=['Dor Block','TorvShop'];
 function cardConcorrenciaCatalogo(){
   const ps=state.produtos.filter(p=>p.mlItemId&&!p.mlAusente&&LOJAS_CONCORRENCIA_CATALOGO.includes(p.loja));
-  const comConcorrente=ps.filter(p=>typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0);
-  const perdendo=ps.filter(p=>(p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='competing')&&!(typeof p.mlOutrosVendedores==='number'&&p.mlOutrosVendedores>0));
-  const sozinho=ps.filter(p=>p.mlOutrosVendedores===0).length;
+  /* 25/11 (Felipe: "faça na aba o mesmo que o do zap"): o card usa o MESMO critério do alerta de WhatsApp -
+     o status do price_to_win (que o ML ainda libera): concorrente que te faz perder (losing), empatar
+     (sharing_first) ou disputar (competing), com o preço dele. A lista de "todos os vendedores do
+     catálogo" (/products/{id}/items) está bloqueada pelo ML (403), então não é mais usada aqui. */
+  const comConcorrente=ps.filter(p=>p.mlConcorrenciaStatus==='losing'||p.mlConcorrenciaStatus==='sharing_first'||p.mlConcorrenciaStatus==='competing')
+    .sort((a,b)=>(Number(b.vendas30d)||0)-(Number(a.vendas30d)||0));
+  const perdendo=[];
+  const sozinho=ps.filter(p=>p.mlConcorrenciaStatus==='winning').length;
   const novos=ps.filter(p=>{ const e=entrouConcorrente(p); return e&&e.entrou; });
-  /* 25/11: o Mercado Livre passou a negar (403) a lista de ofertas do catálogo. Sem nenhum número lido, o
-     card antes dizia "0 concorrentes" por engano; agora avisa que está SEM LEITURA. */
-  const semLeitura=ps.length>0&&!ps.some(p=>typeof p.mlOutrosVendedores==='number');
-  if(semLeitura&&!perdendo.length){
-    return `<div class="card-vg">
-      <h3>⚔ Concorrência no catálogo</h3>
-      <p class="sub">⚠ Sem leitura: o Mercado Livre não está liberando a lista de outros vendedores do catálogo (erro 403). "Nenhum concorrente" aqui NÃO significa que não há — o alerta de vendedor novo no WhatsApp também não consegue checar enquanto isso durar. O aviso de "perdendo a compra" continua funcionando.</p>
-    </div>`;
-  }
-  if(!comConcorrente.length&&!perdendo.length&&!sozinho) return '';
+  if(!comConcorrente.length&&!sozinho) return '';
   const precos=p=>{
     const partes=[];
     if(typeof p.mlMenorPrecoConcorrente==='number') partes.push('menor deles '+fmtMoney(p.mlMenorPrecoConcorrente));
@@ -4162,15 +4158,13 @@ function cardConcorrenciaCatalogo(){
   };
   return `<div class="card-vg">
     <h3>⚔ Concorrência no catálogo${novos.length?` <span class="badge pend">${novos.length} novo(s)</span>`:''}</h3>
-    <p class="sub">Outros vendedores ofertando os mesmos produtos de catálogo que você — inclusive onde você está ganhando a compra${sozinho?` · <b>${sozinho}</b> anúncio(s) sem nenhum concorrente hoje`:''}.</p>
+    <p class="sub">Anúncios de catálogo em que um concorrente está te disputando a compra (mesmo critério do alerta de WhatsApp) · <b>${comConcorrente.length}</b> em disputa${sozinho?` · <b>${sozinho}</b> ganhando sem ameaça`:''}.</p>
     <div class="vg-cols">
       ${LOJAS_CONCORRENCIA_CATALOGO.map(loja=>{
-        const lista=comConcorrente.filter(p=>p.loja===loja).sort((a,b)=>b.mlOutrosVendedores-a.mlOutrosVendedores);
-        const outros=perdendo.filter(p=>p.loja===loja);
-        return vgColunaLoja(loja,lista.length+outros.length,
-          lista.map(p=>vgLinha(esc(p.sku),`${p.mlOutrosVendedores} vend.`,[statusTxt(p),precos(p)].filter(Boolean).join(' · '))).join('')
-          +outros.map(p=>vgLinha(esc(p.sku),'',[statusTxt(p),precos(p)].filter(Boolean).join(' · '))).join(''),
-          'Nenhum concorrente detectado.');
+        const lista=comConcorrente.filter(p=>p.loja===loja);
+        return vgColunaLoja(loja,lista.length,
+          lista.map(p=>vgLinha(esc(p.sku),'',[statusTxt(p),precos(p)].filter(Boolean).join(' · '))).join(''),
+          'Nenhum concorrente disputando a compra.');
       }).join('')}
     </div>
   </div>`;
