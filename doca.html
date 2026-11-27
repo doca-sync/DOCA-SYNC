@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v491</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v492</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -503,6 +503,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
       <button data-tab="full" aria-selected="false">FULL</button>
       <button data-tab="estoqueminimo" aria-selected="false">Estoque Mínimo</button>
       <button data-tab="amauri" aria-selected="false">Amauri</button>
+      <button data-tab="mike" aria-selected="false">Mike</button>
     </nav>
   </div>
 </header>
@@ -539,6 +540,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   </section>
   <section id="tab-estoqueminimo" class="tabpanel hidden"></section>
   <section id="tab-amauri" class="tabpanel hidden"></section>
+  <section id="tab-mike" class="tabpanel hidden"></section>
 </main>
 <div class="modal-overlay hidden" id="modalOverlay"><div class="modal" id="modalBody"></div></div>
 <div class="modal-overlay hidden" id="confirmOverlay">
@@ -1423,7 +1425,7 @@ function desfazer(){
 /* ---------- persistência ---------- */
 function loadFromLocalStorage(){
   const raw=localStorage.getItem('estoque_full_data');
-  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}}; }catch(e){} }
+  if(raw){ try{ const d=JSON.parse(raw); if(d&&Array.isArray(d.produtos)) state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},mike:(d.mike&&typeof d.mike==='object')?d.mike:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}}; }catch(e){} }
   migrar();
 }
 function saveToLocalStorage(){ localStorage.setItem('estoque_full_data',JSON.stringify(state)); }
@@ -1504,7 +1506,7 @@ async function restaurarVersao(nome){
     const d=JSON.parse(await (await (await bdir.getFileHandle(nome)).getFile()).text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('arquivo inválido');
     snapshot('restauração de backup');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},mike:(d.mike&&typeof d.mike==='object')?d.mike:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
     migrar(); persist();
     toast('Restaurado o backup '+nome+'.');
   }catch(e){ alert('Não consegui restaurar: '+e.message); }
@@ -1579,7 +1581,7 @@ async function carregarDoArquivo(silencioso){
     const f=await fileHandle.getFile();
     const d=JSON.parse(await f.text());
     if(!d||!Array.isArray(d.produtos)) throw new Error('conteúdo inválido');
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},mike:(d.mike&&typeof d.mike==='object')?d.mike:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
     migrar(); saveToLocalStorage();
     ultimoMod=f.lastModified; alteracaoLocal=false; undoStack=[];
     renderAll();
@@ -1804,7 +1806,7 @@ async function abrirArquivo(){
     const d=JSON.parse(await (await h.getFile()).text());
     if(!d||!Array.isArray(d.produtos)){ alert('Esse arquivo não parece ser um arquivo de dados válido deste sistema.'); return; }
     fileHandle=h; handlePendente=null;
-    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
+    state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},mike:(d.mike&&typeof d.mike==='object')?d.mike:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
     migrar(); undoStack=[];
     try{ ultimoMod=(await h.getFile()).lastModified; }catch(e){}
     alteracaoLocal=false;
@@ -1928,7 +1930,7 @@ function mesclarEstados(local,remoto){
   };
 }
 function aplicarEstadoNuvem(d,atualizadoEmIso){
-  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
+  state={produtos:d.produtos,envios:Array.isArray(d.envios)?d.envios:[],tarefas:Array.isArray(d.tarefas)?d.tarefas:[],listas:Array.isArray(d.listas)?d.listas:[],full:(d.full&&typeof d.full==='object')?d.full:{cfg:{},itens:[],lidoEm:{},hist:[]},notasFiscais:Array.isArray(d.notasFiscais)?d.notasFiscais:[],financeiro:(d.financeiro&&typeof d.financeiro==='object')?d.financeiro:{},ads:(d.ads&&typeof d.ads==='object')?d.ads:{cfg:{},campanhas:[],hist:[]},mlSync:(d.mlSync&&typeof d.mlSync==='object')?d.mlSync:{cfg:{}},adsApi:(d.adsApi&&typeof d.adsApi==='object')?d.adsApi:{},avisosFornecedor:Array.isArray(d.avisosFornecedor)?d.avisosFornecedor:[],despesas:Array.isArray(d.despesas)?d.despesas:[],socios:(d.socios&&typeof d.socios==='object')?d.socios:{},amauri:(d.amauri&&typeof d.amauri==='object')?d.amauri:{},mike:(d.mike&&typeof d.mike==='object')?d.mike:{},promocoes:(d.promocoes&&typeof d.promocoes==='object')?d.promocoes:{}};
   migrar(); saveToLocalStorage();
   ultimoSincronizado=JSON.parse(JSON.stringify(state));
   nuvemAtualizadoEm=atualizadoEmIso?new Date(atualizadoEmIso).getTime():Date.now();
@@ -10822,6 +10824,378 @@ function renderAmauri(){
     try{ await sincronizarRepasseAmauriDespesa(amauriResumoResultado); renderFinancas(); }catch(e){ console.error('Falha ao atualizar a despesa do repasse Amauri no Fluxo de Caixa:',e.message); }
   });
 }
+/* ================= Mike: perfumes em sociedade com o sócio do Paraguai (TorvShop) =================
+   Pedido do Felipe 27/11. Regras combinadas:
+   - cada sócio paga a SUA METADE na hora da compra (então o acerto mensal não devolve custo "adiantado");
+   - custo de cada compra = preço em US$ × dólar DIGITADO no dia + R$ 7,00 por unidade pra atravessar a fronteira;
+   - custo de cada venda = preço MÉDIO PONDERADO das compras daquele perfume (até o fim do período);
+   - despesas de venda (tarifa ML, frete, ads, coleta, armazenagem, embalagem, etiqueta, imposto, devoluções)
+     abatem do lucro; o lucro é dividido 50/50;
+   - o dinheiro das vendas entra na conta da TorvShop, então o repasse ao Mike no fechamento é:
+     (% dele) × (lucro + custo dos perfumes vendidos) = a parte dele do lucro + o capital dele de volta
+     (a metade que ele já pagou dos perfumes que foram vendidos). */
+function mikeState(){
+  if(!state.mike||typeof state.mike!=='object') state.mike={};
+  const m=state.mike;
+  if(!Array.isArray(m.produtoIds)) m.produtoIds=[];
+  if(!Array.isArray(m.compras)) m.compras=[];
+  if(!m.custos||typeof m.custos!=='object') m.custos={};
+  if(!Array.isArray(m.pagamentos)) m.pagamentos=[];
+  if(!m.ajustes||typeof m.ajustes!=='object') m.ajustes={};
+  if(typeof m.aliquotaImposto!=='number'){
+    let a=NaN; if(m.aliquotaImposto==null){ try{ a=Number(finLoja('TorvShop').aliquotaImposto); }catch(e){} } else a=Number(m.aliquotaImposto);
+    m.aliquotaImposto=isNaN(a)?0:a;
+  }
+  if(typeof m.percentual!=='number') m.percentual=50;
+  if(typeof m.fronteiraPadrao!=='number') m.fronteiraPadrao=7;
+  return m;
+}
+function mikeCustos(produtoId){
+  const m=mikeState();
+  if(!m.custos[produtoId]||typeof m.custos[produtoId]!=='object') m.custos[produtoId]={};
+  const c=m.custos[produtoId];
+  ['coleta','armazenagem','embalagem','etiqueta','ads'].forEach(k=>{ if(c[k]==null) c[k]=0; });
+  return c;
+}
+function mikeProdutosMarcados(){ return mikeState().produtoIds.map(id=>prodById(id)).filter(Boolean); }
+function toggleMikeProduto(id){
+  const m=mikeState();
+  snapshot('produto em sociedade com o Mike');
+  if(m.produtoIds.includes(id)) m.produtoIds=m.produtoIds.filter(x=>x!==id); else m.produtoIds.push(id);
+  persist();
+}
+/* custo de UMA compra: dólar × preço em US$ + fronteira, por unidade e no total */
+function mikeCustoCompra(c){
+  const qtd=Number(c.qtd)||0, usd=Number(c.usd)||0, cot=Number(c.cotacao)||0, fr=Number(c.fronteira)||0;
+  const produtoUn=usd*cot, unit=produtoUn+fr;
+  return {qtd,usd,cot,fr,produtoUn,unit,total:unit*qtd,totalProduto:produtoUn*qtd,totalFronteira:fr*qtd};
+}
+/* preço médio ponderado por perfume - todas as compras até a data (inclusive) */
+function mikeCustoMedio(produtoId,ateISO){
+  const cs=mikeState().compras.filter(c=>c.produtoId===produtoId&&(!ateISO||(c.data||'')<=ateISO));
+  const qtd=cs.reduce((s,c)=>s+(Number(c.qtd)||0),0);
+  if(!qtd) return null;
+  const total=cs.reduce((s,c)=>s+mikeCustoCompra(c).total,0);
+  return {unit:total/qtd,qtd,total,compras:cs.length};
+}
+function addCompraMike(d){
+  snapshot('compra de perfume com o Mike');
+  mikeState().compras.push({id:gerarId('mkc'),produtoId:d.produtoId,data:d.data||hoje(),qtd:Number(d.qtd)||0,usd:Number(d.usd)||0,cotacao:Number(d.cotacao)||0,fronteira:Number(d.fronteira)||0,obs:(d.obs||'').trim()});
+  persist();
+}
+function removerCompraMike(id){
+  const m=mikeState(); snapshot('remoção de compra (Mike)');
+  m.compras=m.compras.filter(c=>c.id!==id); persist();
+}
+function addPagamentoMike(valor,descricao,data,mesRef){
+  snapshot('pagamento pro Mike');
+  mikeState().pagamentos.push({id:gerarId('mkp'),valor:Number(valor)||0,descricao:(descricao||'').trim(),data:data||hoje(),mesRef:mesRef||mesAnteriorStr(mesAtualStr())});
+  persist();
+}
+function removerPagamentoMike(id){
+  const m=mikeState(); snapshot('remoção de pagamento pro Mike');
+  m.pagamentos=m.pagamentos.filter(x=>x.id!==id); persist();
+}
+let mikeSubAba=null; // 'periodo' | 'compras' | 'produtos'
+let mikeResumoDe='', mikeResumoAte='';
+let mikeResumoResultado=null, mikeResumoCarregando=false, mikeResumoErro=null, mikeResumoProgresso=null;
+let mikeNovaCompraData='', mikeNovoPagData='';
+async function pesquisarResumoMike(){
+  if(!mikeResumoDe||!mikeResumoAte) return;
+  mikeResumoCarregando=true; mikeResumoErro=null; mikeResumoProgresso=null; renderMike();
+  try{
+    const resumo=await fetchResumoJob('TorvShop','personalizado',mikeResumoDe,mikeResumoAte,(p)=>{ mikeResumoProgresso=p; renderMike(); });
+    mikeResumoResultado=resumo;
+    // ads exato do período, casando pelo item do anúncio (igual ao Amauri)
+    let achados=0;
+    mikeProdutosMarcados().forEach(p=>{ const v=adsGastoAutoProduto(p,resumo); if(v!=null){ mikeCustos(p.id).ads=v; achados++; } });
+    if(achados){ persist(); toast(`Ads puxado automático (período exato) pra ${achados} perfume(s).`); }
+  }catch(e){ mikeResumoErro=e.message; }
+  finally{ mikeResumoCarregando=false; mikeResumoProgresso=null; renderMike(); }
+}
+function calcularLinhaMike(p,resumo){
+  const c=mikeCustos(p.id);
+  const it=(resumo.itensVendidos||[]).find(x=>x.itemId===p.mlItemId);
+  const qtd=it?(it.qtd||0):0;
+  const faturamento=it?(it.valor||0):0;
+  const tarifa=it?(it.tarifa||0):0;
+  const frete=it?(it.freteMl||0):0;
+  const med=mikeCustoMedio(p.id,resumo.periodo.ate);
+  const semCompra=!med;
+  const custoUn=med?med.unit:(Number(p.custo)||0);
+  const cmv=custoUn*qtd;
+  const coleta=(c.coleta||0)*qtd, armazenagem=(c.armazenagem||0)*qtd, embalagem=(c.embalagem||0)*qtd, etiqueta=(c.etiqueta||0)*qtd;
+  const ads=c.ads||0;
+  const imposto=faturamento*((mikeState().aliquotaImposto||0)/100);
+  const lucro=faturamento-tarifa-frete-cmv-coleta-armazenagem-embalagem-etiqueta-ads-imposto;
+  return {p,qtd,faturamento,tarifa,frete,custoUn,semCompra,cmv,coleta,armazenagem,embalagem,etiqueta,ads,imposto,lucro,
+    qtdCancelada:it?(it.qtdCancelada||0):0,pedidos:it?(it.pedidos||0):0};
+}
+function totaisMike(linhas,ajuste,percentual){
+  const soma=k=>linhas.reduce((s,l)=>s+(l[k]||0),0);
+  const lucroProdutos=soma('lucro');
+  const lucro=lucroProdutos-(ajuste||0);
+  const cmv=soma('cmv');
+  const pct=(percentual!=null?percentual:50)/100;
+  const parteLucro=lucro*pct;
+  const parteCapital=cmv*pct;
+  return {faturamento:soma('faturamento'),tarifa:soma('tarifa'),frete:soma('frete'),cmv,coleta:soma('coleta'),armazenagem:soma('armazenagem'),
+    embalagem:soma('embalagem'),etiqueta:soma('etiqueta'),ads:soma('ads'),imposto:soma('imposto'),qtd:soma('qtd'),
+    lucroProdutos,ajuste:ajuste||0,lucro,parteLucro,parteCapital,repasse:parteLucro+parteCapital};
+}
+function salvarMikePendentes(){
+  const el=document.getElementById('tab-mike'); if(!el) return;
+  el.querySelectorAll('[data-mkcusto]').forEach(inp=>{
+    const [produtoId,campo]=inp.dataset.mkcusto.split('|');
+    mikeCustos(produtoId)[campo]=parseMoeda(inp.value);
+  });
+}
+function commitMike(){ snapshot('custos da sociedade com o Mike'); salvarMikePendentes(); persist(); }
+function imprimirRelatorioMike(linhas,t,pagamentos,totalPago,pct){
+  if(!mikeResumoResultado||!linhas.length){ alert('Calcule o fechamento do período primeiro.'); return; }
+  const win=window.open('','_blank');
+  if(!win){ alert('Não foi possível abrir a janela do relatório. Verifique o bloqueador de pop-up.'); return; }
+  const lin=(rot,val)=>`<tr><td>${rot}</td><td class="n">${fmtMoney(val)}</td></tr>`;
+  const refMes=(mikeResumoDe||'').slice(0,7);
+  const compras=mikeState().compras.filter(c=>(c.data||'').slice(0,7)===refMes).slice().sort((a,b)=>(a.data||'').localeCompare(b.data||''));
+  win.document.open();
+  win.document.write(`<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Fechamento Mike</title>
+    <style>${relatorioDarkCss()}
+      body{max-width:1040px}
+      table.tbl-mike{min-width:860px}
+      table.tbl-mike th,table.tbl-mike td{white-space:nowrap}
+      table.tbl-mike th:first-child,table.tbl-mike td:first-child{position:sticky;left:0;background:var(--bg);z-index:1;padding-right:10px}
+      .totais{width:auto;min-width:340px}
+      .totais td.n{font-weight:700;color:var(--gold)}</style></head><body>
+    <h1>Fechamento Mike — perfumes em sociedade (TorvShop)</h1>
+    <div class="sub">Período: ${fmtData(mikeResumoResultado.periodo.de)} a ${fmtData(mikeResumoResultado.periodo.ate)} · gerado em ${new Date().toLocaleString('pt-BR')}</div>
+    <h2>Por perfume</h2>
+    <div class="tbl-scroll"><table class="tbl-mike"><thead><tr>
+      <th>Perfume</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo médio/un</th><th class="n">Custo vendidos</th><th class="n">Coleta</th><th class="n">Armazen.</th><th class="n">Embal.</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Lucro</th>
+    </tr></thead><tbody>
+      ${linhas.map(l=>`<tr><td>${esc(l.p.sku)}</td><td class="n">${fmtInt(l.qtd)}</td><td class="n">${fmtMoney(l.faturamento)}</td><td class="n">${fmtMoney(l.tarifa)}</td><td class="n">${fmtMoney(l.frete)}</td><td class="n">${fmtMoney(l.custoUn)}</td><td class="n">${fmtMoney(l.cmv)}</td><td class="n">${fmtMoney(l.coleta)}</td><td class="n">${fmtMoney(l.armazenagem)}</td><td class="n">${fmtMoney(l.embalagem)}</td><td class="n">${fmtMoney(l.etiqueta)}</td><td class="n">${fmtMoney(l.ads)}</td><td class="n">${fmtMoney(l.imposto)}</td><td class="n"><b>${fmtMoney(l.lucro)}</b></td></tr>`).join('')}
+    </tbody></table></div>
+    <h2>Compras do mês (cada sócio pagou a sua metade)</h2>
+    ${compras.length?`<div class="tbl-scroll"><table><thead><tr><th>Data</th><th>Perfume</th><th class="n">Qtd</th><th class="n">US$/un</th><th class="n">Dólar</th><th class="n">Fronteira/un</th><th class="n">Custo/un</th><th class="n">Total R$</th></tr></thead><tbody>
+      ${compras.map(c=>{ const x=mikeCustoCompra(c); const p=prodById(c.produtoId); return `<tr><td>${fmtData(c.data)}</td><td>${esc(p?p.sku:'?')}</td><td class="n">${fmtInt(x.qtd)}</td><td class="n">US$ ${x.usd.toFixed(2).replace('.',',')}</td><td class="n">${x.cot.toFixed(4).replace('.',',')}</td><td class="n">${fmtMoney(x.fr)}</td><td class="n">${fmtMoney(x.unit)}</td><td class="n">${fmtMoney(x.total)}</td></tr>`; }).join('')}
+    </tbody></table></div>`:'<p class="sub">Nenhuma compra registrada neste mês.</p>'}
+    <h2>Acerto</h2>
+    <div class="tbl-scroll"><table class="totais"><tbody>
+      ${lin('Faturamento dos perfumes',t.faturamento)}
+      ${lin('(−) Tarifa ML',t.tarifa)}
+      ${lin('(−) Frete ML',t.frete)}
+      ${lin('(−) Custo dos perfumes vendidos',t.cmv)}
+      ${lin('(−) Coleta / armazenagem / embalagem / etiqueta',t.coleta+t.armazenagem+t.embalagem+t.etiqueta)}
+      ${lin('(−) Ads',t.ads)}
+      ${lin('(−) Imposto',t.imposto)}
+      ${lin('(−) Devoluções e outros ajustes do período',t.ajuste)}
+      ${lin('= Lucro do período',t.lucro)}
+      ${lin(`Parte do Mike no lucro (${pct}%)`,t.parteLucro)}
+      ${lin(`Capital do Mike de volta (${pct}% do custo dos vendidos)`,t.parteCapital)}
+      ${lin('REPASSE TOTAL AO MIKE',t.repasse)}
+    </tbody></table></div>
+    <h2>Pagamentos já feitos ao Mike</h2>
+    ${pagamentos.length?`<div class="tbl-scroll"><table><thead><tr><th>Descrição</th><th>Data</th><th class="n">Valor</th></tr></thead><tbody>
+      ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'—'}</td><td>${fmtData(x.data)}</td><td class="n">${fmtMoney(x.valor)}</td></tr>`).join('')}
+    </tbody></table></div>`:'<p class="sub">Nenhum pagamento registrado ainda.</p>'}
+    <div class="tbl-scroll"><table class="totais"><tbody>
+      ${lin('Total já pago',totalPago)}
+      ${lin('Saldo a pagar (repasse − já pago)',t.repasse-totalPago)}
+    </tbody></table></div>
+    <div class="share-box no-print"><button class="btn-share" onclick="window.print()">🖨️ Imprimir</button></div>
+  </body></html>`);
+  win.document.close();
+}
+function renderMike(){
+  const el=document.getElementById('tab-mike'); if(!el) return;
+  const m=mikeState();
+  const marcados=mikeProdutosMarcados();
+  if(!mikeSubAba) mikeSubAba=marcados.length?'periodo':'produtos';
+  const todos=state.produtos.filter(p=>p.loja==='TorvShop').sort((a,b)=>(a.sku||'').localeCompare(b.sku||''));
+  const linhas=mikeResumoResultado?marcados.map(p=>calcularLinhaMike(p,mikeResumoResultado)):[];
+  const refMes=(mikeResumoDe||'').slice(0,7)||mesAnteriorStr(mesAtualStr());
+  const ajuste=Number((m.ajustes[refMes]||{}).valor)||0;
+  const t=totaisMike(linhas,ajuste,m.percentual);
+  const pagamentos=m.pagamentos.filter(x=>x.mesRef===refMes).slice().sort((x,y)=>(y.data||'').localeCompare(x.data||''));
+  const totalPago=pagamentos.reduce((s,x)=>s+(Number(x.valor)||0),0);
+  const cel=(titulo,valor,cls)=>`<div class="card" style="margin:0"><div class="muted" style="font-size:11px">${titulo}</div><b style="font-size:17px" class="${cls||''}">${fmtMoney(valor)}</b></div>`;
+  const moeda=(val,attr,largura)=>`<input type="text" inputmode="decimal" placeholder="0,00" style="width:${largura||90}px" oninput="filtrarValorMoeda(this)" value="${val?String(val).replace('.',','):''}" data-mkcusto="${attr}">`;
+  const compras=m.compras.slice().sort((a,b)=>(b.data||'').localeCompare(a.data||''));
+  const investido=compras.reduce((s,c)=>s+mikeCustoCompra(c).total,0);
+  const pct=m.percentual!=null?m.percentual:50;
+  el.innerHTML=`
+    <h1 class="page-title">Mike</h1>
+    <p class="hint" style="margin:-6px 0 12px">Perfumes em sociedade com o sócio do Paraguai (TorvShop). Cada um paga a sua metade na compra; o fechamento divide o lucro e devolve ao Mike o capital dele dos perfumes que foram vendidos.</p>
+    <div class="subnav">
+      <button data-mksub="periodo" aria-selected="${mikeSubAba==='periodo'?'true':'false'}">📊 Fechamento do período</button>
+      <button data-mksub="compras" aria-selected="${mikeSubAba==='compras'?'true':'false'}">🧾 Compras e dólar</button>
+      <button data-mksub="produtos" aria-selected="${mikeSubAba==='produtos'?'true':'false'}">📦 Perfumes e custos</button>
+    </div>
+    ${mikeSubAba==='produtos'?`
+    <details class="card" ${marcados.length?'':'open'}>
+      <summary style="cursor:pointer;font-weight:600">Perfumes em sociedade (${m.produtoIds.length} selecionado${m.produtoIds.length===1?'':'s'})</summary>
+      <p class="hint" style="margin:10px 0 8px">Marque quais anúncios da TorvShop são em sociedade com o Mike.</p>
+      <input type="text" id="mkFiltroProd" placeholder="Buscar por SKU ou título..." style="width:100%;margin-bottom:8px">
+      <div class="table-wrap" style="max-height:340px;overflow:auto"><table class="tbl-produtos"><thead><tr><th style="width:40px"></th><th>SKU</th><th>Título</th></tr></thead><tbody>
+        ${todos.length?todos.map(p=>`<tr data-mkbusca="${esc(((p.sku||'')+' '+(p.titulo||p.nome||'')).toLowerCase())}">
+          <td><input type="checkbox" data-mkprod="${p.id}" ${m.produtoIds.includes(p.id)?'checked':''}></td>
+          <td class="mono">${esc(p.sku)}</td><td class="muted">${esc(p.titulo||p.nome||'')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty">Nenhum produto cadastrado na TorvShop.</td></tr>'}
+      </tbody></table></div>
+    </details>
+    ${marcados.length?`
+    <div class="card">
+      <h3 style="margin-top:0">Custos de venda por perfume</h3>
+      <p class="hint" style="margin:0 0 10px">Coleta, armazenagem Full, embalagem e etiqueta são <b>por unidade vendida</b>. Ads é o total do período (preenchido sozinho ao calcular o fechamento). Tarifa do ML e frete entram automáticos. O custo do perfume vem das compras registradas (preço médio), não do cadastro de Produtos.</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Perfume</th><th class="num">Coleta/un</th><th class="num">Armazenagem/un</th><th class="num">Embalagem/un</th><th class="num">Etiqueta/un</th><th class="num">Ads (período)</th></tr></thead><tbody>
+        ${marcados.map(p=>{ const c=mikeCustos(p.id); const idb=esc(p.id); return `<tr>
+          <td class="mono">${esc(p.sku)}</td>
+          <td class="num">${moeda(c.coleta,idb+'|coleta')}</td><td class="num">${moeda(c.armazenagem,idb+'|armazenagem')}</td>
+          <td class="num">${moeda(c.embalagem,idb+'|embalagem')}</td><td class="num">${moeda(c.etiqueta,idb+'|etiqueta')}</td>
+          <td class="num">${moeda(c.ads,idb+'|ads')}</td></tr>`; }).join('')}
+      </tbody></table></div>
+    </div>`:''}
+    `:''}
+    ${mikeSubAba==='compras'?(marcados.length?`
+    <div class="card">
+      <h3 style="margin-top:0">🧾 Registrar compra</h3>
+      <p class="hint" style="margin:0 0 10px">Custo por unidade = preço em US$ × dólar do dia + fronteira (R$ ${String(m.fronteiraPadrao).replace('.',',')} por padrão). Cada sócio paga metade do total.</p>
+      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr auto">
+        <label>Perfume<select id="mkCompProd">${marcados.map(p=>`<option value="${esc(p.id)}">${esc(p.sku)}</option>`).join('')}</select></label>
+        <label>Data${botaoData('mkCompData',mikeNovaCompraData||hoje(),{style:''})}</label>
+        <label>Quantidade<input id="mkCompQtd" type="text" inputmode="numeric" placeholder="0"></label>
+        <label>Preço US$/un<input id="mkCompUsd" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
+        <label>Dólar do dia (R$)<input id="mkCompCot" type="text" inputmode="decimal" placeholder="0,0000" oninput="filtrarValorMoeda(this)"></label>
+        <label>Fronteira/un (R$)<input id="mkCompFr" type="text" inputmode="decimal" value="${String(m.fronteiraPadrao).replace('.',',')}" oninput="filtrarValorMoeda(this)"></label>
+        <button class="btn gold" id="btnAddCompraMike" style="align-self:end">+ Adicionar</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Histórico de compras</h3>
+      ${compras.length?`
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Data</th><th>Perfume</th><th class="num">Qtd</th><th class="num">US$/un</th><th class="num">Dólar</th><th class="num">Produto R$/un</th><th class="num">Fronteira/un</th><th class="num">Custo/un</th><th class="num">Total R$</th><th class="num">Cada sócio</th><th></th></tr></thead><tbody>
+        ${compras.map(c=>{ const x=mikeCustoCompra(c); const p=prodById(c.produtoId); return `<tr>
+          <td>${fmtData(c.data)}</td><td class="mono">${esc(p?p.sku:'(removido)')}</td><td class="num">${fmtInt(x.qtd)}</td>
+          <td class="num">US$ ${x.usd.toFixed(2).replace('.',',')}</td><td class="num">${x.cot.toFixed(4).replace('.',',')}</td>
+          <td class="num">${fmtMoney(x.produtoUn)}</td><td class="num">${fmtMoney(x.fr)}</td><td class="num"><b>${fmtMoney(x.unit)}</b></td>
+          <td class="num">${fmtMoney(x.total)}</td><td class="num">${fmtMoney(x.total/2)}</td>
+          <td><button class="btn sm danger-outline" data-mkremcompra="${c.id}">✕</button></td></tr>`; }).join('')}
+      </tbody></table></div>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px">
+        ${cel('TOTAL INVESTIDO (todas as compras)',investido)}
+        ${cel('PARTE DE CADA SÓCIO (50%)',investido/2)}
+        ${cel('UNIDADES COMPRADAS',0).replace(fmtMoney(0),fmtInt(compras.reduce((s,c)=>s+(Number(c.qtd)||0),0)))}
+      </div>
+      <h4 style="margin:14px 0 6px">Preço médio por perfume</h4>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Perfume</th><th class="num">Unid. compradas</th><th class="num">Custo médio/un (R$)</th><th class="num">Total pago (R$)</th></tr></thead><tbody>
+        ${marcados.map(p=>{ const md=mikeCustoMedio(p.id); return md?`<tr><td class="mono">${esc(p.sku)}</td><td class="num">${fmtInt(md.qtd)}</td><td class="num"><b>${fmtMoney(md.unit)}</b></td><td class="num">${fmtMoney(md.total)}</td></tr>`:''; }).join('')||'<tr><td colspan="4" class="empty">Sem compras ainda.</td></tr>'}
+      </tbody></table></div>`:'<p class="empty-inline">Nenhuma compra registrada ainda.</p>'}
+    </div>`:'<p class="empty-inline">Marque ao menos um perfume na aba "Perfumes e custos" pra registrar compras.</p>'):''}
+    ${mikeSubAba==='periodo'?(marcados.length?`
+    <div class="card">
+      <h3 style="margin-top:0">📊 Fechamento do período</h3>
+      <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr">
+        ${botaoPeriodo('mkPeriodoBtn',mikeResumoDe,mikeResumoAte)}
+        <label>Imposto (%)<input type="text" inputmode="decimal" placeholder="0,0" id="mkAliquota" value="${m.aliquotaImposto?String(m.aliquotaImposto).replace('.',','):''}"></label>
+        <label>% do Mike<input type="number" min="0" max="100" step="1" id="mkPct" value="${pct}"></label>
+        <label>Devoluções/outros do mês (R$)<input type="text" inputmode="decimal" placeholder="0,00" id="mkAjuste" oninput="filtrarValorMoeda(this)" value="${ajuste?String(ajuste).replace('.',','):''}"></label>
+      </div>
+      <p class="hint" style="margin:8px 0 0">"Devoluções/outros" desconta do lucro do mês (reembolsos, estornos que não aparecem por perfume). Cancelamentos já ficam fora do faturamento.</p>
+      <div class="acoes-linha" style="margin-top:10px">
+        <button class="btn gold" id="mkPesquisar" ${mikeResumoCarregando||!mikeResumoDe||!mikeResumoAte?'disabled':''}>${mikeResumoCarregando?'Buscando...':'🔍 Calcular'}</button>
+        ${mikeResumoResultado?'<button class="btn" id="btnImprimirMike">🖨️ Imprimir relatório</button>':''}
+      </div>
+      ${mikeResumoErro?`<p class="hint" style="color:#e66;margin-top:10px">⚠ ${esc(mikeResumoErro)}</p>`:''}
+      ${mikeResumoCarregando?(mikeResumoProgresso&&mikeResumoProgresso.total?barraProgresso(mikeResumoProgresso.feito,mikeResumoProgresso.total,'🔍 '+(mikeResumoProgresso.etapa||'Calculando...')):barraIndeterminada('🔍 Calculando o fechamento do Mike...')):''}
+      ${mikeResumoResultado?`
+        <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(mikeResumoResultado.periodo.de)} a ${fmtData(mikeResumoResultado.periodo.ate)} · ${fmtInt(mikeResumoResultado.pedidosValidos)} pedido(s) da loja toda</p>
+        ${linhas.some(l=>l.semCompra&&l.qtd>0)?`<p class="hint" style="color:#e6a23c">⚠ Perfume vendido sem compra registrada (${linhas.filter(l=>l.semCompra&&l.qtd>0).map(l=>esc(l.p.sku)).join(', ')}): usei o custo cadastrado em Produtos. Registre a compra na aba "Compras e dólar".</p>`:''}
+        <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
+          <th>Perfume</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo médio/un</th><th class="num">Custo vendidos</th><th class="num">Coleta</th><th class="num">Armazen.</th><th class="num">Embal.</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto</th><th class="num">Lucro</th>
+        </tr></thead><tbody>
+          ${linhas.map(l=>`<tr>
+            <td class="mono">${esc(l.p.sku)}</td><td class="num">${fmtInt(l.qtd)}</td><td class="num">${fmtMoney(l.faturamento)}</td>
+            <td class="num">${fmtMoney(l.tarifa)}</td><td class="num">${fmtMoney(l.frete)}</td>
+            <td class="num">${fmtMoney(l.custoUn)}${l.semCompra?' <span class="pend" title="sem compra registrada">!</span>':''}</td><td class="num">${fmtMoney(l.cmv)}</td>
+            <td class="num">${fmtMoney(l.coleta)}</td><td class="num">${fmtMoney(l.armazenagem)}</td><td class="num">${fmtMoney(l.embalagem)}</td><td class="num">${fmtMoney(l.etiqueta)}</td>
+            <td class="num">${fmtMoney(l.ads)}</td><td class="num">${fmtMoney(l.imposto)}</td>
+            <td class="num"><b class="${l.lucro>=0?'okv':'pend'}">${fmtMoney(l.lucro)}</b></td></tr>`).join('')}
+        </tbody></table></div>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px">
+          ${cel('LUCRO DO PERÍODO'+(t.ajuste?' (após ajustes)':''),t.lucro,t.lucro>=0?'okv':'pend')}
+          ${cel('PARTE DO MIKE NO LUCRO ('+pct+'%)',t.parteLucro)}
+          ${cel('CAPITAL DO MIKE DE VOLTA ('+pct+'% do custo vendido)',t.parteCapital)}
+          ${cel('REPASSE TOTAL AO MIKE',t.repasse)}
+        </div>
+      `:''}
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">💸 Pagamentos já feitos ao Mike</h3>
+      <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr auto">
+        <label>Descrição<input id="mkPagDescricao" type="text" placeholder="Ex: acerto de novembro"></label>
+        <label>Valor (R$)<input id="mkPagValor" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
+        <label>Data${botaoData('mkPagData',mikeNovoPagData||hoje(),{style:''})}</label>
+        <button class="btn gold" id="btnAddPagMike" style="align-self:end">+ Adicionar</button>
+      </div>
+      ${pagamentos.length?`<div class="table-wrap" style="margin-top:10px"><table class="tbl-produtos"><tbody>
+        ${pagamentos.map(x=>`<tr><td>${esc(x.descricao)||'<span class="muted">—</span>'}</td><td class="muted">${fmtData(x.data)}</td><td class="num">${fmtMoney(x.valor)}</td><td><button class="btn sm danger-outline" data-mkrempag="${x.id}">✕</button></td></tr>`).join('')}
+      </tbody></table></div>`:'<p class="empty-inline" style="margin-top:10px">Nenhum pagamento registrado neste mês de referência.</p>'}
+      ${mikeResumoResultado?`<div class="form-grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:14px">
+        ${cel('TOTAL JÁ PAGO',totalPago)}
+        ${cel('SALDO A PAGAR (repasse − já pago)',t.repasse-totalPago,(t.repasse-totalPago)>0?'pend':'okv')}
+      </div>`:`<p class="hint" style="margin-top:14px">Total já pago: <b>${fmtMoney(totalPago)}</b>. Clique em "🔍 Calcular" acima pra ver o saldo a pagar.</p>`}
+    </div>
+    `:'<p class="empty-inline">Marque ao menos um perfume na aba "Perfumes e custos" pra começar o fechamento.</p>'):''}
+  `;
+  el.querySelectorAll('[data-mksub]').forEach(b=>b.onclick=()=>{ salvarMikePendentes(); mikeSubAba=b.dataset.mksub; renderMike(); });
+  el.querySelectorAll('[data-mkprod]').forEach(c=>c.onchange=()=>{ salvarMikePendentes(); toggleMikeProduto(c.dataset.mkprod); });
+  const filtro=document.getElementById('mkFiltroProd');
+  if(filtro) filtro.oninput=()=>{ const q=filtro.value.trim().toLowerCase(); el.querySelectorAll('[data-mkbusca]').forEach(tr=>{ tr.style.display=(!q||tr.dataset.mkbusca.includes(q))?'':'none'; }); };
+  el.querySelectorAll('[data-mkcusto]').forEach(inp=>inp.onchange=commitMike);
+  const btnPeriodo=document.getElementById('mkPeriodoBtn');
+  if(btnPeriodo) btnPeriodo.onclick=()=>abrirSeletorPeriodo(mikeResumoDe,mikeResumoAte,(de,ate)=>{ mikeResumoDe=de; mikeResumoAte=ate; mikeResumoResultado=null; renderMike(); });
+  const aliq=document.getElementById('mkAliquota');
+  if(aliq) aliq.onchange=e=>{ snapshot('imposto do fechamento Mike'); const v=Number(String(e.target.value).replace(',','.')); mikeState().aliquotaImposto=isNaN(v)?0:Math.min(100,Math.max(0,v)); persist(); renderMike(); };
+  const pctEl=document.getElementById('mkPct');
+  if(pctEl) pctEl.onchange=e=>{ snapshot('percentual do Mike'); const v=Number(e.target.value); mikeState().percentual=isNaN(v)?50:Math.min(100,Math.max(0,v)); persist(); renderMike(); };
+  const ajEl=document.getElementById('mkAjuste');
+  if(ajEl) ajEl.onchange=e=>{ snapshot('ajuste do mês (Mike)'); mikeState().ajustes[refMes]={valor:parseMoeda(e.target.value)}; persist(); renderMike(); };
+  const btnPesq=document.getElementById('mkPesquisar');
+  if(btnPesq) btnPesq.onclick=()=>{ commitMike(); pesquisarResumoMike(); };
+  const btnImp=document.getElementById('btnImprimirMike');
+  if(btnImp) btnImp.onclick=()=>imprimirRelatorioMike(linhas,t,pagamentos,totalPago,pct);
+  const btnCompData=document.getElementById('mkCompData');
+  if(btnCompData) btnCompData.onclick=()=>abrirSeletorData(mikeNovaCompraData||hoje(),(iso)=>{ mikeNovaCompraData=iso; renderMike(); });
+  const btnAddCompra=document.getElementById('btnAddCompraMike');
+  if(btnAddCompra) btnAddCompra.onclick=()=>{
+    const qtd=parseInt(String(document.getElementById('mkCompQtd').value).replace(/\D/g,''),10)||0;
+    const usd=parseMoeda(document.getElementById('mkCompUsd').value);
+    const cot=parseMoeda(document.getElementById('mkCompCot').value);
+    const fr=parseMoeda(document.getElementById('mkCompFr').value);
+    if(!qtd||!usd||!cot){ alert('Informe quantidade, preço em US$ e o dólar do dia.'); return; }
+    addCompraMike({produtoId:document.getElementById('mkCompProd').value,data:mikeNovaCompraData||hoje(),qtd,usd,cotacao:cot,fronteira:fr});
+    mikeNovaCompraData='';
+    toast('Compra registrada.');
+    renderMike();
+  };
+  el.querySelectorAll('[data-mkremcompra]').forEach(b=>b.onclick=()=>{
+    if(!confirm('Remover esta compra do histórico? O custo médio do perfume será recalculado.')) return;
+    removerCompraMike(b.dataset.mkremcompra); toast('Compra removida.'); renderMike();
+  });
+  const btnPagData=document.getElementById('mkPagData');
+  if(btnPagData) btnPagData.onclick=()=>abrirSeletorData(mikeNovoPagData||hoje(),(iso)=>{ mikeNovoPagData=iso; renderMike(); });
+  const btnAddPag=document.getElementById('btnAddPagMike');
+  if(btnAddPag) btnAddPag.onclick=()=>{
+    const descricao=document.getElementById('mkPagDescricao').value.trim();
+    const valor=parseMoeda(document.getElementById('mkPagValor').value);
+    if(!valor||valor<=0){ alert('Informe um valor válido.'); return; }
+    salvarMikePendentes();
+    addPagamentoMike(valor,descricao,mikeNovoPagData||hoje(),refMes);
+    mikeNovoPagData=''; toast('Pagamento registrado.'); renderMike();
+  };
+  el.querySelectorAll('[data-mkrempag]').forEach(b=>b.onclick=()=>{ removerPagamentoMike(b.dataset.mkrempag); toast('Pagamento removido.'); renderMike(); });
+}
 /* ---------- listas de tarefas ---------- */
 function addLista(nome){
   snapshot('nova lista de tarefas');
@@ -12867,7 +13241,7 @@ function renderAll(){
   /* cada seção isolada: se uma falhar, as outras continuam atualizando */
   [['bloqueio',renderBloqueio],['avisos',renderAvisos],['tarefas',renderTarefas],['onboarding',renderOnboard],['visão geral',renderDashboard],
    ['produtos',renderProdutos],['comprar',renderComprar],['coletar',renderColetar],['notas fiscais',renderNotasFiscais],['finanças',renderFinancas],['ads',renderAds],['promoções',renderPromocoes],
-   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
+   ['previsão FULL',renderPrevisao],['envios',renderEnvio],['ruptura',renderRuptura],['estoque mínimo',renderEstoqueMinimo],['amauri',renderAmauri],['mike',renderMike],['barra',updateFileStatus],['menu',atualizarBadgeTarefas]
   ].forEach(([nome,fn])=>{
     try{ fn(); }catch(err){ console.error('Erro ao renderizar '+nome,err); toast('⚠ Erro ao atualizar a aba '+nome+'. Recarregue a página.'); }
   });
