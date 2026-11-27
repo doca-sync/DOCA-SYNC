@@ -488,7 +488,7 @@ tr.l-env{background:rgba(163,163,163,.07)}
   <div class="wrap bar">
     <div class="mark">
       <div class="logo">D</div>
-      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v492</span></small></div>
+      <div><b>Doca</b><small>Abastecimento Full · Mercado Livre <span style="opacity:.35;font-size:9px" title="Confere se o arquivo mais recente foi mesmo publicado">v493</span></small></div>
     </div>
     <nav id="mainNav">
       <button data-tab="tarefas" aria-selected="true">Tarefas</button>
@@ -10924,7 +10924,7 @@ function calcularLinhaMike(p,resumo){
   const semCompra=!med;
   const custoUn=med?med.unit:(Number(p.custo)||0);
   const cmv=custoUn*qtd;
-  const coleta=(c.coleta||0)*qtd, armazenagem=(c.armazenagem||0)*qtd, embalagem=(c.embalagem||0)*qtd, etiqueta=(c.etiqueta||0)*qtd;
+  const coleta=(c.coleta||0)*qtd, armazenagem=(c.armazenagem||0)*qtd, embalagem=0, etiqueta=0; // embalagem/etiqueta saíram da aba (27/11)
   const ads=c.ads||0;
   const imposto=faturamento*((mikeState().aliquotaImposto||0)/100);
   const lucro=faturamento-tarifa-frete-cmv-coleta-armazenagem-embalagem-etiqueta-ads-imposto;
@@ -10973,12 +10973,12 @@ function imprimirRelatorioMike(linhas,t,pagamentos,totalPago,pct){
     <div class="sub">Período: ${fmtData(mikeResumoResultado.periodo.de)} a ${fmtData(mikeResumoResultado.periodo.ate)} · gerado em ${new Date().toLocaleString('pt-BR')}</div>
     <h2>Por perfume</h2>
     <div class="tbl-scroll"><table class="tbl-mike"><thead><tr>
-      <th>Perfume</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo médio/un</th><th class="n">Custo vendidos</th><th class="n">Coleta</th><th class="n">Armazen.</th><th class="n">Embal.</th><th class="n">Etiqueta</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Lucro</th>
+      <th>Perfume</th><th class="n">Unid.</th><th class="n">Faturamento</th><th class="n">Tarifa ML</th><th class="n">Frete ML</th><th class="n">Custo médio/un</th><th class="n">Custo vendidos</th><th class="n">Coleta</th><th class="n">Armazen.</th><th class="n">Ads</th><th class="n">Imposto</th><th class="n">Lucro</th>
     </tr></thead><tbody>
-      ${linhas.map(l=>`<tr><td>${esc(l.p.sku)}</td><td class="n">${fmtInt(l.qtd)}</td><td class="n">${fmtMoney(l.faturamento)}</td><td class="n">${fmtMoney(l.tarifa)}</td><td class="n">${fmtMoney(l.frete)}</td><td class="n">${fmtMoney(l.custoUn)}</td><td class="n">${fmtMoney(l.cmv)}</td><td class="n">${fmtMoney(l.coleta)}</td><td class="n">${fmtMoney(l.armazenagem)}</td><td class="n">${fmtMoney(l.embalagem)}</td><td class="n">${fmtMoney(l.etiqueta)}</td><td class="n">${fmtMoney(l.ads)}</td><td class="n">${fmtMoney(l.imposto)}</td><td class="n"><b>${fmtMoney(l.lucro)}</b></td></tr>`).join('')}
+      ${linhas.map(l=>`<tr><td>${esc(l.p.sku)}</td><td class="n">${fmtInt(l.qtd)}</td><td class="n">${fmtMoney(l.faturamento)}</td><td class="n">${fmtMoney(l.tarifa)}</td><td class="n">${fmtMoney(l.frete)}</td><td class="n">${fmtMoney(l.custoUn)}</td><td class="n">${fmtMoney(l.cmv)}</td><td class="n">${fmtMoney(l.coleta)}</td><td class="n">${fmtMoney(l.armazenagem)}</td><td class="n">${fmtMoney(l.ads)}</td><td class="n">${fmtMoney(l.imposto)}</td><td class="n"><b>${fmtMoney(l.lucro)}</b></td></tr>`).join('')}
     </tbody></table></div>
     <h2>Compras do mês (cada sócio pagou a sua metade)</h2>
-    ${compras.length?`<div class="tbl-scroll"><table><thead><tr><th>Data</th><th>Perfume</th><th class="n">Qtd</th><th class="n">US$/un</th><th class="n">Dólar</th><th class="n">Fronteira/un</th><th class="n">Custo/un</th><th class="n">Total R$</th></tr></thead><tbody>
+    ${compras.length?`<div class="tbl-scroll"><table><thead><tr><th>Data</th><th>Perfume</th><th class="n">Qtd</th><th class="n">US$/un</th><th class="n">Dólar</th><th class="n">Travessia/un</th><th class="n">Custo/un</th><th class="n">Total R$</th></tr></thead><tbody>
       ${compras.map(c=>{ const x=mikeCustoCompra(c); const p=prodById(c.produtoId); return `<tr><td>${fmtData(c.data)}</td><td>${esc(p?p.sku:'?')}</td><td class="n">${fmtInt(x.qtd)}</td><td class="n">US$ ${x.usd.toFixed(2).replace('.',',')}</td><td class="n">${x.cot.toFixed(4).replace('.',',')}</td><td class="n">${fmtMoney(x.fr)}</td><td class="n">${fmtMoney(x.unit)}</td><td class="n">${fmtMoney(x.total)}</td></tr>`; }).join('')}
     </tbody></table></div>`:'<p class="sub">Nenhuma compra registrada neste mês.</p>'}
     <h2>Acerto</h2>
@@ -10987,7 +10987,7 @@ function imprimirRelatorioMike(linhas,t,pagamentos,totalPago,pct){
       ${lin('(−) Tarifa ML',t.tarifa)}
       ${lin('(−) Frete ML',t.frete)}
       ${lin('(−) Custo dos perfumes vendidos',t.cmv)}
-      ${lin('(−) Coleta / armazenagem / embalagem / etiqueta',t.coleta+t.armazenagem+t.embalagem+t.etiqueta)}
+      ${lin('(−) Coleta e armazenagem Full',t.coleta+t.armazenagem)}
       ${lin('(−) Ads',t.ads)}
       ${lin('(−) Imposto',t.imposto)}
       ${lin('(−) Devoluções e outros ajustes do período',t.ajuste)}
@@ -11047,34 +11047,36 @@ function renderMike(){
     ${marcados.length?`
     <div class="card">
       <h3 style="margin-top:0">Custos de venda por perfume</h3>
-      <p class="hint" style="margin:0 0 10px">Coleta, armazenagem Full, embalagem e etiqueta são <b>por unidade vendida</b>. Ads é o total do período (preenchido sozinho ao calcular o fechamento). Tarifa do ML e frete entram automáticos. O custo do perfume vem das compras registradas (preço médio), não do cadastro de Produtos.</p>
-      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Perfume</th><th class="num">Coleta/un</th><th class="num">Armazenagem/un</th><th class="num">Embalagem/un</th><th class="num">Etiqueta/un</th><th class="num">Ads (período)</th></tr></thead><tbody>
+      <p class="hint" style="margin:0 0 10px">Coleta e armazenagem Full são <b>por unidade vendida</b>. Tarifa do ML, frete e Ads entram automáticos ao calcular o fechamento. O custo do perfume vem das compras registradas (preço médio), não do cadastro de Produtos.</p>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Perfume</th><th class="num">Coleta Full/un</th><th class="num">Armazenagem Full/un</th></tr></thead><tbody>
         ${marcados.map(p=>{ const c=mikeCustos(p.id); const idb=esc(p.id); return `<tr>
           <td class="mono">${esc(p.sku)}</td>
-          <td class="num">${moeda(c.coleta,idb+'|coleta')}</td><td class="num">${moeda(c.armazenagem,idb+'|armazenagem')}</td>
-          <td class="num">${moeda(c.embalagem,idb+'|embalagem')}</td><td class="num">${moeda(c.etiqueta,idb+'|etiqueta')}</td>
-          <td class="num">${moeda(c.ads,idb+'|ads')}</td></tr>`; }).join('')}
+          <td class="num">${moeda(c.coleta,idb+'|coleta')}</td><td class="num">${moeda(c.armazenagem,idb+'|armazenagem')}</td></tr>`; }).join('')}
       </tbody></table></div>
     </div>`:''}
     `:''}
     ${mikeSubAba==='compras'?(marcados.length?`
     <div class="card">
       <h3 style="margin-top:0">🧾 Registrar compra</h3>
-      <p class="hint" style="margin:0 0 10px">Custo por unidade = preço em US$ × dólar do dia + fronteira (R$ ${String(m.fronteiraPadrao).replace('.',',')} por padrão). Cada sócio paga metade do total.</p>
+      <p class="hint" style="margin:0 0 10px">Custo por unidade = preço em US$ × dólar do dia + travessia. Cada sócio paga metade do total.</p>
+      <div class="form-grid" style="grid-template-columns:220px 1fr;margin-bottom:10px">
+        <label>Travessia padrão (R$/un)<input id="mkTravessiaPadrao" type="text" inputmode="decimal" value="${String(m.fronteiraPadrao).replace('.',',')}" oninput="filtrarValorMoeda(this)"></label>
+        <p class="hint" style="align-self:end;margin:0">Valor sugerido nas próximas compras. Se mudar o preço da travessia, altere aqui; compras já registradas mantêm o valor que tinham.</p>
+      </div>
       <div class="form-grid" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr auto">
         <label>Perfume<select id="mkCompProd">${marcados.map(p=>`<option value="${esc(p.id)}">${esc(p.sku)}</option>`).join('')}</select></label>
         <label>Data${botaoData('mkCompData',mikeNovaCompraData||hoje(),{style:''})}</label>
         <label>Quantidade<input id="mkCompQtd" type="text" inputmode="numeric" placeholder="0"></label>
         <label>Preço US$/un<input id="mkCompUsd" type="text" inputmode="decimal" placeholder="0,00" oninput="filtrarValorMoeda(this)"></label>
         <label>Dólar do dia (R$)<input id="mkCompCot" type="text" inputmode="decimal" placeholder="0,0000" oninput="filtrarValorMoeda(this)"></label>
-        <label>Fronteira/un (R$)<input id="mkCompFr" type="text" inputmode="decimal" value="${String(m.fronteiraPadrao).replace('.',',')}" oninput="filtrarValorMoeda(this)"></label>
+        <label>Travessia/un (R$)<input id="mkCompFr" type="text" inputmode="decimal" value="${String(m.fronteiraPadrao).replace('.',',')}" oninput="filtrarValorMoeda(this)"></label>
         <button class="btn gold" id="btnAddCompraMike" style="align-self:end">+ Adicionar</button>
       </div>
     </div>
     <div class="card">
       <h3 style="margin-top:0">Histórico de compras</h3>
       ${compras.length?`
-      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Data</th><th>Perfume</th><th class="num">Qtd</th><th class="num">US$/un</th><th class="num">Dólar</th><th class="num">Produto R$/un</th><th class="num">Fronteira/un</th><th class="num">Custo/un</th><th class="num">Total R$</th><th class="num">Cada sócio</th><th></th></tr></thead><tbody>
+      <div class="table-wrap"><table class="tbl-produtos"><thead><tr><th>Data</th><th>Perfume</th><th class="num">Qtd</th><th class="num">US$/un</th><th class="num">Dólar</th><th class="num">Produto R$/un</th><th class="num">Travessia/un</th><th class="num">Custo/un</th><th class="num">Total R$</th><th class="num">Cada sócio</th><th></th></tr></thead><tbody>
         ${compras.map(c=>{ const x=mikeCustoCompra(c); const p=prodById(c.produtoId); return `<tr>
           <td>${fmtData(c.data)}</td><td class="mono">${esc(p?p.sku:'(removido)')}</td><td class="num">${fmtInt(x.qtd)}</td>
           <td class="num">US$ ${x.usd.toFixed(2).replace('.',',')}</td><td class="num">${x.cot.toFixed(4).replace('.',',')}</td>
@@ -11112,13 +11114,13 @@ function renderMike(){
         <p class="hint" style="margin:14px 0 8px">Período: ${fmtData(mikeResumoResultado.periodo.de)} a ${fmtData(mikeResumoResultado.periodo.ate)} · ${fmtInt(mikeResumoResultado.pedidosValidos)} pedido(s) da loja toda</p>
         ${linhas.some(l=>l.semCompra&&l.qtd>0)?`<p class="hint" style="color:#e6a23c">⚠ Perfume vendido sem compra registrada (${linhas.filter(l=>l.semCompra&&l.qtd>0).map(l=>esc(l.p.sku)).join(', ')}): usei o custo cadastrado em Produtos. Registre a compra na aba "Compras e dólar".</p>`:''}
         <div class="table-wrap"><table class="tbl-produtos"><thead><tr>
-          <th>Perfume</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo médio/un</th><th class="num">Custo vendidos</th><th class="num">Coleta</th><th class="num">Armazen.</th><th class="num">Embal.</th><th class="num">Etiqueta</th><th class="num">Ads</th><th class="num">Imposto</th><th class="num">Lucro</th>
+          <th>Perfume</th><th class="num">Unid.</th><th class="num">Faturamento</th><th class="num">Tarifa ML</th><th class="num">Frete ML</th><th class="num">Custo médio/un</th><th class="num">Custo vendidos</th><th class="num">Coleta</th><th class="num">Armazen.</th><th class="num">Ads</th><th class="num">Imposto</th><th class="num">Lucro</th>
         </tr></thead><tbody>
           ${linhas.map(l=>`<tr>
             <td class="mono">${esc(l.p.sku)}</td><td class="num">${fmtInt(l.qtd)}</td><td class="num">${fmtMoney(l.faturamento)}</td>
             <td class="num">${fmtMoney(l.tarifa)}</td><td class="num">${fmtMoney(l.frete)}</td>
             <td class="num">${fmtMoney(l.custoUn)}${l.semCompra?' <span class="pend" title="sem compra registrada">!</span>':''}</td><td class="num">${fmtMoney(l.cmv)}</td>
-            <td class="num">${fmtMoney(l.coleta)}</td><td class="num">${fmtMoney(l.armazenagem)}</td><td class="num">${fmtMoney(l.embalagem)}</td><td class="num">${fmtMoney(l.etiqueta)}</td>
+            <td class="num">${fmtMoney(l.coleta)}</td><td class="num">${fmtMoney(l.armazenagem)}</td>
             <td class="num">${fmtMoney(l.ads)}</td><td class="num">${fmtMoney(l.imposto)}</td>
             <td class="num"><b class="${l.lucro>=0?'okv':'pend'}">${fmtMoney(l.lucro)}</b></td></tr>`).join('')}
         </tbody></table></div>
@@ -11165,6 +11167,8 @@ function renderMike(){
   if(btnPesq) btnPesq.onclick=()=>{ commitMike(); pesquisarResumoMike(); };
   const btnImp=document.getElementById('btnImprimirMike');
   if(btnImp) btnImp.onclick=()=>imprimirRelatorioMike(linhas,t,pagamentos,totalPago,pct);
+  const travPadrao=document.getElementById('mkTravessiaPadrao');
+  if(travPadrao) travPadrao.onchange=e=>{ snapshot('travessia padrão (Mike)'); mikeState().fronteiraPadrao=parseMoeda(e.target.value); persist(); renderMike(); };
   const btnCompData=document.getElementById('mkCompData');
   if(btnCompData) btnCompData.onclick=()=>abrirSeletorData(mikeNovaCompraData||hoje(),(iso)=>{ mikeNovaCompraData=iso; renderMike(); });
   const btnAddCompra=document.getElementById('btnAddCompraMike');
